@@ -261,9 +261,30 @@ void SemanticKnobEngine::try_register_node(
         knob.uses_yn_bool = uses_yn;
         knob.active_gaming_value = 0; // Unified bus throughput during heavy gaming
         knob.apply_in_gaming = true;
-    } else if (lower == "gx_game_mode" || lower == "gx_boost_on" || lower == "gpu_boost") {
+    } else if (lower == "gx_game_mode" || lower == "gx_boost_on" || lower == "gpu_boost" ||
+               lower == "ged_boost_enable" || lower == "boost_gpu_enable" || lower == "boost_extra") {
         if (!parse_bool_token(base, bval, uses_yn)) return;
         knob.family = KnobFamily::GpuLatency;
+        knob.kind = KnobValueKind::BoolToggle;
+        knob.uses_yn_bool = uses_yn;
+        knob.active_burst_value = 1;
+        knob.active_gaming_value = 1;
+        knob.apply_in_launch_burst = true;
+        knob.apply_in_gaming = true;
+    } else if (lower == "gpu_boost_level") {
+        // MediaTek GED gpu_boost_level (0..100 integer hint, OEM-relative gentle uplift in Gaming/Burst)
+        if (!parse_i64_exact(base, ival) || ival < 0 || ival > 100) return;
+        knob.family = KnobFamily::GpuLatency;
+        knob.kind = KnobValueKind::RelativeInt;
+        knob.baseline_int = ival;
+        knob.active_burst_value = std::min<int64_t>(60, std::max<int64_t>(ival + 15, 25));
+        knob.active_gaming_value = std::min<int64_t>(75, std::max<int64_t>(ival + 25, 40));
+        knob.apply_in_launch_burst = true;
+        knob.apply_in_gaming = true;
+    } else if (lower == "boost_affinity" || lower == "fpsgo_enable") {
+        // MediaTek FPSGO safe affinity hint (0/1); only enable in Gaming/Burst if OEM left at 0
+        if (!parse_bool_token(base, bval, uses_yn) || bval) return;
+        knob.family = KnobFamily::CpuBoost;
         knob.kind = KnobValueKind::BoolToggle;
         knob.uses_yn_bool = uses_yn;
         knob.active_burst_value = 1;
@@ -353,7 +374,7 @@ void SemanticKnobEngine::discover(
         }
     };
 
-    // 1. CPU governor & scheduler directories
+    // 1. CPU governor & scheduler directories (Qualcomm WALT, EAS, MediaTek FPSGO)
     for (const auto& cluster : topo.cpu_clusters) {
         if (cluster.policy_path.empty()) continue;
         const fs::path pdir(cluster.policy_path);
@@ -364,14 +385,17 @@ void SemanticKnobEngine::discover(
     }
     scan_dir(fs::path(procfs_root) / "sys/walt", {});
     scan_dir(fs::path(procfs_root) / "sys/kernel", {});
+    scan_dir(fs::path(sysfs_root) / "module/mtk_fpsgo/parameters", {});
+    scan_dir(fs::path(sysfs_root) / "kernel/fpsgo/fbt", {});
 
-    // 2. GPU device & MediaTek GED parameters
+    // 2. GPU device & MediaTek GED / Mali / Exynos parameters
     if (topo.gpu.available && !topo.gpu.device_path.empty()) {
         scan_dir(fs::path(topo.gpu.device_path), {});
     }
     scan_dir(fs::path(sysfs_root) / "module/ged/parameters", {});
+    scan_dir(fs::path(sysfs_root) / "kernel/ged/hal", {});
 
-    // 3. Physical storage queues & parent UFS host controller directories
+    // 3. Physical storage queues & parent UFS host controller directories (Qualcomm/MediaTek/Exynos/Tensor)
     for (const auto& q : topo.storage_queues) {
         if (q.is_mapper || q.read_ahead_kb_path.empty()) continue;
         const fs::path qdir = fs::path(q.read_ahead_kb_path).parent_path();

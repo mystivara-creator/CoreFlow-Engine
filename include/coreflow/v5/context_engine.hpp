@@ -33,7 +33,8 @@ enum class ContextMode : uint8_t {
 struct ForegroundAppInfo {
     int32_t pid{0};
     std::string package_name;
-    std::vector<int32_t> critical_tids;
+    std::vector<int32_t> critical_tids; // Tier-1: UI Main, RenderThread, GameThread, UnityMain
+    std::vector<int32_t> helper_tids;   // Tier-2: hwuiTask, MediaCodec, AudioTrack, Chromium workers
     bool has_game_thread{false};
     bool has_render_thread{false};
     bool is_camera_app{false};
@@ -94,6 +95,7 @@ public:
     [[nodiscard]] static const char* profile_name(PerformanceProfile profile) noexcept;
     [[nodiscard]] static const char* mode_name(ContextMode mode) noexcept;
     [[nodiscard]] static bool is_critical_render_thread_name(std::string_view comm) noexcept;
+    [[nodiscard]] static bool is_helper_pipeline_thread_name(std::string_view comm) noexcept;
     [[nodiscard]] static bool is_game_engine_thread_name(std::string_view comm) noexcept;
     [[nodiscard]] static bool is_media_pipeline_thread_name(std::string_view comm) noexcept;
     [[nodiscard]] static bool is_camera_package(std::string_view pkg) noexcept;
@@ -126,6 +128,7 @@ private:
     mutable int32_t cached_fg_pid_{0};
     mutable uint64_t cached_fg_tids_ms_{0};
     mutable std::vector<int32_t> cached_fg_tids_;
+    mutable std::vector<int32_t> cached_fg_helper_tids_;
     mutable bool cached_fg_has_game_thread_{false};
     mutable bool cached_fg_has_media_thread_{false};
 };

@@ -209,6 +209,17 @@ bool ContextEngine::is_game_engine_thread_name(std::string_view comm) noexcept {
            comm.rfind("GLThread", 0) == 0;
 }
 
+bool ContextEngine::is_helper_pipeline_thread_name(std::string_view comm) noexcept {
+    if (comm.empty()) return false;
+    return comm.rfind("hwuiTask", 0) == 0 ||
+           comm == "CrRendererMain" ||
+           comm == "Compositor" ||
+           comm == "VizCompositorTh" ||
+           comm == "SkiaOutput" ||
+           comm == "mali-cmar-backe" ||
+           comm == "adreno-worker";
+}
+
 bool ContextEngine::is_critical_render_thread_name(std::string_view comm) noexcept {
     if (comm.empty()) return false;
     if (is_game_engine_thread_name(comm)) return true;
@@ -217,14 +228,8 @@ bool ContextEngine::is_critical_render_thread_name(std::string_view comm) noexce
            comm == "surfaceflinger" ||
            comm == "RenderEngine" ||
            comm == "Binder:sf" ||
-           comm.rfind("hwuiTask", 0) == 0 ||
            comm.rfind("RenderThread", 0) == 0 ||
-           comm == "CrRendererMain" ||
-           comm == "Compositor" ||
-           comm == "VizCompositorTh" ||
-           comm == "SkiaOutput" ||
-           comm == "mali-cmar-backe" ||
-           comm == "adreno-worker";
+           is_helper_pipeline_thread_name(comm);
 }
 
 bool ContextEngine::is_media_pipeline_thread_name(std::string_view comm) noexcept {
@@ -562,6 +567,7 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
     if (best_pid == cached_fg_pid_ && now >= cached_fg_tids_ms_ &&
         now - cached_fg_tids_ms_ < 3000ULL && !cached_fg_tids_.empty()) {
         result.critical_tids = cached_fg_tids_;
+        result.helper_tids = cached_fg_helper_tids_;
         result.has_game_thread = cached_fg_has_game_thread_;
         result.has_media_thread = cached_fg_has_media_thread_;
         result.has_render_thread = result.has_render_thread || (cached_fg_tids_.size() > 1U);
@@ -575,7 +581,8 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
     const fs::path task_dir = fs::path(procfs_root_) / std::to_string(best_pid) / "task";
     std::error_code ec;
     for (fs::directory_iterator it(task_dir, fs::directory_options::skip_permission_denied, ec), end;
-         !ec && it != end && result.critical_tids.size() < 16U; it.increment(ec)) {
+         !ec && it != end && (result.critical_tids.size() + result.helper_tids.size()) < 20U;
+         it.increment(ec)) {
         int32_t tid = 0;
         if (!parse_i32(it->path().filename().string(), tid) || tid == best_pid) continue;
         std::string comm = read_small_file(it->path() / "comm", 64U);
@@ -585,14 +592,21 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
         }
         if (is_media_pipeline_thread_name(comm)) {
             result.has_media_thread = true;
-            if (is_cfs_thread(tid, procfs_root_)) {
-                result.critical_tids.push_back(tid);
+            if (is_cfs_thread(tid, procfs_root_) && result.helper_tids.size() < 8U) {
+                result.helper_tids.push_back(tid);
+            }
+            continue;
+        }
+        if (is_helper_pipeline_thread_name(comm)) {
+            result.has_render_thread = true;
+            if (is_cfs_thread(tid, procfs_root_) && result.helper_tids.size() < 8U) {
+                result.helper_tids.push_back(tid);
             }
             continue;
         }
         if (is_critical_render_thread_name(comm)) {
             result.has_render_thread = true;
-            if (is_cfs_thread(tid, procfs_root_)) {
+            if (is_cfs_thread(tid, procfs_root_) && result.critical_tids.size() < 12U) {
                 result.critical_tids.push_back(tid);
             }
         }
@@ -600,6 +614,7 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
     cached_fg_pid_ = best_pid;
     cached_fg_tids_ms_ = now;
     cached_fg_tids_ = result.critical_tids;
+    cached_fg_helper_tids_ = result.helper_tids;
     cached_fg_has_game_thread_ = result.has_game_thread;
     cached_fg_has_media_thread_ = result.has_media_thread;
     return result;

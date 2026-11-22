@@ -85,6 +85,15 @@ data class AppStrings(
     val aboutSummary: String,
     val aboutViewGithub: String,
     val aboutCreatorProfile: String,
+    val sectionSelfAudit: String,
+    val runSelfAudit: String,
+    val runningAudit: String,
+    val shareAudit: String,
+    val auditPassAll: String,
+    val auditAttention: String,
+    val labelFramePacing: String,
+    val labelAppDna: String,
+    val labelThermalEq: String,
 ) {
     fun humanizeMode(mode: String): String = when (mode.uppercase(Locale.US)) {
         "LAUNCH_BURST" -> if (isIndonesian) "Lonjakan Buka" else "Launch Burst"
@@ -220,6 +229,15 @@ fun rememberAppStrings(languageIndex: Int): AppStrings {
                 aboutSummary = "Profil kreator, kode sumber GitHub, partner AI & lisensi",
                 aboutViewGithub = "Lihat kode sumber di GitHub",
                 aboutCreatorProfile = "Profil GitHub Mystivara Creator",
+                sectionSelfAudit = "AUDIT KESEHATAN PERANGKAT",
+                runSelfAudit = "Jalankan Audit 1-Ketuk",
+                runningAudit = "Memeriksa kernel, UClamp & SELinux...",
+                shareAudit = "Bagikan Ringkasan Audit",
+                auditPassAll = "Semua Cek Sehat & Optimal",
+                auditAttention = "Ada Catatan Perhatian",
+                labelFramePacing = "Frame Pacing",
+                labelAppDna = "App DNA",
+                labelThermalEq = "Termal Dual",
             )
         } else {
             AppStrings(
@@ -308,6 +326,15 @@ fun rememberAppStrings(languageIndex: Int): AppStrings {
                 aboutSummary = "Creator profile, GitHub source, AI partners & license",
                 aboutViewGithub = "View source code on GitHub",
                 aboutCreatorProfile = "Mystivara Creator GitHub Profile",
+                sectionSelfAudit = "DEVICE HEALTH SELF-AUDIT",
+                runSelfAudit = "Run 1-Tap Health Audit",
+                runningAudit = "Checking kernel, UClamp & SELinux...",
+                shareAudit = "Share Audit Summary",
+                auditPassAll = "All Health Checks Passed",
+                auditAttention = "Attention Recommended",
+                labelFramePacing = "Frame Pacing",
+                labelAppDna = "App DNA",
+                labelThermalEq = "Thermal Eq",
             )
         }
     }

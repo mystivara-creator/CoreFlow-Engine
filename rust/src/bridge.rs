@@ -1,6 +1,8 @@
 use crate::controller::{Controller, new_controller};
 use crate::preloader::{AppPreloader, new_app_preloader};
-use crate::thermal_trend::{ThermalTrendAnalyzer, new_thermal_trend_analyzer};
+use crate::thermal_trend::{
+    ThermalTrendAnalyzer, compute_thermal_equilibrium, new_thermal_trend_analyzer,
+};
 use crate::uclamp::compute_uclamp_target;
 
 #[cxx::bridge(namespace = "coreflow::engine")]
@@ -46,6 +48,8 @@ pub mod ffi {
         gpu_busy_pct: f64,
         render_pressure: f64,
         thermal_velocity_cpm: f64,
+        jank_ratio: f64,
+        app_uclamp_bias: f64,
     }
     struct UclampTarget {
         util_min: u32,
@@ -55,6 +59,21 @@ pub mod ffi {
         velocity_cpm: f64,
         stability_score: u32,
         seconds_to_trip: f64,
+    }
+    struct ThermalEquilibriumInput {
+        soc_temp_c: f64,
+        battery_temp_c: f64,
+        skin_temp_c: f64,
+        thermal_velocity_cpm: f64,
+        pid_capacity_scale: f64,
+        charging: bool,
+        bypass_active: bool,
+        is_launch_burst: bool,
+    }
+    struct ThermalEquilibriumOutput {
+        effective_scale: f64,
+        charging_damped: bool,
+        equilibrium_guard: bool,
     }
     struct PreloadPrediction {
         has_prediction: bool,
@@ -68,6 +87,7 @@ pub mod ffi {
         fn reset(self: &mut Controller);
 
         fn compute_uclamp_target(input: UclampInput) -> UclampTarget;
+        fn compute_thermal_equilibrium(input: ThermalEquilibriumInput) -> ThermalEquilibriumOutput;
 
         type ThermalTrendAnalyzer;
         fn new_thermal_trend_analyzer() -> Box<ThermalTrendAnalyzer>;
@@ -83,6 +103,8 @@ pub mod ffi {
         fn new_app_preloader() -> Box<AppPreloader>;
         fn record_launch(self: &mut AppPreloader, pkg_hash: u64);
         fn predict_next(self: &AppPreloader, current_pkg_hash: u64) -> PreloadPrediction;
+        fn export_state(self: &AppPreloader) -> String;
+        fn import_state(self: &mut AppPreloader, payload: &str) -> bool;
         fn reset(self: &mut AppPreloader);
     }
 }

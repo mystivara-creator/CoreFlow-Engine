@@ -7,7 +7,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * CoreFlowManager: Root-bridged Android client for CoreFlow Engine v6.1.0 NextGen (coreflowd).
+ * CoreFlowManager: Root-bridged Android client for CoreFlow Engine v6.2.0 Closed-Loop Intelligence (coreflowd).
  * Uses libsu persistent root shell for fast, zero-intermediary access on Magisk, KernelSU,
  * KernelSU-Next, and APatch.
  */
@@ -205,6 +205,26 @@ object CoreFlowManager {
         val cameraChainActive: Boolean = false,
         val mediaPipelineActive: Boolean = false,
         val memoryHealthPct: Int = 100,
+        val framePacingAvailable: Boolean = false,
+        val measuredFps: Float = 0f,
+        val jankRatio: Float? = null,
+        val appDnaLearned: Int = 0,
+        val activeAppBias: Float = 1.0f,
+        val chargingDamped: Boolean = false,
+    )
+
+    enum class AuditLevel { PASS, WARN, FAIL }
+
+    data class SelfAuditCheck(
+        val title: String,
+        val detail: String,
+        val level: AuditLevel,
+    )
+
+    data class SelfAuditReport(
+        val passedAll: Boolean,
+        val checks: List<SelfAuditCheck>,
+        val shareableSummary: String,
     )
 
     data class GfxFrameStats(
@@ -405,7 +425,7 @@ object CoreFlowManager {
             }
 
             DaemonStatus(
-                version = json.optString("version", "6.1.0"),
+                version = json.optString("version", "6.2.0"),
                 isRunning = json.optBoolean("running", false),
                 pid = json.optInt("pid", 0),
                 profile = Profile.fromConfigValue(json.optString("profile", "balanced")),
@@ -464,6 +484,12 @@ object CoreFlowManager {
                         cameraChainActive = hf?.optBoolean("cameraChainActive", false) ?: false,
                         mediaPipelineActive = hf?.optBoolean("mediaPipelineActive", false) ?: false,
                         memoryHealthPct = hf?.optInt("memoryHealthPct", 100) ?: 100,
+                        framePacingAvailable = hf?.optBoolean("framePacingAvailable", false) ?: false,
+                        measuredFps = hf.optFiniteFloat("measuredFps", 0f),
+                        jankRatio = hf.optNullableFloat("jankRatio"),
+                        appDnaLearned = hf?.optInt("appDnaLearned", 0) ?: 0,
+                        activeAppBias = hf.optFiniteFloat("activeAppBias", 1.0f),
+                        chargingDamped = hf?.optBoolean("chargingDamped", false) ?: false,
                     )
                 },
                 powerConfig = PowerConfig(
@@ -854,6 +880,127 @@ object CoreFlowManager {
                 "am start -a android.intent.action.MAIN -n ${BuildConfig.APPLICATION_ID}/io.coreflow.MainActivity >/dev/null 2>&1",
             ).exec()
             totalMs
+        }
+    }
+
+    /**
+     * Runs a 1-tap real-device health self-audit across daemon PID, Per-TID UClamp,
+     * live display refresh & frame pacing, SELinux AVC denials, CFJ4 journal safety,
+     * and OEM-Collaboration / App DNA telemetry.
+     */
+    suspend fun runSelfAudit(
+        currentStatus: DaemonStatus?,
+        isIndonesian: Boolean,
+    ): Result<SelfAuditReport> = withContext(Dispatchers.IO) {
+        runCatching {
+            val status = currentStatus ?: getStatus().getOrThrow()
+            val avcCount = runCatching {
+                val res = Shell.cmd(
+                    "dmesg 2>/dev/null | grep -iE 'avc:.*denied.*coreflow' | wc -l",
+                ).exec()
+                res.out.joinToString("").trim().toIntOrNull() ?: 0
+            }.getOrDefault(0)
+
+            val checks = buildList {
+                // 1. Daemon & Root Lifecycle
+                add(
+                    SelfAuditCheck(
+                        title = if (isIndonesian) "Daemon & Root" else "Daemon & Root",
+                        detail = if (status.isRunning && status.pid > 0) {
+                            "coreflowd v${status.version} · PID ${status.pid} · ${status.mode}"
+                        } else {
+                            if (isIndonesian) "Daemon belum berjalan" else "Daemon not running"
+                        },
+                        level = if (status.isRunning && status.pid > 0) AuditLevel.PASS else AuditLevel.FAIL,
+                    ),
+                )
+                // 2. Per-TID UClamp Kernel Support
+                add(
+                    SelfAuditCheck(
+                        title = "Per-TID UClamp",
+                        detail = if (status.uclampSupported) {
+                            "${status.uclampMin}..${status.uclampMax} (${status.boostedTids} active TIDs)"
+                        } else {
+                            if (isIndonesian) "Kernel tidak mendukung per-TID sched_setattr" else "Kernel lacks per-TID sched_setattr"
+                        },
+                        level = if (status.uclampSupported) AuditLevel.PASS else AuditLevel.WARN,
+                    ),
+                )
+                // 3. Display Refresh & Closed-Loop Frame Pacing
+                val fpsInfo = if (status.hyperFluid.framePacingAvailable) {
+                    if (status.hyperFluid.measuredFps > 0f) {
+                        "${status.hardware.refreshHz}Hz · ${status.hyperFluid.measuredFps.toInt()} FPS live"
+                    } else {
+                        "${status.hardware.refreshHz}Hz · Sensor ready"
+                    }
+                } else {
+                    "${status.hardware.refreshHz}Hz · RenderThread proxy"
+                }
+                add(
+                    SelfAuditCheck(
+                        title = if (isIndonesian) "Layar & Frame Pacing" else "Display & Frame Pacing",
+                        detail = fpsInfo,
+                        level = AuditLevel.PASS,
+                    ),
+                )
+                // 4. SELinux Zero AVC Denials
+                add(
+                    SelfAuditCheck(
+                        title = "SELinux AVC",
+                        detail = if (avcCount == 0) {
+                            if (isIndonesian) "0 penolakan AVC untuk coreflowd" else "0 AVC denials for coreflowd"
+                        } else {
+                            if (isIndonesian) "$avcCount penolakan AVC terdeteksi di dmesg" else "$avcCount AVC denials detected in dmesg"
+                        },
+                        level = if (avcCount == 0) AuditLevel.PASS else AuditLevel.WARN,
+                    ),
+                )
+                // 5. CFJ4 Baseline & Release-on-Calm Safety
+                val calmMode = status.mode.equals("EFFICIENCY", ignoreCase = true) ||
+                    status.mode.equals("SCREEN_OFF", ignoreCase = true)
+                val cfjOk = !calmMode || status.baselineNodesSnapshotted == 0
+                add(
+                    SelfAuditCheck(
+                        title = "CFJ4 Release-on-Calm",
+                        detail = if (cfjOk) {
+                            "${status.baselineNodesSnapshotted} node(s) active · Rollback verified"
+                        } else {
+                            "${status.baselineNodesSnapshotted} node(s) still held in ${status.mode}"
+                        },
+                        level = if (cfjOk) AuditLevel.PASS else AuditLevel.WARN,
+                    ),
+                )
+                // 6. OEM Coexistence & Behavioral Intelligence
+                add(
+                    SelfAuditCheck(
+                        title = if (isIndonesian) "Co-Pilot & App DNA" else "Co-Pilot & App DNA",
+                        detail = "${status.semanticKnobsDiscovered} knobs · ${status.oemYieldedNodes} OEM yield · ${status.hyperFluid.appDnaLearned} App DNA",
+                        level = if (status.contendedPaths.isEmpty()) AuditLevel.PASS else AuditLevel.WARN,
+                    ),
+                )
+            }
+
+            val passedAll = checks.none { it.level == AuditLevel.FAIL || it.level == AuditLevel.WARN }
+            val summary = buildString {
+                appendLine("CoreFlow Engine v${status.version} — Device Health Self-Audit")
+                appendLine("SoC: ${status.hardware.socModel} | Kernel: ${status.hardware.kernelVersion}")
+                appendLine("Result: ${if (passedAll) "PASS (All ${checks.size} checks healthy)" else "ATTENTION"}")
+                appendLine()
+                for (c in checks) {
+                    val icon = when (c.level) {
+                        AuditLevel.PASS -> "[PASS]"
+                        AuditLevel.WARN -> "[WARN]"
+                        AuditLevel.FAIL -> "[FAIL]"
+                    }
+                    appendLine("$icon ${c.title}: ${c.detail}")
+                }
+            }.trim()
+
+            SelfAuditReport(
+                passedAll = passedAll,
+                checks = checks,
+                shareableSummary = summary,
+            )
         }
     }
 

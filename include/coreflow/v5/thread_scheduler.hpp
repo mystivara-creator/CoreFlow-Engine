@@ -41,6 +41,8 @@ struct ThreadDemandContext {
     double gpu_busy_pct{0.0};     // Live GPU busy percentage (0..100)
     double render_pressure{0.0};  // Closed-loop RenderThread/GameThread CPU saturation (0.0..1.0)
     double thermal_velocity_cpm{0.0}; // Live SoC thermal slope (°C/min) from Rust OLS analyzer
+    double jank_ratio{-1.0};      // Live missed-frame ratio (0.0..1.0), -1.0 when unavailable
+    double app_uclamp_bias{1.0};  // Learned per-app UClamp bias (0.75..1.20)
 };
 
 class ThreadSchedulerActuator {
@@ -57,7 +59,7 @@ public:
     [[nodiscard]] bool probe_support() noexcept;
 
     // Computes hardware-calibrated (util_min, util_max) target from EAS silicon capacities,
-    // display refresh budget, live PSI/GPU load, context, profile, and PID thermal budget.
+    // display refresh budget, live PSI/GPU load, closed-loop jank, App DNA, and PID thermal budget.
     [[nodiscard]] static ThreadUclampTarget compute_target(
         ContextMode mode,
         PerformanceProfile profile,
@@ -65,8 +67,10 @@ public:
         bool thermal_guard,
         const ThreadDemandContext& demand = {}) noexcept;
 
-    // Applies per-TID uclamp to SurfaceFlinger + foreground app critical threads and
-    // cleanly resets any stale TIDs no longer in the active set.
+    // Applies role-tiered per-TID uclamp:
+    // - Tier 1 (SurfaceFlinger + primary UI/Render/Game threads): 100% of target util_min.
+    // - Tier 2 (helper_tids: hwuiTask/MediaCodec/AudioTrack/Camera workers): 65% of target util_min.
+    // Cleanly resets any stale TIDs no longer in the active sets.
     void apply(ContextMode mode,
                PerformanceProfile profile,
                double capacity_scale,
@@ -74,7 +78,8 @@ public:
                bool enabled,
                const std::vector<int32_t>& surfaceflinger_tids,
                const std::vector<int32_t>& foreground_tids,
-               const ThreadDemandContext& demand = {}) noexcept;
+               const ThreadDemandContext& demand = {},
+               const std::vector<int32_t>& helper_tids = {}) noexcept;
 
     // Restores all tracked TIDs to kernel defaults (0..1024).
     void reset_all() noexcept;

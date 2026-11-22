@@ -91,6 +91,29 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
         }
     };
 
+    // Closed-loop frame pacing feedback (ADPF-class):
+    // - Verified zero/near-zero jank (< 1.5% missed frames) -> gently trim floor to save power & heat.
+    // - Measured jank (>= 5% missed frames) -> inject proportional rescue headroom.
+    let jank_factor = if input.jank_ratio.is_finite() && input.jank_ratio >= 0.0 {
+        if input.jank_ratio < 0.015 && input.mode != MODE_LAUNCH_BURST {
+            if input.mode == MODE_GAMING { 0.88 } else { 0.84 }
+        } else if input.jank_ratio >= 0.05 {
+            let sev = ((input.jank_ratio - 0.05) / 0.25).clamp(0.0, 1.0);
+            1.0 + sev * 0.18
+        } else {
+            1.0
+        }
+    } else {
+        1.0
+    };
+
+    // Learned Per-App Behavioral DNA bias (defaults cleanly to 1.0 when unknown/unset).
+    let app_bias = if input.app_uclamp_bias.is_finite() && input.app_uclamp_bias > 0.0 {
+        input.app_uclamp_bias.clamp(0.75, 1.20)
+    } else {
+        1.0
+    };
+
     // Thermal-velocity pre-damping: gently ease floor (up to 12%) when heating rapidly (>= +1.8 C/min)
     // so sustained workloads stay smooth instead of slamming into OEM cliff-throttling.
     let velocity_damping = if input.thermal_velocity_cpm.is_finite() && input.thermal_velocity_cpm > 1.8
@@ -103,7 +126,8 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
 
     let mut target_max = (big_cap * bounded_scale).round().clamp(0.0, 1024.0) as u32;
     let max_safe_floor = big_cap * 0.75;
-    let base_min = (anchor_floor * profile_bias * bounded_scale.clamp(0.50, 1.0)).min(max_safe_floor);
+    let base_min = (anchor_floor * profile_bias * jank_factor * app_bias * bounded_scale.clamp(0.50, 1.0))
+        .min(max_safe_floor);
     let mut raw_min = base_min * velocity_damping;
 
     if input.thermal_guard {
@@ -137,6 +161,8 @@ mod tests {
             gpu_busy_pct: 40.0,
             render_pressure: 0.3,
             thermal_velocity_cpm: 0.0,
+            jank_ratio: -1.0,
+            app_uclamp_bias: 1.0,
         }
     }
 
@@ -165,6 +191,21 @@ mod tests {
     }
 
     #[test]
+    fn closed_loop_jank_trims_when_smooth_and_rescues_on_drops() {
+        let neutral = compute_uclamp_target(base_input(MODE_GAMING));
+        let mut smooth = base_input(MODE_GAMING);
+        smooth.jank_ratio = 0.0;
+        let trimmed = compute_uclamp_target(smooth);
+        assert!(trimmed.util_min < neutral.util_min);
+
+        let mut janky = base_input(MODE_GAMING);
+        janky.jank_ratio = 0.20;
+        let rescued = compute_uclamp_target(janky);
+        assert!(rescued.util_min > neutral.util_min);
+        assert!(rescued.util_min <= 768);
+    }
+
+    #[test]
     fn thermal_velocity_predamps_and_guard_clamps_safely() {
         let steady = compute_uclamp_target(base_input(MODE_GAMING));
         let mut heating = base_input(MODE_GAMING);
@@ -187,6 +228,8 @@ mod tests {
         bad.gpu_busy_pct = f64::NEG_INFINITY;
         bad.render_pressure = f64::NAN;
         bad.thermal_velocity_cpm = f64::NAN;
+        bad.jank_ratio = f64::NAN;
+        bad.app_uclamp_bias = f64::INFINITY;
         let out = compute_uclamp_target(bad);
         assert!(out.util_min <= out.util_max && out.util_max <= 1024);
     }

@@ -115,6 +115,93 @@ impl ThermalTrendAnalyzer {
     }
 }
 
+/// Dual-timescale thermal equilibrium planner separating fast CPU die transients
+/// from slow battery/chassis heat accumulation and charging/bypass thermal budgets.
+pub fn compute_thermal_equilibrium(
+    input: crate::bridge::ffi::ThermalEquilibriumInput,
+) -> crate::bridge::ffi::ThermalEquilibriumOutput {
+    let base_scale = if input.pid_capacity_scale.is_finite() {
+        input.pid_capacity_scale.clamp(0.25, 1.0)
+    } else {
+        1.0
+    };
+
+    let soc = if input.soc_temp_c.is_finite() && input.soc_temp_c > 0.0 {
+        input.soc_temp_c
+    } else {
+        -1.0
+    };
+    let batt = if input.battery_temp_c.is_finite() && input.battery_temp_c > 0.0 {
+        input.battery_temp_c
+    } else {
+        -1.0
+    };
+    let skin = if input.skin_temp_c.is_finite() && input.skin_temp_c > 0.0 {
+        input.skin_temp_c
+    } else {
+        -1.0
+    };
+    let vel = if input.thermal_velocity_cpm.is_finite() {
+        input.thermal_velocity_cpm
+    } else {
+        0.0
+    };
+
+    let mut scale = base_scale;
+    let mut charging_damped = false;
+    let mut equilibrium_guard = false;
+
+    // 1. Slow chassis / battery equilibrium loop (prevents sawtooth thermal cliff drops)
+    let chassis = if skin > 0.0 && batt > 0.0 {
+        skin.max(batt)
+    } else if skin > 0.0 {
+        skin
+    } else {
+        batt
+    };
+
+    if chassis >= 40.0 {
+        let excess = (chassis - 40.0).clamp(0.0, 8.0);
+        let eq_cap = (1.0 - excess * 0.045).clamp(0.55, 1.0);
+        scale = scale.min(eq_cap);
+        if chassis >= 44.0 {
+            equilibrium_guard = true;
+        }
+    }
+
+    // 2. Charging-aware vs Bypass-Charging-aware budget
+    // Hot active charging heats the battery & PMIC simultaneously; ease ceiling gently.
+    // When Bypass Charging is engaged, charging IC heat is removed -> unlock chassis budget.
+    if input.charging && !input.bypass_active && batt >= 39.0 {
+        let charge_excess = (batt - 39.0).clamp(0.0, 6.0);
+        let charge_cap = (0.92 - charge_excess * 0.035).clamp(0.65, 0.92);
+        if charge_cap < scale {
+            scale = charge_cap;
+            charging_damped = true;
+        }
+    }
+
+    // 3. Fast Die Guard: tolerate brief (< 2.5s) launch-burst die spikes up to 68 C when chassis
+    // is cool (< 38.5 C), but immediately damp sustained hot die (> 70 C or rapid heating).
+    if soc > 0.0 {
+        let cool_chassis_burst = input.is_launch_burst && (chassis < 0.0 || chassis < 38.5);
+        if !cool_chassis_burst && soc >= 70.0 {
+            let die_excess = (soc - 70.0).clamp(0.0, 15.0);
+            let die_cap = (0.94 - die_excess * 0.030).clamp(0.45, 0.94);
+            scale = scale.min(die_cap);
+        }
+        if soc >= 76.0 || (soc >= 70.0 && vel >= 6.0) {
+            equilibrium_guard = true;
+        }
+    }
+
+    crate::bridge::ffi::ThermalEquilibriumOutput {
+        effective_scale: scale.clamp(0.25, 1.0),
+        charging_damped,
+        equilibrium_guard,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +250,48 @@ mod tests {
         let after_wake = analyzer.push_sample(310_000, 32.0, 55.0);
         assert_eq!(after_wake.velocity_cpm, 0.0);
         assert_eq!(after_wake.stability_score, 100);
+    }
+
+    #[test]
+    fn dual_timescale_equilibrium_handles_burst_charging_and_bypass() {
+        use crate::bridge::ffi::ThermalEquilibriumInput;
+        let burst = compute_thermal_equilibrium(ThermalEquilibriumInput {
+            soc_temp_c: 64.0,
+            battery_temp_c: 36.0,
+            skin_temp_c: 36.5,
+            thermal_velocity_cpm: 4.0,
+            pid_capacity_scale: 1.0,
+            charging: false,
+            bypass_active: false,
+            is_launch_burst: true,
+        });
+        assert!((burst.effective_scale - 1.0).abs() < 1e-9);
+        assert!(!burst.equilibrium_guard);
+
+        let hot_chg = compute_thermal_equilibrium(ThermalEquilibriumInput {
+            soc_temp_c: 55.0,
+            battery_temp_c: 41.0,
+            skin_temp_c: 40.0,
+            thermal_velocity_cpm: 1.0,
+            pid_capacity_scale: 1.0,
+            charging: true,
+            bypass_active: false,
+            is_launch_burst: false,
+        });
+        assert!(hot_chg.charging_damped);
+        assert!(hot_chg.effective_scale < 0.90);
+
+        let bypass = compute_thermal_equilibrium(ThermalEquilibriumInput {
+            soc_temp_c: 55.0,
+            battery_temp_c: 41.0,
+            skin_temp_c: 40.0,
+            thermal_velocity_cpm: 1.0,
+            pid_capacity_scale: 1.0,
+            charging: true,
+            bypass_active: true,
+            is_launch_burst: false,
+        });
+        assert!(!bypass.charging_damped);
+        assert!(bypass.effective_scale > hot_chg.effective_scale);
     }
 }

@@ -220,8 +220,35 @@ int main() {
     assert(read_file(vfs_cp) == "100");
     assert(!baseline.has_active_mutations());
 
+    // 4. Cross-SoC MediaTek GED/FPSGO & Samsung/Exynos /sys/class/panel discovery
+    const fs::path mtk_ged = sys / "module/ged/parameters/ged_boost_enable";
+    const fs::path mtk_fpsgo = sys / "module/mtk_fpsgo/parameters/boost_affinity";
+    const fs::path exynos_panel = sys / "class/panel/panel0/refresh_rate";
+    write_file(mtk_ged, "0\n");
+    write_file(mtk_fpsgo, "0\n");
+    write_file(exynos_panel, "90\n");
+
+    HardwareTopology mtk_topo{};
+    SemanticKnobEngine mtk_engine(baseline, oem_map);
+    mtk_engine.discover(mtk_topo, sys.string(), proc.string());
+    assert(mtk_engine.stats().gpu_knobs >= 1U);
+    assert(mtk_engine.stats().cpu_knobs >= 1U);
+    mtk_engine.apply(ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, 0.50, 0.5, 4000);
+    assert(read_file(mtk_ged) == "1");
+    assert(read_file(mtk_fpsgo) == "1");
+    mtk_engine.apply(ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, 0.50, 0.5, 5000);
+    assert(read_file(mtk_ged) == "0");
+    assert(read_file(mtk_fpsgo) == "0");
+    assert(!baseline.has_active_mutations());
+
+    // Remove mi_display so probe falls back to /sys/class/panel (Samsung/OnePlus/Oppo)
+    fs::remove_all(sys / "class/mi_display");
+    HardwareProbe exynos_probe(sys.string(), proc.string());
+    const auto exynos_topo = exynos_probe.discover();
+    assert(exynos_topo.refresh_hz == 90U);
+
     (void)::unsetenv("COREFLOW_TEST_STATE_DIR");
     fs::remove_all(root);
-    std::cout << "v6.1 Semantic Co-Pilot & OEM Collaboration tests passed\n";
+    std::cout << "v6.2 Cross-SoC Semantic Co-Pilot & OEM Collaboration tests passed\n";
     return 0;
 }
