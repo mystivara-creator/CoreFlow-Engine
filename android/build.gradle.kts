@@ -25,6 +25,10 @@ android {
         targetSdk = 36
         versionCode = 63000 + ciBuildNumber
         versionName = "6.0.0-R"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     signingConfigs {
@@ -98,6 +102,9 @@ dependencies {
 
     // Persistent root shell for Magisk, KernelSU, KernelSU-Next & APatch
     implementation("com.github.topjohnwu.libsu:core:6.0.0")
+
+    // Phase B: On-demand ONNX Runtime (lazy-loaded on dialogue/analysis open, closed on ON_STOP)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
 
     testImplementation("junit:junit:4.13.2")
 }

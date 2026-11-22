@@ -113,7 +113,31 @@ data class AppStrings(
     val updateAppLabel: String,
     val updateSkewWarning: String,
     val updatePendingHint: String,
+    val labelJankRisk: String,
+    val labelWorkload: String,
+    val runSessionAnalysis: String,
+    val sectionNeuralModel: String,
+    val importCfw2Title: String,
+    val importCfw2Summary: String,
+    val removeCfw2Title: String,
+    val removeCfw2Summary: String,
 ) {
+    fun humanizeAiBackend(raw: String): String = when (raw.lowercase(Locale.US)) {
+        "onnx-runtime-live" -> "ONNX Live"
+        "cfw2-micro-mlp" -> "CFW2 MLP"
+        "custom-cfw-rls-mlp" -> "CFW1 MLP"
+        else -> "Embedded RLS"
+    }
+
+    fun humanizeWorkload(raw: String): String = when (raw.lowercase(Locale.US)) {
+        "thermal_surge" -> if (isIndonesian) "Lonjakan Suhu" else "Thermal Surge"
+        "gpu_heavy" -> "GPU Heavy"
+        "io_bound" -> "I/O Bound"
+        "interactive" -> if (isIndonesian) "Interaktif" else "Interactive"
+        "idle" -> if (isIndonesian) "Tenang" else "Idle"
+        else -> if (isIndonesian) "Seimbang" else "Balanced"
+    }
+
     fun humanizeMode(mode: String): String = when (mode.uppercase(Locale.US)) {
         "LAUNCH_BURST" -> if (isIndonesian) "Lonjakan Buka" else "Launch Burst"
         "INTERACTIVE" -> if (isIndonesian) "Interaktif" else "Interactive"
@@ -279,6 +303,14 @@ fun rememberAppStrings(languageIndex: Int): AppStrings {
                 updateAppLabel = "Companion App",
                 updateSkewWarning = "Versi Modul & Aplikasi berbeda — samakan keduanya agar protokol telemetri tetap sinkron.",
                 updatePendingHint = "Versi baru sudah tercatat di update.json cabang main, tetapi GitHub Release publik belum diterbitkan. Cek halaman Releases atau Actions.",
+                labelJankRisk = "Risiko Jank",
+                labelWorkload = "Kelas Beban",
+                runSessionAnalysis = "Analisis Sesi (AI ONNX)",
+                sectionNeuralModel = "MODEL NEURAL DAEMON (CFW2 / ONNX)",
+                importCfw2Title = "Impor Model CFW2 (.cfw2)",
+                importCfw2Summary = "Pasang model mikro 1,7 KB hasil kalibrasi --diag (verifikasi CRC32 otomatis)",
+                removeCfw2Title = "Kembalikan ke Model Bawaan",
+                removeCfw2Summary = "Hapus equilibrium.cfw2 kustom dan gunakan Embedded RLS-MLP bawaan",
             )
         } else {
             AppStrings(
@@ -395,6 +427,14 @@ fun rememberAppStrings(languageIndex: Int): AppStrings {
                 updateAppLabel = "Companion App",
                 updateSkewWarning = "Module and App versions differ — keep both aligned for full telemetry parity.",
                 updatePendingHint = "A newer version is staged in main's update.json, but the public GitHub Release has not been published yet.",
+                labelJankRisk = "Jank Risk",
+                labelWorkload = "Workload",
+                runSessionAnalysis = "AI Session Analysis (ONNX)",
+                sectionNeuralModel = "DAEMON NEURAL MODEL (CFW2 / ONNX)",
+                importCfw2Title = "Import CFW2 Model (.cfw2)",
+                importCfw2Summary = "Install 1.7 KB micro-model calibrated from --diag (CRC32 verified)",
+                removeCfw2Title = "Revert to Built-in Model",
+                removeCfw2Summary = "Remove custom equilibrium.cfw2 and return to Embedded RLS-MLP",
             )
         }
     }

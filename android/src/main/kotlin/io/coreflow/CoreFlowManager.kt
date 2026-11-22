@@ -305,6 +305,9 @@ object CoreFlowManager {
         val ioPsi: Float?,
         val aiPredicted10s: Float,
         val aiConfidence: Float,
+        val aiJankRisk: Float = 0f,
+        val aiWorkloadClass: String = "balanced",
+        val aiBackend: String = "embedded-rls-mlp",
         val baselineNodesSnapshotted: Int,
         val recoveryPending: Boolean,
         val thermalSource: String,
@@ -530,6 +533,9 @@ object CoreFlowManager {
                 ioPsi = json.optNullableFloat("ioPsi"),
                 aiPredicted10s = json.optFiniteFloat("aiPredicted10s", 0f),
                 aiConfidence = json.optFiniteFloat("aiConfidence", 0f),
+                aiJankRisk = json.optFiniteFloat("aiJankRisk", 0f).coerceIn(0f, 1f),
+                aiWorkloadClass = json.optString("aiWorkloadClass", "balanced").ifBlank { "balanced" },
+                aiBackend = json.optString("aiBackend", "embedded-rls-mlp").ifBlank { "embedded-rls-mlp" },
                 baselineNodesSnapshotted = json.optInt("baselineNodesSnapshotted", 0),
                 recoveryPending = json.optBoolean("recoveryPending", false),
                 thermalSource = json.optString("thermalSource", "oem_policy"),
@@ -1157,6 +1163,68 @@ object CoreFlowManager {
                 installed = fb.isNotEmpty(),
             )
         }
+
+    data class InstalledNeuralModelInfo(
+        val cfw2Installed: Boolean = false,
+        val cfw2Bytes: Long = 0L,
+        val onnxInstalled: Boolean = false,
+        val onnxBytes: Long = 0L,
+    )
+
+    suspend fun getInstalledNeuralModelInfo(): InstalledNeuralModelInfo = withContext(Dispatchers.IO) {
+        val cmd =
+            "CFW=/data/adb/coreflow/models/equilibrium.cfw2; " +
+                "ONX=/data/adb/coreflow/models/equilibrium.onnx; " +
+                "CFW_SZ=0; [ -f \"\$CFW\" ] && CFW_SZ=\$(wc -c < \"\$CFW\" 2>/dev/null || echo 0); " +
+                "ONX_SZ=0; [ -f \"\$ONX\" ] && ONX_SZ=\$(wc -c < \"\$ONX\" 2>/dev/null || echo 0); " +
+                "printf '%s %s\\n' \"\$CFW_SZ\" \"\$ONX_SZ\""
+        val res = Shell.cmd(cmd).exec()
+        val line = res.out.lastOrNull()?.trim().orEmpty()
+        val parts = line.split(Regex("\\s+"))
+        val cfwBytes = parts.getOrNull(0)?.toLongOrNull() ?: 0L
+        val onnxBytes = parts.getOrNull(1)?.toLongOrNull() ?: 0L
+        InstalledNeuralModelInfo(
+            cfw2Installed = cfwBytes > 0L,
+            cfw2Bytes = cfwBytes,
+            onnxInstalled = onnxBytes > 0L,
+            onnxBytes = onnxBytes,
+        )
+    }
+
+    suspend fun installCfw2Model(bytes: ByteArray): Result<CoreFlowOnnxNlu.Cfw2ValidationResult> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val check = CoreFlowOnnxNlu.Cfw2ModelValidator.validate(bytes)
+                require(check.valid) { check.error ?: "Invalid CFW2 model binary" }
+                val b64 = java.util.Base64.getEncoder().encodeToString(bytes)
+                val cmd =
+                    "mkdir -p /data/adb/coreflow/models && " +
+                        "chmod 0755 /data/adb/coreflow/models && " +
+                        "TMP=/data/adb/coreflow/models/equilibrium.cfw2.tmp.\$\$ && " +
+                        "printf '%s' '$b64' | base64 -d > \"\$TMP\" && " +
+                        "chown 0:0 \"\$TMP\" && chmod 0644 \"\$TMP\" && " +
+                        "mv -f \"\$TMP\" /data/adb/coreflow/models/equilibrium.cfw2 && " +
+                        "PID=\$(cat /data/adb/coreflow/coreflowd.pid 2>/dev/null || true); " +
+                        "if [ -n \"\$PID\" ] && kill -0 \"\$PID\" 2>/dev/null; then kill -TERM \"\$PID\" 2>/dev/null || true; sleep 0.4; fi; " +
+                        "$RESOLVE_SERVICE_SCRIPT; " +
+                        "if [ -f \"\$SVC\" ]; then COREFLOW_SKIP_BOOT_WAIT=1 sh \"\$SVC\"; fi"
+                execRootCommand(cmd)
+                check
+            }
+        }
+
+    suspend fun removeCustomCfw2Model(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cmd =
+                "rm -f /data/adb/coreflow/models/equilibrium.cfw2 && " +
+                    "PID=\$(cat /data/adb/coreflow/coreflowd.pid 2>/dev/null || true); " +
+                    "if [ -n \"\$PID\" ] && kill -0 \"\$PID\" 2>/dev/null; then kill -TERM \"\$PID\" 2>/dev/null || true; sleep 0.4; fi; " +
+                    "$RESOLVE_SERVICE_SCRIPT; " +
+                    "if [ -f \"\$SVC\" ]; then COREFLOW_SKIP_BOOT_WAIT=1 sh \"\$SVC\"; fi"
+            execRootCommand(cmd)
+            Unit
+        }
+    }
 
     private fun execRootCommand(command: String): String {
         val result = Shell.cmd(command).exec()

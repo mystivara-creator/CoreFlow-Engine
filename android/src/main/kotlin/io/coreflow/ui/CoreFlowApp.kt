@@ -127,6 +127,7 @@ fun CoreFlowApp(
     var auditBusy by remember { mutableStateOf(false) }
     var updateReport by remember { mutableStateOf<CoreFlowUpdateChecker.UpdateCheckReport?>(null) }
     var updateBusy by remember { mutableStateOf(false) }
+    var neuralModelInfo by remember { mutableStateOf(CoreFlowManager.InstalledNeuralModelInfo()) }
 
     LaunchedEffect(pendingTab, pendingDialoguePrompt) {
         if (pendingTab != null || pendingDialoguePrompt != null) {
@@ -216,6 +217,9 @@ fun CoreFlowApp(
             isManualRefreshing = true
             hasRoot = CoreFlowManager.checkRootAccess()
             refreshStatus()
+            if (selectedTab == 4) {
+                neuralModelInfo = CoreFlowManager.getInstalledNeuralModelInfo()
+            }
             delay(360L)
             isManualRefreshing = false
         }
@@ -267,6 +271,42 @@ fun CoreFlowApp(
         }
     }
 
+    // SAF CFW2 Micro-Model Import Launcher (bounded <= 16 KB read + CRC32 validation before root install)
+    val importCfw2Launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            busyAction = true
+            runCatching {
+                val raw = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val out = java.io.ByteArrayOutputStream()
+                    val chunk = ByteArray(4096)
+                    var total = 0
+                    while (total <= 16384) {
+                        val n = stream.read(chunk)
+                        if (n <= 0) break
+                        out.write(chunk, 0, n)
+                        total += n
+                    }
+                    if (total > 16384) error("File exceeds 16 KB CFW2 safety cap")
+                    out.toByteArray()
+                } ?: error("Cannot read CFW2 file")
+                CoreFlowManager.installCfw2Model(raw).getOrThrow()
+            }.onSuccess { info ->
+                delay(600L)
+                neuralModelInfo = CoreFlowManager.getInstalledNeuralModelInfo()
+                refreshStatus()
+                snackbarHostState.showSnackbar(
+                    "CFW2 installed (${info.sizeBytes} B, ${info.activation}, ${info.crc32Hex})",
+                )
+            }.onFailure { err ->
+                snackbarHostState.showSnackbar(err.message ?: "CFW2 import failed")
+            }
+            busyAction = false
+        }
+    }
+
     LaunchedEffect(pollIntervalIndex) {
         hasRoot = CoreFlowManager.checkRootAccess()
         val intervalMs = AppPreferences.pollIntervalValuesMs[pollIntervalIndex]
@@ -281,6 +321,9 @@ fun CoreFlowApp(
             appsLoading = true
             installedApps = AppCatalog.loadLaunchableApps(context)
             appsLoading = false
+        }
+        if (selectedTab == 4) {
+            neuralModelInfo = CoreFlowManager.getInstalledNeuralModelInfo()
         }
     }
 
@@ -647,6 +690,26 @@ fun CoreFlowApp(
                         },
                         onImportProfile = {
                             importProfileLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        },
+                        neuralModelInfo = neuralModelInfo,
+                        onImportCfw2 = {
+                            importCfw2Launcher.launch(arrayOf("application/octet-stream", "*/*"))
+                        },
+                        onRemoveCfw2 = {
+                            scope.launch {
+                                busyAction = true
+                                CoreFlowManager.removeCustomCfw2Model()
+                                    .onSuccess {
+                                        delay(600L)
+                                        neuralModelInfo = CoreFlowManager.getInstalledNeuralModelInfo()
+                                        refreshStatus()
+                                        snackbarHostState.showSnackbar("Reverted to built-in Embedded RLS-MLP")
+                                    }
+                                    .onFailure { err ->
+                                        snackbarHostState.showSnackbar(err.message ?: "Failed to remove CFW2")
+                                    }
+                                busyAction = false
+                            }
                         },
                         onRunSelfAudit = {
                             scope.launch {

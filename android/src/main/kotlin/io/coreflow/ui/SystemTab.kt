@@ -90,6 +90,9 @@ fun SystemTab(
     onNavBadgesChange: (Boolean) -> Unit,
     onExportProfile: () -> Unit,
     onImportProfile: () -> Unit,
+    neuralModelInfo: CoreFlowManager.InstalledNeuralModelInfo = CoreFlowManager.InstalledNeuralModelInfo(),
+    onImportCfw2: () -> Unit = {},
+    onRemoveCfw2: () -> Unit = {},
     onRunSelfAudit: () -> Unit,
     onShareSelfAudit: (String) -> Unit,
     onLoadJournal: () -> Unit,
@@ -208,6 +211,39 @@ fun SystemTab(
                         enabled = !busy,
                         onClick = onImportProfile,
                     )
+                }
+            }
+
+            // Phase A/B Daemon Neural Model Manager (CFW2 Micro-MLP / Optional ONNX Add-on)
+            item { SmallTitle(text = strings.sectionNeuralModel) }
+            item {
+                val activeBackend = status?.let { strings.humanizeAiBackend(it.aiBackend) } ?: "Embedded RLS"
+                val modelStatusSummary = buildString {
+                    append(if (strings.isIndonesian) "Mesin aktif: $activeBackend" else "Active engine: $activeBackend")
+                    if (neuralModelInfo.cfw2Installed) {
+                        append(" · equilibrium.cfw2 (${neuralModelInfo.cfw2Bytes} B)")
+                    }
+                    if (neuralModelInfo.onnxInstalled) {
+                        append(" · equilibrium.onnx (${neuralModelInfo.onnxBytes / 1024L} KB)")
+                    }
+                }
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    ArrowPreference(
+                        title = strings.importCfw2Title,
+                        summary = "$modelStatusSummary\n${strings.importCfw2Summary}",
+                        startAction = { SettingLeadingIcon(MiuixIcons.File) },
+                        enabled = !busy,
+                        onClick = onImportCfw2,
+                    )
+                    if (neuralModelInfo.cfw2Installed) {
+                        ArrowPreference(
+                            title = strings.removeCfw2Title,
+                            summary = strings.removeCfw2Summary,
+                            startAction = { SettingLeadingIcon(MiuixIcons.Layers) },
+                            enabled = !busy,
+                            onClick = onRemoveCfw2,
+                        )
+                    }
                 }
             }
 

@@ -90,9 +90,12 @@ Offset  Size  Field
 
 ---
 
-## 5. Phase B Handoff (Companion App On-Demand ONNX Runtime)
+## 5. Phase B Implementation (Companion App On-Demand ONNX Runtime)
 
-Planned for the follow-up PR after Phase A merges:
-- Add `com.microsoft.onnxruntime:onnxruntime-android` strictly inside `android/` (zero impact on `coreflowd` daemon).
-- **Lifecycle Discipline:** Lazy-load `OrtSession` only when the user opens `CFAE TELEMETRY LINK` or runs Session Anomaly Analysis; deterministically `close()` on `Lifecycle.Event.ON_STOP` so background RAM overhead is `0 MB`.
-- Use compact INT8 intent/anomaly `.onnx` models to augment [`CoreFlowDialogueEngine.kt`](../../android/src/main/kotlin/io/coreflow/CoreFlowDialogueEngine.kt) with free-form Indonesian/English NLU while keeping deterministic telemetry grounding authoritative.
+Implemented alongside Phase A in PR #49 (`android/`):
+- Added `com.microsoft.onnxruntime:onnxruntime-android:1.19.2` (strictly `arm64-v8a` ABI filter + R8 keep rules, **0 bytes** in `coreflowd` module ZIP).
+- **Lifecycle Discipline ([`CoreFlowOnnxNlu.kt`](../../android/src/main/kotlin/io/coreflow/CoreFlowOnnxNlu.kt)):** Lazy-loads `OrtSession` (single-threaded, arena-free) only when the user opens `LiveFeedTab` (`CFAE TELEMETRY LINK`) or runs **AI Session Analysis**; deterministically closes sessions on `Lifecycle.Event.ON_STOP` & `onDispose` so background RAM overhead is strictly `0 MB`.
+- **Compact On-Device Models (`tools/train_companion_onnx.py`):**
+  - `android/src/main/assets/cfae_nlu_intent.onnx` (~34 KB, opset-13, `256→32→11` FNV-1a signed feature hashing MLP): augments [`CoreFlowDialogueEngine.kt`](../../android/src/main/kotlin/io/coreflow/CoreFlowDialogueEngine.kt) with free-form Indonesian/English colloquial NLU while keeping deterministic sovereign guardrails and live telemetry grounding authoritative.
+  - `android/src/main/assets/cfae_session_anomaly.onnx` (~1.2 KB, opset-13, `8→16→5` MLP): 1-tap root-cause session anomaly analysis (`HEALTHY`, `THERMAL_SATURATION`, `FAST_CHARGE_HEAT`, `STUTTER_IO_CONTENTION`, `EXTERNAL_TAMPER`).
+- **Daemon Model Manager (`SystemTab.kt` + `CoreFlowManager.kt`):** Displays live daemon AI backend/jank risk/workload class and enables validated SAF import/removal of custom 1.7 KB `.cfw2` models (bounded <= 16 KB read, CRC32 & finite weight verification, atomic `chown 0:0` / `chmod 0644` install).

@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -37,13 +38,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.coreflow.CoreFlowDialogueEngine
 import io.coreflow.CoreFlowManager
+import io.coreflow.CoreFlowOnnxNlu
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -81,6 +87,8 @@ fun LiveFeedTab(
     onSelectProfile: (CoreFlowManager.Profile) -> Unit = {},
     onResolveTamper: (String) -> Unit = {},
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val episodes = status?.episodes.orEmpty()
     val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
     val pullState = rememberPullToRefreshState()
@@ -88,10 +96,38 @@ fun LiveFeedTab(
     val messages = remember { mutableStateListOf<DialogueMessage>() }
     var inputQuery by remember { mutableStateOf("") }
     var msgSeq by remember { mutableStateOf(1L) }
+    var onnxNluReady by remember { mutableStateOf(false) }
+    var anomalyReport by remember { mutableStateOf<CoreFlowOnnxNlu.SessionAnomalyReport?>(null) }
+
+    // Phase B Lifecycle Discipline: lazy-load ONNX on Live AI view open, deterministically close on ON_STOP (0 MB background RAM)
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> {
+                    onnxNluReady = CoreFlowOnnxNlu.open(context)
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    CoreFlowOnnxNlu.close()
+                    onnxNluReady = false
+                }
+                else -> Unit
+            }
+        }
+        onnxNluReady = CoreFlowOnnxNlu.open(context)
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            CoreFlowOnnxNlu.close()
+            onnxNluReady = false
+        }
+    }
 
     fun submitQuery(raw: String) {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return
+        if (!CoreFlowOnnxNlu.isLoaded) {
+            onnxNluReady = CoreFlowOnnxNlu.open(context)
+        }
         messages.add(DialogueMessage(id = msgSeq++, fromUser = true, text = trimmed))
         val res = CoreFlowDialogueEngine.evaluate(
             rawQuery = trimmed,
@@ -193,6 +229,9 @@ fun LiveFeedTab(
                             )
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (onnxNluReady) {
+                                BadgeTag("ONNX NLU", Color(0xFFA78BFA))
+                            }
                             BadgeTag("0444: $lockedNodes", Color(0xFF38BDF8))
                             BadgeTag(
                                 String.format(Locale.US, "BUS %.2fx", busScale),
@@ -369,6 +408,20 @@ fun LiveFeedTab(
                     else -> Color(0xFF22C55E)
                 }
 
+                val jankRiskPct = status?.let { (it.aiJankRisk * 100f).toInt().coerceIn(0, 100) }
+                val jankAccent = when {
+                    jankRiskPct == null -> Color(0xFF64748B)
+                    jankRiskPct >= 60 -> Color(0xFFEF4444)
+                    jankRiskPct >= 30 -> Color(0xFFF59E0B)
+                    else -> Color(0xFF22C55E)
+                }
+                val backendLabel = status?.let { strings.humanizeAiBackend(it.aiBackend) } ?: "--"
+                val backendColor = when (status?.aiBackend) {
+                    "onnx-runtime-live" -> Color(0xFFA78BFA)
+                    "cfw2-micro-mlp" -> Color(0xFF38BDF8)
+                    else -> sourceColor
+                }
+
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     insideMargin = PaddingValues(15.dp),
@@ -402,7 +455,10 @@ fun LiveFeedTab(
                             )
                         }
                         Spacer(Modifier.size(8.dp))
-                        BadgeTag(sourceLabel, sourceColor)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            BadgeTag(backendLabel, backendColor)
+                            BadgeTag(sourceLabel, sourceColor)
+                        }
                     }
 
                     Spacer(Modifier.height(12.dp))
@@ -419,15 +475,15 @@ fun LiveFeedTab(
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                         MetricPill(
-                            label = strings.labelConfidence,
-                            value = status?.let { "${(it.aiConfidence * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
-                            accent = Color(0xFF38BDF8),
+                            label = strings.labelJankRisk,
+                            value = jankRiskPct?.let { "$it%" } ?: "--",
+                            accent = jankAccent,
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                         MetricPill(
-                            label = strings.labelCpuLoad,
-                            value = status?.let { "${it.cpuUtilPct.toInt().coerceIn(0, 100)}%" } ?: "--",
-                            accent = Color(0xFFA78BFA),
+                            label = strings.labelConfidence,
+                            value = status?.let { "${(it.aiConfidence * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
+                            accent = Color(0xFF38BDF8),
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                     }
@@ -440,17 +496,83 @@ fun LiveFeedTab(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         MetricPill(
+                            label = strings.labelWorkload,
+                            value = status?.let { strings.humanizeWorkload(it.aiWorkloadClass) } ?: "--",
+                            accent = Color(0xFFA78BFA),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        MetricPill(
                             label = strings.labelTrend,
                             value = strings.formatTrend(vel),
                             accent = trendColor,
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                         MetricPill(
-                            label = "Render",
-                            value = status?.let { "${(it.renderPressure * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
+                            label = strings.labelCpuLoad,
+                            value = status?.let { "${it.cpuUtilPct.toInt().coerceIn(0, 100)}%" } ?: "--",
                             accent = Color(0xFF10B981),
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+                    TextButton(
+                        text = strings.runSessionAnalysis,
+                        onClick = {
+                            if (!CoreFlowOnnxNlu.isLoaded) {
+                                onnxNluReady = CoreFlowOnnxNlu.open(context)
+                            }
+                            anomalyReport = CoreFlowOnnxNlu.analyzeSession(status, strings.isIndonesian)
+                        },
+                        enabled = status != null,
+                        colors = ButtonDefaults.textButtonColorsPrimary(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    anomalyReport?.let { rep ->
+                        val anomColor = when (rep.category) {
+                            CoreFlowOnnxNlu.AnomalyCategory.HEALTHY -> Color(0xFF22C55E)
+                            CoreFlowOnnxNlu.AnomalyCategory.THERMAL_SATURATION,
+                            CoreFlowOnnxNlu.AnomalyCategory.EXTERNAL_TAMPER,
+                            -> Color(0xFFEF4444)
+                            else -> Color(0xFFF59E0B)
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(anomColor.copy(alpha = 0.10f))
+                                .border(BorderStroke(0.75.dp, anomColor.copy(alpha = 0.35f)), RoundedCornerShape(12.dp))
+                                .padding(12.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = rep.title,
+                                    style = MiuixTheme.textStyles.body2,
+                                    fontWeight = FontWeight.Bold,
+                                    color = anomColor,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                BadgeTag("${rep.backendName} ${(rep.confidence * 100f).toInt()}%", anomColor)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = rep.summary,
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurface,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = rep.recommendation,
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                        }
                     }
                 }
             }

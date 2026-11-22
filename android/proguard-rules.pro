@@ -6,3 +6,5 @@
 -keep class io.coreflow.CoreFlowBypassTileService { *; }
 -keep class io.coreflow.CoreFlowThermalReceiver { *; }
 -keep class io.coreflow.CoreFlowOverlayService { *; }
+-keep class ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**
