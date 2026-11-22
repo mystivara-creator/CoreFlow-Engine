@@ -713,6 +713,47 @@ HardwareTopology HardwareProbe::discover() const noexcept {
                 }
             }
         }
+
+        // One-shot scan of /proc/interrupts to cache the display DSI/DRM/MDP VBlank IRQ token
+        // so FramePacingSensor never rescans IRQ metadata on custom kernels lacking vendor FPS sysfs.
+        const std::string irq_raw = read_bounded(proc / "interrupts", 131072U);
+        if (!irq_raw.empty()) {
+            std::istringstream irq_ss(irq_raw);
+            std::string line;
+            uint64_t best_score = 0U;
+            std::string best_token;
+            while (std::getline(irq_ss, line)) {
+                const std::string low = to_lower_copy(line);
+                uint64_t weight = 0U;
+                if (low.find("vblank") != std::string::npos || low.find("te_irq") != std::string::npos) {
+                    weight = 4U;
+                } else if (low.find("mdss") != std::string::npos || low.find("sde") != std::string::npos ||
+                           low.find("dpu") != std::string::npos || low.find("exynos-drm") != std::string::npos ||
+                           low.find("decon") != std::string::npos || low.find("mtk_disp") != std::string::npos) {
+                    weight = 3U;
+                } else if (low.find("dsi") != std::string::npos || low.find("disp") != std::string::npos ||
+                           low.find("ovl") != std::string::npos) {
+                    weight = 2U;
+                }
+                if (weight == 0U) continue;
+                std::istringstream ls(line);
+                std::string tok;
+                if (!(ls >> tok) || tok.empty() || tok.back() != ':') continue;
+                uint64_t total_irqs = 0U;
+                std::string col;
+                while (ls >> col) {
+                    uint64_t n = 0U;
+                    if (!parse_u64(col, n)) break;
+                    total_irqs += n;
+                }
+                const uint64_t score = weight * 1'000'000'000ULL + std::min<uint64_t>(total_irqs, 999'999'999ULL);
+                if (score > best_score) {
+                    best_score = score;
+                    best_token = tok;
+                }
+            }
+            topo.vblank_irq_token = std::move(best_token);
+        }
     }
 
     // 8. Cgroup v2 topology (dynamic via MountTopologyResolver, never hardcoded vendor paths)

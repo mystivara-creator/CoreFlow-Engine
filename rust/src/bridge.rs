@@ -1,4 +1,5 @@
 use crate::controller::{Controller, new_controller};
+use crate::orchestrator::compute_symbiotic_plan;
 use crate::preloader::{AppPreloader, new_app_preloader};
 use crate::thermal_trend::{
     ThermalTrendAnalyzer, compute_thermal_equilibrium, new_thermal_trend_analyzer,
@@ -50,10 +51,35 @@ pub mod ffi {
         thermal_velocity_cpm: f64,
         jank_ratio: f64,
         app_uclamp_bias: f64,
+        feedforward_freeze: bool,
+        symbiotic_cpu_scale: f64,
     }
     struct UclampTarget {
         util_min: u32,
         util_max: u32,
+    }
+    struct SymbioticInput {
+        little_freq_ratio: f64,
+        mid_freq_ratio: f64,
+        big_freq_ratio: f64,
+        cpu_util_pct: f64,
+        render_pressure: f64,
+        gpu_busy_pct: f64,
+        cpu_psi: f64,
+        mem_psi: f64,
+        io_psi: f64,
+        avail_ram_ratio: f64,
+        capacity_scale: f64,
+        thermal_guard: bool,
+    }
+    struct SymbioticPlan {
+        regime: u8,
+        cluster_imbalance: f64,
+        cpu_uclamp_scale: f64,
+        helper_uclamp_ratio: f64,
+        boost_gpu_memory_supply: bool,
+        io_supply_boost: bool,
+        encourage_cluster_spread: bool,
     }
     struct ThermalTrendResult {
         velocity_cpm: f64,
@@ -87,6 +113,7 @@ pub mod ffi {
         fn reset(self: &mut Controller);
 
         fn compute_uclamp_target(input: UclampInput) -> UclampTarget;
+        fn compute_symbiotic_plan(input: SymbioticInput) -> SymbioticPlan;
         fn compute_thermal_equilibrium(input: ThermalEquilibriumInput) -> ThermalEquilibriumOutput;
 
         type ThermalTrendAnalyzer;

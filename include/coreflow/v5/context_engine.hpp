@@ -30,6 +30,11 @@ enum class ContextMode : uint8_t {
     Excluded = 5,
 };
 
+enum class AppEngineClass : uint8_t {
+    StandardUi = 0,
+    HeavyGame3D = 1,
+};
+
 struct ForegroundAppInfo {
     int32_t pid{0};
     std::string package_name;
@@ -39,6 +44,7 @@ struct ForegroundAppInfo {
     bool has_render_thread{false};
     bool is_camera_app{false};
     bool has_media_thread{false};
+    AppEngineClass engine_class{AppEngineClass::StandardUi};
 };
 
 struct ContextSignalInput {
@@ -131,6 +137,7 @@ private:
     mutable std::vector<int32_t> cached_fg_helper_tids_;
     mutable bool cached_fg_has_game_thread_{false};
     mutable bool cached_fg_has_media_thread_{false};
+    mutable AppEngineClass cached_fg_engine_class_{AppEngineClass::StandardUi};
 };
 
 } // namespace coreflow::v5

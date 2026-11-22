@@ -101,6 +101,8 @@ ThreadUclampTarget ThreadSchedulerActuator::compute_target(
         .thermal_velocity_cpm = demand.thermal_velocity_cpm,
         .jank_ratio = demand.jank_ratio,
         .app_uclamp_bias = demand.app_uclamp_bias,
+        .feedforward_freeze = demand.feedforward_freeze,
+        .symbiotic_cpu_scale = demand.symbiotic_cpu_scale,
     };
     const auto out = coreflow::engine::compute_uclamp_target(in);
     return {out.util_min, out.util_max};
@@ -134,8 +136,11 @@ void ThreadSchedulerActuator::apply(
         return;
     }
 
+    const double helper_ratio = std::isfinite(demand.helper_uclamp_ratio)
+        ? std::clamp(demand.helper_uclamp_ratio, 0.55, 0.85)
+        : 0.65;
     const uint32_t helper_min = static_cast<uint32_t>(
-        std::clamp<long>(std::lround(static_cast<double>(primary_target.util_min) * 0.65),
+        std::clamp<long>(std::lround(static_cast<double>(primary_target.util_min) * helper_ratio),
                          0L, static_cast<long>(primary_target.util_max)));
     const ThreadUclampTarget helper_target{helper_min, primary_target.util_max};
 

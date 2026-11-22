@@ -138,6 +138,7 @@ struct HardwareTopology {
     std::vector<std::string> drm_dpms_paths;
     std::vector<std::string> fb_blank_paths;
     std::vector<std::string> refresh_rate_paths;
+    std::string vblank_irq_token; // Cached display VSync/VBlank IRQ token from /proc/interrupts
 };
 
 class HardwareProbe {

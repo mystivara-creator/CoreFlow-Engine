@@ -15,6 +15,11 @@
 
 namespace coreflow::v6 {
 
+enum class EngineSignature : uint8_t {
+    StandardUi = 0,
+    HeavyGame3D = 1,
+};
+
 struct AppDnaEntry {
     std::string package_name;
     double uclamp_bias{1.0};        // 0.78..1.18 learned optimal UClamp multiplier
@@ -28,20 +33,25 @@ struct AppDnaEntry {
 class AppDnaStore {
 public:
     static constexpr size_t kMaxEntries = 64U;
+    static constexpr double kBayesianHeavyGamePrior = 1.10;
+    static constexpr uint32_t kBayesianPriorSamples = 3U;
 
     AppDnaStore() noexcept = default;
 
     // Loads existing DNA table from <state_dir>/app_dna.map (safe if missing/corrupt).
     void initialize(const std::string& state_dir) noexcept;
 
-    // Records a foreground app launch event.
-    void record_launch(const std::string& package_name, uint64_t now_ms) noexcept;
+    // Records a foreground app launch event with optional Bayesian engine-signature prior.
+    void record_launch(const std::string& package_name,
+                       uint64_t now_ms,
+                       EngineSignature signature = EngineSignature::StandardUi) noexcept;
 
     // Updates per-app EWMA behavioral DNA from live closed-loop jank & thermal slope.
     void observe(const std::string& package_name,
                  double jank_ratio,
                  double thermal_velocity_cpm,
-                 uint64_t now_ms) noexcept;
+                 uint64_t now_ms,
+                 EngineSignature signature = EngineSignature::StandardUi) noexcept;
 
     // Returns the learned optimal UClamp multiplier for this package (1.0 if unknown).
     [[nodiscard]] double uclamp_bias_for(const std::string& package_name) const noexcept;

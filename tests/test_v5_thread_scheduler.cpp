@@ -85,7 +85,28 @@ int main() {
     assert(kernel_state[5502].first == kernel_state[5501].first);
     assert(sched.stats().active_boosted_tids == 5U);
 
-    // 5. Entering Efficiency or Excluded resets all Tier-1 and Tier-2 tracked TIDs cleanly
+    // 5. Feed-Forward Pre-Emptive Cancel & Cooperative Cluster Co-Sharing (helper_uclamp_ratio)
+    ThreadDemandContext smooth_unfrozen = mid_soc;
+    smooth_unfrozen.jank_ratio = 0.0;
+    smooth_unfrozen.feedforward_freeze = false;
+    ThreadDemandContext smooth_frozen = smooth_unfrozen;
+    smooth_frozen.feedforward_freeze = true;
+    const auto t_unfrozen = ThreadSchedulerActuator::compute_target(
+        ContextMode::Interactive, PerformanceProfile::Balanced, 1.0, false, smooth_unfrozen);
+    const auto t_frozen = ThreadSchedulerActuator::compute_target(
+        ContextMode::Interactive, PerformanceProfile::Balanced, 1.0, false, smooth_frozen);
+    assert(t_frozen.util_min > t_unfrozen.util_min);
+
+    const uint32_t base_helper_min = kernel_state[5501].first;
+    ThreadDemandContext coop_spread = mid_soc;
+    coop_spread.symbiotic_cpu_scale = 0.94;
+    coop_spread.helper_uclamp_ratio = 0.82;
+    sched.apply(ContextMode::Interactive, PerformanceProfile::Balanced, 1.0, false, true,
+                {900, 901}, {5500}, coop_spread, {5501, 5502});
+    assert(kernel_state[5501].first > base_helper_min);
+    assert(kernel_state[5501].first <= kernel_state[5500].first);
+
+    // 6. Entering Efficiency or Excluded resets all Tier-1 and Tier-2 tracked TIDs cleanly
     sched.apply(ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true,
                 {900, 901}, {5500}, mid_soc, {5501, 5502});
     assert(sched.stats().active_boosted_tids == 0U);
@@ -94,6 +115,6 @@ int main() {
     assert(kernel_state[5501].first == 0U && kernel_state[5501].second == 1024U);
     assert(kernel_state[5502].first == 0U && kernel_state[5502].second == 1024U);
 
-    std::cout << "v6.2 Role-Tiered ThreadSchedulerActuator tests passed\n";
+    std::cout << "v6.2 Role-Tiered & Cooperative ThreadSchedulerActuator tests passed\n";
     return 0;
 }

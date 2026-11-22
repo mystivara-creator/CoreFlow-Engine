@@ -18,8 +18,8 @@ int main() {
     input.thermal_pressure = NAN;
     assert(!controller->step(input).valid);
 
-    // 2. Rust EAS UClamp Planner + Thermal-Velocity Pre-Damping + Closed-Loop Jank & App DNA
-    UclampInput u_steady{3, 3, 1.0, false, 384, 768, 1024, 120, 8.0, 60.0, 0.45, 0.0, -1.0, 1.0};
+    // 2. Rust EAS UClamp Planner + Thermal-Velocity Pre-Damping + Closed-Loop Jank, App DNA & Feed-Forward Freeze
+    UclampInput u_steady{3, 3, 1.0, false, 384, 768, 1024, 120, 8.0, 60.0, 0.45, 0.0, -1.0, 1.0, false, 1.0};
     auto t_steady = compute_uclamp_target(u_steady);
     assert(t_steady.util_min > 0 && t_steady.util_min <= t_steady.util_max && t_steady.util_max == 1024);
     UclampInput u_heating = u_steady;
@@ -27,7 +27,7 @@ int main() {
     auto t_damped = compute_uclamp_target(u_heating);
     assert(t_damped.util_min < t_steady.util_min);
 
-    UclampInput u_interactive{1, 0, 1.0, false, 384, 768, 1024, 120, 5.0, 20.0, 0.25, 0.0, -1.0, 1.0};
+    UclampInput u_interactive{1, 0, 1.0, false, 384, 768, 1024, 120, 5.0, 20.0, 0.25, 0.0, -1.0, 1.0, false, 1.0};
     auto t_bal = compute_uclamp_target(u_interactive);
 
     UclampInput u_smooth = u_interactive;
@@ -35,6 +35,17 @@ int main() {
     u_smooth.app_uclamp_bias = 0.85;
     auto t_smooth = compute_uclamp_target(u_smooth);
     assert(t_smooth.util_min < t_bal.util_min);
+
+    // Feed-Forward Pre-Emptive Cancel blocks smooth jank-trim while frozen, then resumes cleanly
+    UclampInput u_frozen = u_interactive;
+    u_frozen.jank_ratio = 0.0;
+    u_frozen.feedforward_freeze = true;
+    auto t_frozen = compute_uclamp_target(u_frozen);
+    UclampInput u_unfrozen = u_frozen;
+    u_unfrozen.feedforward_freeze = false;
+    auto t_unfrozen = compute_uclamp_target(u_unfrozen);
+    assert(t_frozen.util_min == t_bal.util_min);
+    assert(t_unfrozen.util_min < t_frozen.util_min);
 
     UclampInput u_jank = u_interactive;
     u_jank.jank_ratio = 0.14;
@@ -62,7 +73,33 @@ int main() {
     assert(eq_chg.charging_damped && !eq_byp.charging_damped);
     assert(eq_chg.effective_scale < eq_byp.effective_scale);
 
-    // 5. Rust Markov AppPreloader + Cross-Reboot export_state/import_state
+    // 5. Rust Orthogonal Symbiotic Orchestrator (single-cluster hotspot + Little's Law CPU-GPU-Memory co-pacing)
+    auto sym_hotspot = compute_symbiotic_plan({0.30, 0.44, 0.94, 52.0, 0.62, 48.0, 10.0, 2.0, 2.0, 0.45, 1.0, false});
+    assert(sym_hotspot.regime == 4U);
+    assert(sym_hotspot.cluster_imbalance > 0.30);
+    assert(sym_hotspot.cpu_uclamp_scale < 1.0);
+    assert(sym_hotspot.helper_uclamp_ratio >= 0.75);
+    assert(sym_hotspot.encourage_cluster_spread);
+
+    auto sym_gpu = compute_symbiotic_plan({0.35, 0.52, 0.58, 30.0, 0.32, 86.0, 3.0, 2.0, 4.0, 0.48, 1.0, false});
+    assert(sym_gpu.regime == 1U);
+    assert(sym_gpu.boost_gpu_memory_supply && !sym_gpu.io_supply_boost);
+    assert(sym_gpu.cpu_uclamp_scale < 1.0);
+
+    auto sym_io = compute_symbiotic_plan({0.35, 0.45, 0.50, 35.0, 0.30, 30.0, 4.0, 2.0, 14.0, 0.45, 1.0, false});
+    assert(sym_io.regime == 3U);
+    assert(sym_io.io_supply_boost && !sym_io.boost_gpu_memory_supply);
+
+    auto sym_cpu = compute_symbiotic_plan({0.55, 0.65, 0.72, 74.0, 0.72, 34.0, 18.0, 2.0, 2.0, 0.50, 1.0, false});
+    assert(sym_cpu.regime == 2U);
+    assert(sym_cpu.cpu_uclamp_scale > 1.0);
+    assert(sym_cpu.helper_uclamp_ratio >= 0.72);
+
+    auto sym_hot_guard = compute_symbiotic_plan({0.30, 0.40, 0.95, 65.0, 0.85, 88.0, 22.0, 5.0, 14.0, 0.45, 0.75, true});
+    assert(!sym_hot_guard.boost_gpu_memory_supply && !sym_hot_guard.io_supply_boost);
+    assert(sym_hot_guard.cpu_uclamp_scale <= 1.0);
+
+    // 6. Rust Markov AppPreloader + Cross-Reboot export_state/import_state
     auto preloader = new_app_preloader();
     for (int i = 0; i < 4; ++i) {
         preloader->record_launch(0x101ULL);
@@ -78,6 +115,6 @@ int main() {
     assert(pred2.has_prediction && pred2.target_hash == 0x202ULL && pred2.confidence >= 0.99);
     preloader->reset();
 
-    std::cout << "Rust bridge integration tests passed (PID + Closed-Loop UClamp + Dual-Timescale Equilibrium + OLS + Persistent Preloader)\n";
+    std::cout << "Rust bridge integration tests passed (PID + Feed-Forward UClamp + Symbiotic Orchestrator + Equilibrium + OLS + Preloader)\n";
     return 0;
 }

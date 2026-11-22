@@ -1,4 +1,5 @@
 #include "coreflow/frame_bridge.hpp"
+#include "coreflow/v5/hardware_probe.hpp"
 #include "coreflow/v6/app_dna_store.hpp"
 #include "coreflow/v6/frame_pacing_sensor.hpp"
 
@@ -12,6 +13,7 @@
 #include <unistd.h>
 
 using namespace coreflow;
+using namespace coreflow::v5;
 using namespace coreflow::v6;
 namespace fs = std::filesystem;
 
@@ -80,15 +82,82 @@ int main() {
     assert(s_static.jank_ratio < 0.0);
     bridge.stop();
 
-    // 2. AppDnaStore: EWMA closed-loop convergence, LRU eviction, atomic cross-reboot persistence
+    // 2. Universal VBlank IRQ Counter Fallback (custom kernels without vendor FPS sysfs)
+    {
+        const fs::path fb_sys = root / "sys_novendor";
+        const fs::path fb_proc = root / "proc_novendor";
+        fs::create_directories(fb_sys);
+        const fs::path irq_file = fb_proc / "interrupts";
+        write_file(irq_file,
+                   "           CPU0       CPU1       CPU2       CPU3\n"
+                   " 42:        100        200          0          0   GICv3  120 Level     arch_timer\n"
+                   "187:       1000        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+
+        HardwareProbe probe(fb_sys.string(), fb_proc.string());
+        const auto topo = probe.discover();
+        assert(topo.vblank_irq_token == "187:");
+
+        FramePacingSensor irq_sensor;
+        irq_sensor.discover(fb_sys.string(), fb_proc.string(), topo.vblank_irq_token);
+        assert(irq_sensor.supported());
+
+        // First read establishes baseline -> neutral jank (-1.0)
+        const auto v0 = irq_sensor.sample(120U, 1000ULL, true, nullptr);
+        assert(v0.available && v0.jank_ratio < 0.0);
+        assert(irq_sensor.active_source() == "vblank_irq:187:");
+
+        // +120 IRQs over 1.0s -> smooth 120 Hz commit rate (jank ~ 0.0)
+        write_file(irq_file,
+                   "           CPU0       CPU1       CPU2       CPU3\n"
+                   " 42:        200        200          0          0   GICv3  120 Level     arch_timer\n"
+                   "187:       1120        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto v1 = irq_sensor.sample(120U, 2000ULL, true, nullptr);
+        assert(v1.available);
+        assert(std::abs(v1.measured_fps - 120.0) < 0.5);
+        assert(v1.jank_ratio >= 0.0 && v1.jank_ratio < 0.02);
+
+        // Oscillating VBlank jitter (120 -> 78 -> 114 -> 76 Hz) raises jitter-penalized jank_ratio
+        write_file(irq_file,
+                   "187:       1198        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        (void)irq_sensor.sample(120U, 3000ULL, true, nullptr);
+        write_file(irq_file,
+                   "187:       1312        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        (void)irq_sensor.sample(120U, 4000ULL, true, nullptr);
+        write_file(irq_file,
+                   "187:       1388        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto v_jit = irq_sensor.sample(120U, 5000ULL, true, nullptr);
+        assert(v_jit.available && v_jit.jank_ratio > 0.08);
+
+        // Static screen (< 12 Hz commit rate: +4 IRQs in 1s) -> neutral (-1.0), never false jank
+        write_file(irq_file,
+                   "187:       1392        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto v_idle = irq_sensor.sample(120U, 6000ULL, true, nullptr);
+        assert(v_idle.available && v_idle.jank_ratio < 0.0);
+    }
+
+    // 3. AppDnaStore: Bayesian Engine Signature Seeding, EWMA convergence, LRU eviction, atomic CFDNA1 persistence
     {
         AppDnaStore store;
         store.initialize(state.string());
         assert(store.learned_count() == 0U);
         assert(std::abs(store.uclamp_bias_for("com.whatsapp") - 1.0) < 1e-9);
 
+        // Bayesian Engine Signature Seeding: cold-start 3D game immediately receives 1.10 prior on frame 1!
+        store.record_launch("com.kurogame.wutheringwaves", 500ULL, EngineSignature::HeavyGame3D);
+        assert(std::abs(store.uclamp_bias_for("com.kurogame.wutheringwaves") - 1.10) < 1e-6);
+
+        // Standard UI/media app starts at neutral 1.00 prior
+        store.record_launch("com.whatsapp", 1000ULL, EngineSignature::StandardUi);
+        assert(std::abs(store.uclamp_bias_for("com.whatsapp") - 1.0) < 1e-9);
+
+        // Organic EWMA convergence trims a smoothly running game gently down from its 1.10 Bayesian prior
+        for (uint64_t i = 0; i < 6; ++i) {
+            store.observe("com.kurogame.wutheringwaves", 0.002, 0.2, 1200ULL + i * 1000ULL, EngineSignature::HeavyGame3D);
+        }
+        const double game_converged = store.uclamp_bias_for("com.kurogame.wutheringwaves");
+        assert(game_converged < 1.10 && game_converged >= 1.00);
+
         // Smooth lightweight app trims its UClamp bias below 1.0
-        store.record_launch("com.whatsapp", 1000ULL);
         for (uint64_t i = 0; i < 20; ++i) {
             store.observe("com.whatsapp", 0.002, 0.1, 2000ULL + i * 1000ULL);
         }
@@ -96,20 +165,21 @@ int main() {
         assert(smooth_bias < 0.96 && smooth_bias >= 0.78);
 
         // Heavy janky app raises its UClamp bias above 1.0
-        store.record_launch("com.miHoYo.GenshinImpact", 25000ULL);
+        store.record_launch("com.miHoYo.GenshinImpact", 25000ULL, EngineSignature::HeavyGame3D);
         for (uint64_t i = 0; i < 15; ++i) {
-            store.observe("com.miHoYo.GenshinImpact", 0.12, 0.8, 26000ULL + i * 1000ULL);
+            store.observe("com.miHoYo.GenshinImpact", 0.12, 0.8, 26000ULL + i * 1000ULL, EngineSignature::HeavyGame3D);
         }
         const double heavy_bias = store.uclamp_bias_for("com.miHoYo.GenshinImpact");
-        assert(heavy_bias > 1.04 && heavy_bias <= 1.18);
+        assert(heavy_bias > 1.10 && heavy_bias <= 1.18);
 
-        // Flush atomically and reload into fresh AppDnaStore instance (simulating reboot)
+        // Flush atomically and reload into fresh AppDnaStore instance (simulating reboot + CFDNA1 compatibility)
         assert(store.flush_if_dirty());
         AppDnaStore reloaded;
         reloaded.initialize(state.string());
-        assert(reloaded.learned_count() == 2U);
+        assert(reloaded.learned_count() == 3U);
         assert(reloaded.uclamp_bias_for("com.whatsapp") < 0.96);
-        assert(reloaded.uclamp_bias_for("com.miHoYo.GenshinImpact") > 1.04);
+        assert(reloaded.uclamp_bias_for("com.miHoYo.GenshinImpact") > 1.10);
+        assert(std::abs(reloaded.uclamp_bias_for("com.kurogame.wutheringwaves") - game_converged) < 1e-3);
 
         // LRU cap at 64 entries evicts oldest entries cleanly and persists bounded size
         for (size_t i = 0; i < 70U; ++i) {
@@ -123,6 +193,6 @@ int main() {
     }
 
     fs::remove_all(root);
-    std::cout << "v6.2 Closed-Loop Frame Pacing & App DNA Store tests passed\n";
+    std::cout << "v6.2 Closed-Loop Frame Pacing, VBlank IRQ Fallback & Bayesian App DNA tests passed\n";
     return 0;
 }

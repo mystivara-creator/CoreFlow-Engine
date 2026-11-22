@@ -570,6 +570,7 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
         result.helper_tids = cached_fg_helper_tids_;
         result.has_game_thread = cached_fg_has_game_thread_;
         result.has_media_thread = cached_fg_has_media_thread_;
+        result.engine_class = cached_fg_engine_class_;
         result.has_render_thread = result.has_render_thread || (cached_fg_tids_.size() > 1U);
         return result;
     }
@@ -611,12 +612,32 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
             }
         }
     }
+
+    // Bounded one-shot runtime engine library signature check (<= 48 KB read, cached per PID)
+    // detects Unreal/Unity/Godot binaries even before dedicated render/RHI threads spin up.
+    if (!result.has_game_thread) {
+        const fs::path maps_path = fs::path(procfs_root_) / std::to_string(best_pid) / "maps";
+        const std::string maps_head = read_small_file(maps_path, 49152U);
+        if (!maps_head.empty() &&
+            (maps_head.find("libUE4.so") != std::string::npos ||
+             maps_head.find("libUnreal.so") != std::string::npos ||
+             maps_head.find("libunity.so") != std::string::npos ||
+             maps_head.find("libil2cpp.so") != std::string::npos ||
+             maps_head.find("libgodot") != std::string::npos)) {
+            result.has_game_thread = true;
+        }
+    }
+    result.engine_class = result.has_game_thread
+        ? AppEngineClass::HeavyGame3D
+        : AppEngineClass::StandardUi;
+
     cached_fg_pid_ = best_pid;
     cached_fg_tids_ms_ = now;
     cached_fg_tids_ = result.critical_tids;
     cached_fg_helper_tids_ = result.helper_tids;
     cached_fg_has_game_thread_ = result.has_game_thread;
     cached_fg_has_media_thread_ = result.has_media_thread;
+    cached_fg_engine_class_ = result.engine_class;
     return result;
 }
 

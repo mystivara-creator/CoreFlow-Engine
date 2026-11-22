@@ -43,6 +43,9 @@ struct ThreadDemandContext {
     double thermal_velocity_cpm{0.0}; // Live SoC thermal slope (°C/min) from Rust OLS analyzer
     double jank_ratio{-1.0};      // Live missed-frame ratio (0.0..1.0), -1.0 when unavailable
     double app_uclamp_bias{1.0};  // Learned per-app UClamp bias (0.75..1.20)
+    bool feedforward_freeze{false}; // Active during pre-emptive 500-800ms load spike / touch window
+    double symbiotic_cpu_scale{1.0}; // Orthogonal Symbiotic Orchestrator CPU floor multiplier (0.88..1.10)
+    double helper_uclamp_ratio{0.65}; // Cooperative Tier-2 helper ratio (0.65 default, up to 0.82 under hotspot spread)
 };
 
 class ThreadSchedulerActuator {
