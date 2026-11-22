@@ -199,18 +199,4 @@ bool AppDnaStore::flush_if_dirty() noexcept {
     return true;
 }
 
-std::vector<AppDnaEntry> AppDnaStore::top_entries(size_t max_count) const {
-    std::vector<AppDnaEntry> list;
-    list.reserve(entries_.size());
-    for (const auto& [_, e] : entries_) {
-        list.push_back(e);
-    }
-    std::sort(list.begin(), list.end(), [](const AppDnaEntry& a, const AppDnaEntry& b) {
-        if (a.launch_count != b.launch_count) return a.launch_count > b.launch_count;
-        return a.last_seen_ms > b.last_seen_ms;
-    });
-    if (list.size() > max_count) list.resize(max_count);
-    return list;
-}
-
 } // namespace coreflow::v6

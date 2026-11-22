@@ -1429,6 +1429,25 @@ int main(int argc, char* argv[]) {
     live_status.episodes = decision_journal.recent(16U);
     uint64_t last_sysfs_active_ms = 0U;
     uint64_t last_state_persist_ms = 0U;
+    uint64_t last_jank_episode_ms = 0U;
+    (void)frame_bridge.start([&](const FrameEvent& ev) {
+        if (ev.kind != FrameEventKind::FrameTimelineWindow || ev.frame_count == 0U || ev.missed_frames == 0U) {
+            return;
+        }
+        if (ev.missed_frames * 100ULL >= ev.frame_count * 8ULL) {
+            const uint64_t now_ms = steady_now_ms();
+            if (last_jank_episode_ms == 0U || now_ms >= last_jank_episode_ms + 15'000ULL) {
+                last_jank_episode_ms = now_ms;
+                const uint64_t pct = (ev.missed_frames * 100ULL) / ev.frame_count;
+                decision_journal.record(
+                    epoch_now_ms(), "uclamp", "FrameJankRescue",
+                    "Detected " + std::to_string(pct) + "% frame drop (" +
+                        (frame_pacing.active_source().empty() ? std::string("display") : frame_pacing.active_source()) +
+                        "); elevating per-TID floor",
+                    "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+            }
+        }
+    });
     auto last_thermal_tick = std::chrono::steady_clock::now();
 
     const auto build_sysfs_ctx = [&](const ContextDecision& raw, uint64_t now_ms, const ForegroundAppInfo& fg) noexcept {
@@ -1950,6 +1969,7 @@ int main(int argc, char* argv[]) {
             85.0, 65.0, 15.0, config.cpu_pressure_boost_pct,
             config.memory_pressure_guard_pct, config.io_pressure_guard_pct,
             config.enable_pid_equilibrium});
+        bool equilibrium_guard = false;
         if (pid_dec.valid) {
             double scale = pid_dec.capacity_scale;
             if (ai.valid && ai.confidence >= 0.60 && ai.predicted_pressure_10s >= 80.0) {
@@ -1966,11 +1986,14 @@ int main(int argc, char* argv[]) {
                 longevity.is_bypass_active(),
                 live_status.ctx.mode == ContextMode::LaunchBurst});
             live_status.charging_damped = eq.charging_damped;
+            equilibrium_guard = eq.equilibrium_guard;
             live_status.capacity_scale = std::clamp(eq.effective_scale, 0.25, 1.0);
         } else {
             pid_controller->reset();
             live_status.charging_damped = false;
         }
+        const bool effective_thermal_guard = thermal_guard || equilibrium_guard;
+        live_status.thermal_guard = effective_thermal_guard;
 
         if (!screen_off) {
             last_fg = context_engine.resolve_foreground_app(topo.cgroups.top_app_procs_path);
@@ -1990,7 +2013,7 @@ int main(int argc, char* argv[]) {
         ContextSignalInput sig{};
         sig.now_ms = now_ms;
         sig.screen_off = screen_off;
-        sig.thermal_guard = thermal_guard;
+        sig.thermal_guard = effective_thermal_guard;
         sig.cpu_util_pct = cpu_util;
         sig.gpu_busy_pct = gpu_busy;
         sig.foreground_pid = screen_off ? 0 : last_fg.pid;
@@ -2062,7 +2085,7 @@ int main(int argc, char* argv[]) {
             const auto helper_tids = screen_off ? std::vector<int32_t>{} : last_fg.helper_tids;
             thread_scheduler.apply(
                 live_status.ctx.mode, live_status.ctx.effective_profile,
-                live_status.capacity_scale, thermal_guard,
+                live_status.capacity_scale, effective_thermal_guard,
                 config.enable_frame_smoothness, sf_tids, chain_tids,
                 build_thread_demand(), helper_tids);
             const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, last_fg);
@@ -2111,12 +2134,12 @@ int main(int argc, char* argv[]) {
 
             thermal_envelope.apply(
                 topo, sysfs_ctx.mode, live_status.ctx.effective_profile,
-                live_status.capacity_scale, thermal_guard,
+                live_status.capacity_scale, effective_thermal_guard,
                 config.enable_thermal_pacing,
                 build_envelope_telemetry(), now_ms);
             semantic_knobs.apply(
                 sysfs_ctx.mode, live_status.ctx.effective_profile,
-                live_status.capacity_scale, thermal_guard,
+                live_status.capacity_scale, effective_thermal_guard,
                 config.enable_thermal_pacing || config.enable_storage_burst,
                 last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
                 storage_tel.mem_psi, now_ms,
@@ -2164,6 +2187,7 @@ int main(int argc, char* argv[]) {
 
     // Guaranteed clean shutdown, cross-reboot state persistence & OEM baseline restoration
     input_source.stop();
+    frame_bridge.stop();
     (void)app_dna.flush_if_dirty();
     if (preloader_dirty) {
         (void)save_preloader_state(*preloader, preloader_pkg_map);

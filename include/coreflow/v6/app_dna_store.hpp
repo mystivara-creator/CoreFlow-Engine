@@ -12,7 +12,6 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 namespace coreflow::v6 {
 
@@ -51,7 +50,6 @@ public:
     bool flush_if_dirty() noexcept;
 
     [[nodiscard]] size_t learned_count() const noexcept { return entries_.size(); }
-    [[nodiscard]] std::vector<AppDnaEntry> top_entries(size_t max_count = 8U) const;
 
 private:
     void evict_lru_if_needed() noexcept;

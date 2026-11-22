@@ -46,7 +46,6 @@ public:
 
     [[nodiscard]] bool supported() const noexcept { return !fps_paths_.empty(); }
     [[nodiscard]] const std::string& active_source() const noexcept { return active_source_; }
-    [[nodiscard]] FramePacingSample last_sample() const noexcept { return last_sample_; }
 
 private:
     std::vector<std::string> fps_paths_;
