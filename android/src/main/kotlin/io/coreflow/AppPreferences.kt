@@ -103,6 +103,51 @@ object AppPreferences {
             .apply()
     }
 
+    private const val KEY_UPDATE_ETAG = "update_release_etag"
+    private const val KEY_UPDATE_RELEASE_JSON = "update_release_json"
+    private const val KEY_UPDATE_MANIFEST_JSON = "update_manifest_json"
+    private const val KEY_UPDATE_CHECKED_AT_MS = "update_checked_at_ms"
+
+    fun getUpdateCheckedAtMs(context: Context): Long =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getLong(KEY_UPDATE_CHECKED_AT_MS, 0L)
+
+    fun setUpdateCheckedAtMs(context: Context, tsMs: Long) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(KEY_UPDATE_CHECKED_AT_MS, tsMs)
+            .apply()
+    }
+
+    fun getUpdateReleaseEtag(context: Context): String? =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_UPDATE_ETAG, null)
+
+    fun getCachedReleaseJson(context: Context): String? =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_UPDATE_RELEASE_JSON, null)
+
+    fun setCachedReleasePayload(context: Context, json: String, etag: String?) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_UPDATE_RELEASE_JSON, json)
+            .apply {
+                if (!etag.isNullOrBlank()) putString(KEY_UPDATE_ETAG, etag)
+            }
+            .apply()
+    }
+
+    fun getCachedManifestJson(context: Context): String? =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_UPDATE_MANIFEST_JSON, null)
+
+    fun setCachedManifestJson(context: Context, json: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_UPDATE_MANIFEST_JSON, json)
+            .apply()
+    }
+
     fun getPrePowerSaveProfile(context: Context): String? =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(KEY_PRE_POWERSAVE_PROFILE, null)

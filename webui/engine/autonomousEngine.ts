@@ -1,5 +1,5 @@
 /**
- * CoreFlow Engine v6.2.0 — Closed-Loop Intelligence WebUI Data Contract, Validators & Preview Simulator.
+ * CFAE System Framework / CoreFlow Engine v6.0.0-R — Sovereign Rebuild WebUI Data Contract, Validators & Preview Simulator.
  */
 
 export type PerformanceProfile = 'balanced' | 'smoothness' | 'battery' | 'gaming';
@@ -39,7 +39,25 @@ export interface HyperFluidTelemetry {
   jankRatio: number | null;
   appDnaLearned: number;
   activeAppBias: number;
+  activeAppEfficiencyWeight: number;
+  appDnaFlushCount: number;
   chargingDamped: boolean;
+}
+
+export interface TamperGuardTelemetry {
+  enabled: boolean;
+  lockedNodes: number;
+  quarantinedNodes: number;
+  totalEvents: number;
+}
+
+export interface CoupledOrchestrationTelemetry {
+  regime: number;
+  memoryBusScale: number;
+  schedulerResponsivenessScale: number;
+  thermalStepdownLead: number;
+  couplingMask: number;
+  memoryBusNodes: number;
 }
 
 export interface CoreFlowPowerConfig {
@@ -68,6 +86,7 @@ export interface CoreFlowActuatorStats {
   managedEnvelopeNodes: number;
   semanticKnobsDiscovered: number;
   semanticKnobsActive: number;
+  memoryBusKnobs: number;
   semanticKnobLeaves: string[];
   contendedNodes: number;
   contendedPaths: string[];
@@ -192,6 +211,9 @@ export interface CoreFlowV5Status {
   recoveryPending: boolean;
   features: CoreFlowFeatures;
   hyperFluid: HyperFluidTelemetry;
+  tamperGuard: TamperGuardTelemetry;
+  coupledOrchestration: CoupledOrchestrationTelemetry;
+  conflictingModules: string[];
   powerConfig: CoreFlowPowerConfig;
   apps: CoreFlowAppRules;
   actuators: CoreFlowActuatorStats;
@@ -455,6 +477,8 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
 
   const features = raw.features;
   const hf = isRecord(raw.hyperFluid) ? raw.hyperFluid : {};
+  const tg = isRecord(raw.tamperGuard) ? raw.tamperGuard : {};
+  const co = isRecord(raw.coupledOrchestration) ? raw.coupledOrchestration : {};
   const powerCfg = isRecord(raw.powerConfig) ? raw.powerConfig : {};
   const apps = raw.apps;
   const actuators = raw.actuators;
@@ -468,7 +492,7 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
   const episodesRaw = Array.isArray(raw.episodes) ? raw.episodes : [];
 
   return {
-    version: typeof raw.version === 'string' ? raw.version : '6.2.0',
+    version: typeof raw.version === 'string' ? raw.version : '6.0.0-R',
     running: raw.running,
     pid: raw.pid,
     profile,
@@ -523,8 +547,27 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
       jankRatio: isFiniteNum(hf.jankRatio) ? hf.jankRatio : null,
       appDnaLearned: isFiniteNum(hf.appDnaLearned) ? hf.appDnaLearned : 0,
       activeAppBias: isFiniteNum(hf.activeAppBias) ? hf.activeAppBias : 1.0,
+      activeAppEfficiencyWeight: isFiniteNum(hf.activeAppEfficiencyWeight) ? hf.activeAppEfficiencyWeight : 1.0,
+      appDnaFlushCount: isFiniteNum(hf.appDnaFlushCount) ? hf.appDnaFlushCount : 0,
       chargingDamped: hf.chargingDamped === true,
     },
+    tamperGuard: {
+      enabled: tg.enabled !== false,
+      lockedNodes: isFiniteNum(tg.lockedNodes) ? tg.lockedNodes : 0,
+      quarantinedNodes: isFiniteNum(tg.quarantinedNodes) ? tg.quarantinedNodes : 0,
+      totalEvents: isFiniteNum(tg.totalEvents) ? tg.totalEvents : 0,
+    },
+    coupledOrchestration: {
+      regime: isFiniteNum(co.regime) ? co.regime : 0,
+      memoryBusScale: isFiniteNum(co.memoryBusScale) ? co.memoryBusScale : 1.0,
+      schedulerResponsivenessScale: isFiniteNum(co.schedulerResponsivenessScale) ? co.schedulerResponsivenessScale : 1.0,
+      thermalStepdownLead: isFiniteNum(co.thermalStepdownLead) ? co.thermalStepdownLead : 0.0,
+      couplingMask: isFiniteNum(co.couplingMask) ? co.couplingMask : 0,
+      memoryBusNodes: isFiniteNum(co.memoryBusNodes) ? co.memoryBusNodes : 0,
+    },
+    conflictingModules: Array.isArray(raw.conflictingModules)
+      ? raw.conflictingModules.filter((x): x is string => typeof x === 'string')
+      : [],
     powerConfig: {
       bypassCharging: powerCfg.bypassCharging === true,
       bypassOnGaming: powerCfg.bypassOnGaming === true,
@@ -549,6 +592,7 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
       managedEnvelopeNodes: isFiniteNum(actuators.managedEnvelopeNodes) ? actuators.managedEnvelopeNodes : 0,
       semanticKnobsDiscovered: isFiniteNum(actuators.semanticKnobsDiscovered) ? actuators.semanticKnobsDiscovered : 0,
       semanticKnobsActive: isFiniteNum(actuators.semanticKnobsActive) ? actuators.semanticKnobsActive : 0,
+      memoryBusKnobs: isFiniteNum(actuators.memoryBusKnobs) ? actuators.memoryBusKnobs : 0,
       semanticKnobLeaves: Array.isArray(actuators.semanticKnobLeaves)
         ? actuators.semanticKnobLeaves.filter((x): x is string => typeof x === 'string')
         : [],
@@ -673,7 +717,7 @@ export const PREVIEW_INSTALLED_PACKAGES: string[] = [
 export function createPreviewStatus(): CoreFlowV5Status {
   const now = Date.now();
   return {
-    version: '6.2.0',
+    version: '6.0.0-R',
     running: true,
     pid: 1428,
     profile: 'balanced',
@@ -725,8 +769,25 @@ export function createPreviewStatus(): CoreFlowV5Status {
       jankRatio: 0.008,
       appDnaLearned: 12,
       activeAppBias: 0.94,
+      activeAppEfficiencyWeight: 1.04,
+      appDnaFlushCount: 2,
       chargingDamped: false,
     },
+    tamperGuard: {
+      enabled: true,
+      lockedNodes: 6,
+      quarantinedNodes: 0,
+      totalEvents: 0,
+    },
+    coupledOrchestration: {
+      regime: 0,
+      memoryBusScale: 1.0,
+      schedulerResponsivenessScale: 1.0,
+      thermalStepdownLead: 0.0,
+      couplingMask: 0,
+      memoryBusNodes: 2,
+    },
+    conflictingModules: [],
     powerConfig: {
       bypassCharging: false,
       bypassOnGaming: true,
@@ -751,6 +812,7 @@ export function createPreviewStatus(): CoreFlowV5Status {
       managedEnvelopeNodes: 8,
       semanticKnobsDiscovered: 25,
       semanticKnobsActive: 6,
+      memoryBusKnobs: 2,
       semanticKnobLeaves: ['boost', 'pl', 'bus_split', 'adrenoboost', 'iostats', 'vfs_cache_pressure'],
       contendedNodes: 0,
       contendedPaths: [],

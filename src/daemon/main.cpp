@@ -1,18 +1,12 @@
 /**
  * @file main.cpp
- * @brief CoreFlow Engine v6.2.0 — Closed-Loop Intelligence & Cross-SoC Autonomous Daemon.
+ * @brief CFAE System Framework / CoreFlow Engine v6.0.0-R — Sovereign Rebuild Daemon.
  *
  * Pillars:
- *  1. HardwareProbe + CFJ4 BaselineStore (single-pass discovery & OEM rollback safety)
- *  2. ContextEngine (5-mode context + foreground app + role-tiered critical/helper TIDs + 4-profile per-app rules)
- *  3. Focused Actuators & Closed-Loop Intelligence:
- *     - ThreadSchedulerActuator (role-tiered per-TID sched_setattr UClamp with live jank & App DNA feedback)
- *     - FramePacingSensor + AndroidFrameEventBridge (zero-fork display FPS & jank feedback)
- *     - AppDnaStore + Persistent Rust Markov Preloader (cross-reboot behavioral learning)
- *     - StorageMemoryActuator (dynamic UFS/eMMC burst, background QoS, MGLRU, smart pre-read, timed contention recovery)
- *     - ThermalEnvelopeActuator (Dual-Timescale Equilibrium + Rust PID + Online RLS/MLP 10s lookahead)
- *     - HardwareLongevityManager (battery thermal step-charging & charging-aware thermal budget)
- *  4. Clean JSON status/config/diag contract for the HyperOS 4 Companion App & WebUI.
+ *  1. Sovereign Tamper Guard (0444 lease lock, Reclaim-First + 3x/5s circuit breaker, IPC broadcast)
+ *  2. Coupled Multi-Domain Orchestration (Compute<->Memory Bus, Rendering<->Scheduler, Headroom<->Thermal)
+ *  3. Zero-Wear On-Device Context Learning (CFDNA2 cost-to-gain RAM learning & significant-drift ScreenOff flush)
+ *  4. Clean JSON status/config/diag/tamper contract for the Companion App & Telemetry Dialogue Engine.
  * @license Apache-2.0
  */
 #include "coreflow/baseline_store.hpp"
@@ -61,6 +55,7 @@
 #include <sys/signalfd.h>
 #include <sys/stat.h>
 #include <sys/timerfd.h>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <unordered_map>
@@ -77,7 +72,7 @@ namespace {
 
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
-constexpr char kVersion[] = "6.2.0";
+constexpr char kVersion[] = "6.0.0-R";
 
 void emit_log(bool is_error, const std::string& message) {
     if (is_error) std::cerr << message << "\n";
@@ -675,11 +670,25 @@ struct RuntimeStatusData {
     double jank_ratio{-1.0};
     size_t app_dna_learned{0};
     double active_app_bias{1.0};
+    double active_app_efficiency_weight{1.0};
+    uint64_t app_dna_flush_count{0};
     bool charging_damped{false};
     bool boot_settle_active{false};
     double boot_settle_duration_sec{0.0};
     std::string boot_settle_exit_reason{"warm_daemon_restart"};
     double boot_ramp_progress{1.0};
+    // Pillar 1: Sovereign Tamper Guard
+    size_t locked_nodes{0};
+    size_t quarantined_nodes{0};
+    uint64_t total_tamper_events{0};
+    std::vector<TamperEvent> tamper_events{};
+    std::string conflicting_modules_json{"[]"};
+    // Pillar 2: Coupled Multi-Domain Orchestration
+    uint8_t symbiotic_regime{0};
+    double memory_bus_scale{1.0};
+    double scheduler_responsiveness_scale{1.0};
+    double thermal_stepdown_lead{0.0};
+    uint8_t coupling_mask{0};
     std::vector<HistoryPoint> history{};
 };
 
@@ -692,6 +701,92 @@ std::string serialize_string_array(const std::vector<std::string>& items) {
     }
     out << ']';
     return out.str();
+}
+
+std::string serialize_tamper_event_json(const TamperEvent& ev) {
+    std::ostringstream out;
+    out << "{\"id\":" << ev.ts_ms
+        << ",\"tsMs\":" << ev.ts_ms
+        << ",\"nodePath\":" << json_str(ev.node_path)
+        << ",\"domain\":" << json_str(CentralMutationCoordinator::domain_name(ev.domain))
+        << ",\"expectedValue\":" << json_str(ev.expected_value)
+        << ",\"observedValue\":" << json_str(ev.observed_value)
+        << ",\"reason\":" << json_str(ev.reason)
+        << ",\"reclaimed\":" << (ev.reclaimed ? "true" : "false")
+        << ",\"circuitBreakerOpen\":" << (ev.circuit_open ? "true" : "false")
+        << ",\"attemptsInWindow\":" << ev.attempts_in_window << '}';
+    return out.str();
+}
+
+std::string serialize_tamper_events_array(const std::vector<TamperEvent>& events) {
+    std::ostringstream out;
+    out << '[';
+    for (size_t i = 0; i < events.size(); ++i) {
+        if (i != 0U) out << ',';
+        out << serialize_tamper_event_json(events[i]);
+    }
+    out << ']';
+    return out.str();
+}
+
+std::string read_conflicting_modules_json() {
+    const char* env_dir = std::getenv("COREFLOW_STATE_DIR");
+    const std::string state_dir = (env_dir && env_dir[0] != '\0') ? std::string(env_dir) : std::string(kStateDir);
+    const std::string path = state_dir + "/detected_conflicts.json";
+    UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return "[]";
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 16384) {
+        return "[]";
+    }
+    std::string raw(static_cast<size_t>(st.st_size), '\0');
+    size_t off = 0;
+    while (off < raw.size()) {
+        const ssize_t n = ::read(fd.get(), raw.data() + off, raw.size() - off);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        off += static_cast<size_t>(n);
+    }
+    raw.resize(off);
+    const size_t key = raw.find("\"modules\":[");
+    if (key == std::string::npos) return "[]";
+    const size_t start = raw.find('[', key);
+    const size_t end = raw.find(']', start);
+    if (start == std::string::npos || end == std::string::npos || end < start) return "[]";
+    return raw.substr(start, end - start + 1U);
+}
+
+void dispatch_tamper_broadcast(const TamperEvent& ev) noexcept {
+    // Only dispatch IPC broadcast on Android environments with /system/bin/am present.
+    if (::access("/system/bin/am", X_OK) != 0) return;
+    const std::string payload = serialize_tamper_event_json(ev);
+    constexpr const char* kPackages[] = {"io.coreflow.companion", "io.coreflow.companion.debug"};
+    for (const char* pkg : kPackages) {
+        const pid_t child = ::fork();
+        if (child < 0) continue;
+        if (child == 0) {
+            // Double-fork so coreflowd never blocks or leaks zombie processes.
+            const pid_t grand = ::fork();
+            if (grand == 0) {
+                const int devnull = ::open("/dev/null", O_RDWR | O_CLOEXEC);
+                if (devnull >= 0) {
+                    (void)::dup2(devnull, STDIN_FILENO);
+                    (void)::dup2(devnull, STDOUT_FILENO);
+                    (void)::dup2(devnull, STDERR_FILENO);
+                    if (devnull > STDERR_FILENO) (void)::close(devnull);
+                }
+                ::execl("/system/bin/am", "am", "broadcast",
+                        "-a", "io.coreflow.ACTION_NODE_TAMPER",
+                        "-p", pkg,
+                        "--es", "payload", payload.c_str(),
+                        static_cast<char*>(nullptr));
+                ::_exit(127);
+            }
+            ::_exit(0);
+        }
+        int status = 0;
+        (void)::waitpid(child, &status, 0);
+    }
 }
 
 const char* thermal_category_name(int cat) noexcept {
@@ -807,6 +902,8 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"jankRatio\":" << (s.jank_ratio >= 0.0 ? std::to_string(safe_num(s.jank_ratio)) : "null")
         << ",\"appDnaLearned\":" << s.app_dna_learned
         << ",\"activeAppBias\":" << safe_num(s.active_app_bias, 1.0)
+        << ",\"activeAppEfficiencyWeight\":" << safe_num(s.active_app_efficiency_weight, 1.0)
+        << ",\"appDnaFlushCount\":" << s.app_dna_flush_count
         << ",\"chargingDamped\":" << (s.charging_damped ? "true" : "false")
         << "}"
         << ",\"powerConfig\":{"
@@ -833,12 +930,29 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"managedEnvelopeNodes\":" << s.envelope_stats.managed_nodes
         << ",\"semanticKnobsDiscovered\":" << s.semantic_stats.discovered_total
         << ",\"semanticKnobsActive\":" << s.semantic_stats.active_managed
+        << ",\"memoryBusKnobs\":" << s.semantic_stats.memory_bus_knobs
         << ",\"semanticKnobLeaves\":" << serialize_string_array(s.semantic_knob_leaves)
         << ",\"contendedNodes\":" << s.contended_paths.size()
         << ",\"contendedPaths\":" << serialize_string_array(s.contended_paths)
         << ",\"oemYieldedNodes\":" << s.oem_yielded_paths.size()
         << ",\"oemYieldedPaths\":" << serialize_string_array(s.oem_yielded_paths)
         << "}"
+        << ",\"tamperGuard\":{"
+        << "\"enabled\":true"
+        << ",\"lockedNodes\":" << s.locked_nodes
+        << ",\"quarantinedNodes\":" << s.quarantined_nodes
+        << ",\"totalEvents\":" << s.total_tamper_events
+        << "}"
+        << ",\"tamperEvents\":" << serialize_tamper_events_array(s.tamper_events)
+        << ",\"coupledOrchestration\":{"
+        << "\"regime\":" << static_cast<unsigned>(s.symbiotic_regime)
+        << ",\"memoryBusScale\":" << safe_num(s.memory_bus_scale, 1.0)
+        << ",\"schedulerResponsivenessScale\":" << safe_num(s.scheduler_responsiveness_scale, 1.0)
+        << ",\"thermalStepdownLead\":" << safe_num(s.thermal_stepdown_lead, 0.0)
+        << ",\"couplingMask\":" << static_cast<unsigned>(s.coupling_mask)
+        << ",\"memoryBusNodes\":" << s.topo.memory_bus_nodes.size()
+        << "}"
+        << ",\"conflictingModules\":" << (s.conflicting_modules_json.empty() ? "[]" : s.conflicting_modules_json)
         << ",\"hardware\":{"
         << "\"socModel\":" << json_str(s.topo.soc_model)
         << ",\"kernelVersion\":" << json_str(s.topo.kernel_version)
@@ -951,6 +1065,7 @@ std::string build_readonly_status_json() {
     data.battery = HardwareLongevityManager::probe_battery_telemetry();
     data.baseline_nodes = count_journal_entries();
     data.recovery_pending = !journal_clear();
+    data.conflicting_modules_json = read_conflicting_modules_json();
     return build_status_json(data);
 }
 
@@ -1227,6 +1342,62 @@ void print_diag() {
     std::cout << out.str() << "\n" << std::flush;
 }
 
+int handle_resolve_tamper_cli(std::string_view node_path, std::string_view code) {
+    if (node_path.empty() || node_path.size() > 512U) {
+        std::cerr << "Invalid node path for --resolve-tamper.\n";
+        return 2;
+    }
+    for (unsigned char c : node_path) {
+        if (c < 0x20 || c >= 0x7F || c == '\t' || c == '\n' || c == '\r') {
+            std::cerr << "Invalid character in node path.\n";
+            return 2;
+        }
+    }
+    std::string upper_code(code);
+    std::transform(upper_code.begin(), upper_code.end(), upper_code.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    if (upper_code != "RESYNC" && upper_code != "ENFORCE") {
+        std::cerr << "Unsupported tamper action code (expected RESYNC or ENFORCE): " << code << "\n";
+        return 2;
+    }
+    if (!ensure_secure_state_dir()) {
+        std::cerr << "Unable to prepare CFAE state directory.\n";
+        return 1;
+    }
+    const char* env_dir = std::getenv("COREFLOW_STATE_DIR");
+    const std::string state_dir = (env_dir && env_dir[0] != '\0') ? std::string(env_dir) : std::string(kStateDir);
+    UniqueFd dir(::open(state_dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!dir.valid()) return 1;
+    const std::string tmp = "tamper_cmd.req.tmp." + std::to_string(::getpid());
+    UniqueFd fd(::openat(dir.get(), tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600));
+    if (!fd.valid()) return 1;
+    const std::string payload = upper_code + "\t" + std::string(node_path) + "\n";
+    size_t off = 0;
+    while (off < payload.size()) {
+        const ssize_t n = ::write(fd.get(), payload.data() + off, payload.size() - off);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            (void)::unlinkat(dir.get(), tmp.c_str(), 0);
+            return 1;
+        }
+        off += static_cast<size_t>(n);
+    }
+    (void)::fsync(fd.get());
+    if (::renameat(dir.get(), tmp.c_str(), dir.get(), "tamper_cmd.req") != 0) {
+        (void)::unlinkat(dir.get(), tmp.c_str(), 0);
+        return 1;
+    }
+    const pid_t pid = daemon_pid();
+    bool signaled = false;
+    if (pid > 0) {
+        signaled = (::kill(pid, SIGUSR1) == 0);
+    }
+    std::cout << "{\"ok\":true,\"action\":" << json_str(upper_code)
+              << ",\"node\":" << json_str(node_path)
+              << ",\"daemonSignaled\":" << (signaled ? "true" : "false") << "}\n" << std::flush;
+    return 0;
+}
+
 int stop_daemon() {
     const pid_t pid = daemon_pid();
     if (pid > 0) {
@@ -1249,6 +1420,13 @@ int main(int argc, char* argv[]) {
     (void)std::setlocale(LC_ALL, "C");
 
     bool fork_daemon = false;
+    if (argc >= 2 && std::string_view(argv[1]) == "--resolve-tamper") {
+        if (argc != 4) {
+            std::cerr << "Usage: coreflowd --resolve-tamper <node_path> <RESYNC|ENFORCE>\n";
+            return 2;
+        }
+        return handle_resolve_tamper_cli(argv[2], argv[3]);
+    }
     if (argc >= 2 && std::string_view(argv[1]) == "--set-config") {
         if (argc < 3) {
             std::cerr << "Usage: coreflowd --set-config key=value [key=value ...]\n";
@@ -1305,17 +1483,21 @@ int main(int argc, char* argv[]) {
             print_diag();
             return 0;
         }
+        if (cmd == "--recover-only") {
+            if (daemon_pid() > 0) return 0;
+            return BaselineStore::instance().recover_pending() ? 0 : 1;
+        }
         if (cmd == "--stop" || cmd == "--rollback-baseline") {
             return stop_daemon();
         }
         if (cmd == "--daemon" || cmd == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--atlas|--episodes|--journal|--diag|--stop|--rollback-baseline|--set-config key=value ...]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--atlas|--episodes|--journal|--diag|--recover-only|--stop|--rollback-baseline|--set-config key=value ...|--resolve-tamper <node> <RESYNC|ENFORCE>]\n";
             return 2;
         }
     } else if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--atlas|--episodes|--journal|--diag|--stop|--rollback-baseline|--set-config key=value ...]\n";
+        std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--atlas|--episodes|--journal|--diag|--recover-only|--stop|--rollback-baseline|--set-config key=value ...|--resolve-tamper <node> <RESYNC|ENFORCE>]\n";
         return 2;
     }
 
@@ -1353,7 +1535,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // CoreFlow v5 4-Pillar Runtime Composition
+    // CFAE System Framework / CoreFlow Engine v6.0.0-R Runtime Composition
     DaemonConfig config = DaemonConfig::load_best_available();
     HardwareProbe probe;
     HardwareTopology topo = probe.discover();
@@ -1371,7 +1553,7 @@ int main(int argc, char* argv[]) {
                        v6::OemCollaborationMap::discover_rom_fingerprint());
     StorageMemoryActuator storage_memory(baseline, "/proc", &oem_map);
     ThermalEnvelopeActuator thermal_envelope(baseline, &oem_map);
-    v6::SemanticKnobEngine semantic_knobs(baseline, oem_map);
+    v6::SemanticKnobEngine semantic_knobs(baseline, oem_map, &coordinator);
     semantic_knobs.discover(topo);
     v6::FramePacingSensor frame_pacing;
     frame_pacing.discover("/sys", "/proc", topo.vblank_irq_token);
@@ -1425,7 +1607,36 @@ int main(int argc, char* argv[]) {
     live_status.battery = longevity.sample_battery_telemetry();
     live_status.frame_pacing_available = frame_pacing.supported();
     live_status.app_dna_learned = app_dna.learned_count();
+    live_status.app_dna_flush_count = app_dna.flush_count();
+    live_status.conflicting_modules_json = read_conflicting_modules_json();
     live_status.session.started_steady_ms = steady_now_ms();
+
+    // Pillar 1: Sovereign Tamper Guard event listener (DecisionJournal + rate-limited IPC broadcast)
+    std::unordered_map<std::string, uint64_t> last_tamper_ipc_ms;
+    coordinator.set_tamper_listener([&](const TamperEvent& ev) {
+        const auto slash = ev.node_path.find_last_of('/');
+        const std::string leaf = slash != std::string::npos ? ev.node_path.substr(slash + 1U) : ev.node_path;
+        decision_journal.record(
+            epoch_now_ms(),
+            "sovereign",
+            ev.circuit_open ? "TamperCircuitOpen" : "TamperBlocked",
+            "Intervensi eksternal pada " + leaf + " (dicoba=" + ev.observed_value +
+                ", ditegakkan=" + ev.expected_value + ")" +
+                (ev.circuit_open ? " · Circuit breaker 30s aktif" : " · Direbut balik & dikunci 0444"),
+            ev.circuit_open ? "quarantined" : (ev.reclaimed ? "reclaimed" : "failed"),
+            live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+        emit_log(true, "[CFAE][SovereignGuard] External tamper on " + ev.node_path +
+                 " (observed=" + ev.observed_value + ", enforced=" + ev.expected_value +
+                 ", reclaimed=" + (ev.reclaimed ? "yes" : "no") +
+                 ", breaker=" + (ev.circuit_open ? "OPEN" : "closed") + ")");
+        const uint64_t now_ipc = steady_now_ms();
+        const auto it = last_tamper_ipc_ms.find(ev.node_path);
+        if (it == last_tamper_ipc_ms.end() || now_ipc >= it->second + 30'000ULL) {
+            last_tamper_ipc_ms[ev.node_path] = now_ipc;
+            dispatch_tamper_broadcast(ev);
+        }
+    });
+
     v6::BootCalmSanctuary boot_calm;
     const double init_uptime_sec = v6::BootCalmSanctuary::read_kernel_uptime_sec("/proc");
     boot_calm.initialize(init_uptime_sec, live_status.session.started_steady_ms);
@@ -1454,8 +1665,8 @@ int main(int argc, char* argv[]) {
     decision_journal.record(
         epoch_now_ms(), "context", "Boot",
         boot_dec.boot_settle_active
-            ? ("CoreFlow v6.2.0 initialized in BOOT_SETTLE sanctuary (profile=" + config.profile + ")")
-            : ("CoreFlow v6.2.0 initialized (profile=" + config.profile + ")"),
+            ? ("CFAE System Framework v6.0.0-R initialized in BOOT_SETTLE sanctuary (profile=" + config.profile + ")")
+            : ("CFAE System Framework v6.0.0-R initialized (profile=" + config.profile + ")"),
         "verified", -1.0, 0.0, 1.0);
     live_status.episodes = decision_journal.recent(16U);
     uint64_t last_sysfs_active_ms = 0U;
@@ -1538,12 +1749,12 @@ int main(int argc, char* argv[]) {
             : v6::EngineSignature::StandardUi;
     };
 
-    // Feed-Forward Pre-Emptive Cancel & Orthogonal Symbiotic Orchestrator state
+    // Feed-Forward Pre-Emptive Cancel & Coupled Multi-Domain Symbiotic Orchestrator state
     uint64_t feedforward_freeze_until_ms = 0U;
     double prev_gpu_busy_ff = -1.0;
     double prev_cpu_psi_ff = -1.0;
     double prev_io_psi_ff = -1.0;
-    engine::SymbioticPlan symbiotic_plan{0, 0.0, 1.0, 0.65, false, false, false};
+    engine::SymbioticPlan symbiotic_plan{0, 0.0, 1.0, 0.65, false, false, false, 1.0, 1.0, 0.0, 0};
     uint8_t prev_symbiotic_regime = 0U;
     uint64_t last_symbiotic_episode_ms = 0U;
 
@@ -1578,6 +1789,9 @@ int main(int argc, char* argv[]) {
         v6::SymbioticHints h{};
         h.boost_gpu_memory_supply = symbiotic_plan.boost_gpu_memory_supply;
         h.encourage_cluster_spread = symbiotic_plan.encourage_cluster_spread;
+        h.memory_bus_scale = symbiotic_plan.memory_bus_scale;
+        h.scheduler_responsiveness_scale = symbiotic_plan.scheduler_responsiveness_scale;
+        h.thermal_stepdown_lead = symbiotic_plan.thermal_stepdown_lead;
         return h;
     };
     const auto is_passive_media_only = [&](const ContextDecision& ctx) noexcept {
@@ -1595,6 +1809,8 @@ int main(int argc, char* argv[]) {
         e.gpu_busy_pct = live_status.gpu_busy_pct.value_or(0.0);
         e.render_pressure = live_status.render_pressure;
         e.passive_media_only = is_passive_media_only(live_status.ctx);
+        e.scheduler_responsiveness_scale = symbiotic_plan.scheduler_responsiveness_scale;
+        e.thermal_stepdown_lead = symbiotic_plan.thermal_stepdown_lead;
         return e;
     };
 
@@ -1670,12 +1886,13 @@ int main(int argc, char* argv[]) {
         emit_log(false, "[CoreFlow] Touchscreen evdev unavailable; running timer-driven context path.");
     }
 
-    // Signals: SIGINT, SIGTERM, SIGHUP
+    // Signals: SIGINT, SIGTERM, SIGHUP, SIGUSR1 (Sovereign Tamper RESYNC/ENFORCE)
     sigset_t mask{};
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTERM);
     sigaddset(&mask, SIGHUP);
+    sigaddset(&mask, SIGUSR1);
     if (::pthread_sigmask(SIG_BLOCK, &mask, nullptr) != 0) {
         clear_pid(pid_lock);
         return 1;
@@ -1687,7 +1904,55 @@ int main(int argc, char* argv[]) {
         !reactor.register_fd(signal_fd.get(), EPOLLIN, [&](uint32_t) {
             signalfd_siginfo info{};
             while (::read(signal_fd.get(), &info, sizeof(info)) == static_cast<ssize_t>(sizeof(info))) {
-                if (info.ssi_signo == SIGHUP) {
+                if (info.ssi_signo == SIGUSR1) {
+                    const char* sig_env_dir = std::getenv("COREFLOW_STATE_DIR");
+                    const std::string sig_state_dir = (sig_env_dir && sig_env_dir[0] != '\0')
+                        ? std::string(sig_env_dir) : std::string(kStateDir);
+                    const std::string req_path = sig_state_dir + "/tamper_cmd.req";
+                    UniqueFd rfd(::open(req_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+                    if (rfd.valid()) {
+                        char rbuf[1024];
+                        const ssize_t rn = ::read(rfd.get(), rbuf, sizeof(rbuf) - 1U);
+                        rfd.reset();
+                        (void)::unlink(req_path.c_str());
+                        if (rn > 0) {
+                            rbuf[rn] = '\0';
+                            std::string line(rbuf, static_cast<size_t>(rn));
+                            const auto nl = line.find('\n');
+                            if (nl != std::string::npos) line.resize(nl);
+                            const auto tab = line.find('\t');
+                            if (tab != std::string::npos && tab + 1U < line.size()) {
+                                const std::string action = line.substr(0, tab);
+                                const std::string node = line.substr(tab + 1U);
+                                const uint64_t now_sig_ms = steady_now_ms();
+                                bool resynced = false;
+                                if (node == "*" || node == "ALL") {
+                                    for (const auto& k : semantic_knobs.knobs()) {
+                                        if (semantic_knobs.force_resync_node(k.path, now_sig_ms)) {
+                                            resynced = true;
+                                        }
+                                    }
+                                } else {
+                                    resynced = semantic_knobs.force_resync_node(node, now_sig_ms);
+                                    coordinator.clear_node_quarantine(node);
+                                }
+                                decision_journal.record(
+                                    epoch_now_ms(), "sovereign", "TamperResync",
+                                    "Perintah " + action + " pada " + node +
+                                        (resynced ? " · Sinkronisasi & kunci 0444 dipulihkan"
+                                                  : " · Karantina dibersihkan"),
+                                    "verified", live_status.soc_temp, live_status.render_pressure,
+                                    live_status.capacity_scale);
+                                live_status.locked_nodes = baseline.locked_node_count();
+                                live_status.quarantined_nodes = coordinator.quarantined_node_count(now_sig_ms);
+                                live_status.total_tamper_events = coordinator.total_tamper_events();
+                                live_status.tamper_events = coordinator.recent_tamper_events(12U);
+                                live_status.episodes = decision_journal.recent(16U);
+                                (void)write_status_snapshot(build_status_json(live_status));
+                            }
+                        }
+                    }
+                } else if (info.ssi_signo == SIGHUP) {
                     thread_scheduler.reset_all();
                     semantic_knobs.rollback_all();
                     longevity.restore_oem_baseline();
@@ -1993,6 +2258,16 @@ int main(int argc, char* argv[]) {
             }
             live_status.baseline_nodes = active_nodes;
             live_status.recovery_pending = active_nodes > 0U;
+            live_status.locked_nodes = baseline.locked_node_count();
+            live_status.quarantined_nodes = coordinator.quarantined_node_count(now_ms);
+            live_status.total_tamper_events = coordinator.total_tamper_events();
+            live_status.tamper_events = coordinator.recent_tamper_events(12U);
+            live_status.symbiotic_regime = symbiotic_plan.regime;
+            live_status.memory_bus_scale = symbiotic_plan.memory_bus_scale;
+            live_status.scheduler_responsiveness_scale = symbiotic_plan.scheduler_responsiveness_scale;
+            live_status.thermal_stepdown_lead = symbiotic_plan.thermal_stepdown_lead;
+            live_status.coupling_mask = symbiotic_plan.coupling_mask;
+            live_status.app_dna_flush_count = app_dna.flush_count();
             live_status.episodes = decision_journal.recent(16U);
             ++live_status.session.scale_samples;
             live_status.session.scale_sum += live_status.capacity_scale;
@@ -2178,7 +2453,7 @@ int main(int argc, char* argv[]) {
                 "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
         }
 
-        // Orthogonal Symbiotic Orchestrator: cross-cluster saturation & CPU-GPU-Memory Little's Law co-pacing
+        // Coupled Multi-Domain Symbiotic Orchestrator: cross-cluster saturation + Compute<->Bus, Render<->Sched, Headroom<->Thermal
         if (!screen_off && boot_dec.allow_storage_and_symbiotic) {
             double little_r = 0.0, mid_r = 0.0, big_r = 0.0;
             for (size_t i = 0; i < topo.cpu_clusters.size() && i < live_status.cluster_cur_khz.size(); ++i) {
@@ -2221,7 +2496,7 @@ int main(int argc, char* argv[]) {
             }
             prev_symbiotic_regime = symbiotic_plan.regime;
         } else {
-            symbiotic_plan = {0, 0.0, 1.0, 0.65, false, false, false};
+            symbiotic_plan = {0, 0.0, 1.0, 0.65, false, false, false, 1.0, 1.0, 0.0, 0};
             prev_symbiotic_regime = 0U;
         }
 
@@ -2248,7 +2523,7 @@ int main(int argc, char* argv[]) {
             app_dna.record_launch(last_fg.package_name, now_ms, to_dna_signature(last_fg.engine_class));
         }
 
-        // Closed-loop Display Frame Pacing Sensor + Per-App Behavioral DNA learning (frozen during BOOT_SETTLE)
+        // Pillar 3: Zero-Wear On-Device Context Learning (RAM cost-to-gain; ScreenOff significant-drift flush)
         if (!screen_off) {
             const bool active_workload =
                 !boot_dec.boot_settle_active &&
@@ -2262,25 +2537,38 @@ int main(int argc, char* argv[]) {
             live_status.jank_ratio = fps_sample.jank_ratio;
             if (!last_fg.package_name.empty()) {
                 if (active_workload && boot_dec.allow_learning) {
-                    app_dna.observe(last_fg.package_name, live_status.jank_ratio,
-                                    live_status.thermal_velocity_cpm, now_ms,
-                                    to_dna_signature(last_fg.engine_class));
+                    v6::ContextLearningSample ctx_sample{};
+                    ctx_sample.jank_ratio = live_status.jank_ratio;
+                    ctx_sample.measured_fps = live_status.measured_fps;
+                    ctx_sample.target_fps = static_cast<double>(topo.refresh_hz > 0U ? topo.refresh_hz : 60U);
+                    ctx_sample.thermal_velocity_cpm = live_status.thermal_velocity_cpm;
+                    ctx_sample.power_mw = live_status.battery.power_mw;
+                    ctx_sample.charging = live_status.battery.charging;
+                    ctx_sample.low_battery = (live_status.battery.battery_capacity_pct >= 0 &&
+                                              live_status.battery.battery_capacity_pct <= 20);
+                    ctx_sample.in_wake_ramp = (boot_dec.ramp_alpha < 0.99);
+                    ctx_sample.capacity_scale = live_status.capacity_scale;
+                    app_dna.observe_context(last_fg.package_name, ctx_sample, now_ms,
+                                            to_dna_signature(last_fg.engine_class));
                 }
                 live_status.active_app_bias = app_dna.uclamp_bias_for(last_fg.package_name);
+                live_status.active_app_efficiency_weight = app_dna.efficiency_weight_for(last_fg.package_name);
                 live_status.app_dna_learned = app_dna.learned_count();
             } else {
                 live_status.active_app_bias = 1.0;
+                live_status.active_app_efficiency_weight = 1.0;
             }
         } else {
             frame_pacing.reset();
             live_status.measured_fps = 0.0;
             live_status.jank_ratio = -1.0;
             live_status.active_app_bias = 1.0;
-            // Lazy cross-reboot persistence during ScreenOff (throttled to <= once per 10 min)
+            live_status.active_app_efficiency_weight = 1.0;
+            // Zero-Wear persistence during ScreenOff ONLY (throttled <= 1x / 15 min & gated on significant drift)
             if (boot_dec.allow_learning &&
-                (last_state_persist_ms == 0U || now_ms >= last_state_persist_ms + 600'000ULL)) {
+                (last_state_persist_ms == 0U || now_ms >= last_state_persist_ms + 900'000ULL)) {
                 last_state_persist_ms = now_ms;
-                (void)app_dna.flush_if_dirty();
+                (void)app_dna.flush_if_significant();
                 if (preloader_dirty && save_preloader_state(*preloader, preloader_pkg_map)) {
                     preloader_dirty = false;
                 }
@@ -2430,12 +2718,13 @@ int main(int argc, char* argv[]) {
     });
 
     (void)write_status_snapshot(build_status_json(live_status));
-    emit_log(false, "[CoreFlow] v6.2.0 Closed-Loop Intelligence Daemon started (profile=" + config.profile +
+    emit_log(false, "[CFAE] CoreFlow Engine v6.0.0-R Sovereign Daemon started (profile=" + config.profile +
              ", storage=" + HardwareProbe::storage_type_name(topo.primary_storage) +
              ", hz=" + std::to_string(topo.refresh_hz) +
              ", framePacing=" + (frame_pacing.supported() ? "yes" : "no") +
              ", appDna=" + std::to_string(app_dna.learned_count()) +
              ", semanticKnobs=" + std::to_string(semantic_knobs.stats().discovered_total) +
+             ", memBusNodes=" + std::to_string(topo.memory_bus_nodes.size()) +
              ", oemYielded=" + std::to_string(oem_map.yielded_count()) +
              ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") +
              ", bypassSupported=" + (longevity.is_bypass_supported() ? "yes" : "no") + ").");
@@ -2455,8 +2744,9 @@ int main(int argc, char* argv[]) {
     (void)baseline.rollback_all();
     live_status.running = false;
     live_status.pid = 0;
+    live_status.locked_nodes = baseline.locked_node_count();
     (void)write_status_snapshot(build_status_json(live_status));
     clear_pid(pid_lock);
-    emit_log(false, "[CoreFlow] v6.2.0 Daemon stopped; OEM baseline restored.");
+    emit_log(false, "[CFAE] CoreFlow Engine v6.0.0-R Sovereign Daemon stopped; OEM baseline restored.");
     return 0;
 }

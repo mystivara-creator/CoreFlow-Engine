@@ -81,7 +81,20 @@ public:
     [[nodiscard]] BatteryPowerTelemetry sample_battery_telemetry() const;
     [[nodiscard]] static BatteryPowerTelemetry probe_battery_telemetry(std::string_view sys_root = "/sys");
 
+    /// Hard lithium-ion SOC floor for bypass charging: auto-release at <= 20%
+    /// and require >= 25% hysteresis before re-enabling to prevent UVLO brownout.
+    static constexpr int kBypassMinSocFloorPct = 20;
+    static constexpr int kBypassResumeSocPct = 25;
+
 private:
+    struct PendingLeaseRelease {
+        MutationDomain domain;
+        std::string transaction_id;
+    };
+
+    // Strict lock-ordering invariant (T7):
+    // `mutex_` is NEVER held while calling CentralMutationCoordinator methods
+    // (acquire_lease / release_lease) or MountTopologyResolver filesystem walks.
     CentralMutationCoordinator& coordinator_;
     std::string root_;
     std::string proc_root_;
@@ -102,6 +115,7 @@ private:
     bool battery_stepped_{false};
     bool bypass_active_{false};
     bool ceiling_latched_{false};
+    bool soc_floor_latched_{false};
     uint32_t active_charge_limit_pct_{0};
     std::string bypass_reason_{"off"};
     bool storage_paced_{false};
@@ -115,12 +129,11 @@ private:
     std::vector<std::string> storage_mutation_paths_;
 
     void discover_battery_node();
-    bool acquire_lease_locked(MutationDomain domain, ControllerPriority priority,
-                              std::string& transaction_id, std::string_view prefix);
-    void release_lease_locked(MutationDomain domain, std::string& transaction_id) noexcept;
-    bool rollback_battery_locked() noexcept;
-    bool rollback_bypass_locked() noexcept;
-    bool rollback_storage_locked() noexcept;
+    void flush_releases(std::vector<PendingLeaseRelease>& releases) noexcept;
+    void queue_power_release_if_idle_locked(std::vector<PendingLeaseRelease>& releases);
+    bool rollback_battery_locked(std::vector<PendingLeaseRelease>& releases) noexcept;
+    bool rollback_bypass_locked(std::vector<PendingLeaseRelease>& releases) noexcept;
+    bool rollback_storage_locked(std::vector<PendingLeaseRelease>& releases) noexcept;
     bool handle_preemption(MutationDomain domain, std::string_view transaction_id) noexcept;
 };
 

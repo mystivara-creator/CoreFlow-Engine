@@ -239,6 +239,17 @@ void ThermalEnvelopeActuator::apply(
     const double frame_us = topo.refresh_hz > 0U ? (1000000.0 / static_cast<double>(topo.refresh_hz)) : 16666.0;
     const double cpu_psi_norm = std::isfinite(telemetry.cpu_psi) ? std::clamp(telemetry.cpu_psi / 100.0, 0.0, 1.0) : 0.0;
     const double gpu_norm = std::isfinite(telemetry.gpu_busy_pct) ? std::clamp(telemetry.gpu_busy_pct / 100.0, 0.0, 1.0) : 0.0;
+    const double sched_resp_scale = std::isfinite(telemetry.scheduler_responsiveness_scale)
+        ? std::clamp(telemetry.scheduler_responsiveness_scale, 0.70, 1.0)
+        : 1.0;
+    const double stepdown_lead = std::isfinite(telemetry.thermal_stepdown_lead)
+        ? std::clamp(telemetry.thermal_stepdown_lead, 0.0, 0.15)
+        : 0.0;
+    // Headroom <-> Thermal Envelope coupling:
+    // Whenever wider performance headroom is open, shift thermal step-down curve earlier
+    // proportionally to thermal pressure so silicon glides smoothly instead of cliff-throttling.
+    const double thermal_pressure = thermal_guard ? 1.0 : std::clamp((1.0 - scale) * 4.0, 0.0, 1.0);
+    const double effective_scale = std::clamp(scale - (stepdown_lead * (0.25 + 0.75 * thermal_pressure)), 0.25, 1.0);
     const double profile_bias =
         profile == PerformanceProfile::Smoothness ? 1.08 :
         profile == PerformanceProfile::Gaming ? 1.10 :
@@ -265,7 +276,7 @@ void ThermalEnvelopeActuator::apply(
             } else { // Efficiency under thermal pacing
                 mode_demand = 0.60 - (cap_ratio * 0.12) + (cpu_psi_norm * 0.10);
             }
-            const double effective_tier = std::clamp(mode_demand * profile_bias * scale, 0.25, 0.82);
+            const double effective_tier = std::clamp(mode_demand * profile_bias * effective_scale, 0.25, 0.82);
             const uint64_t freq = select_opp(cluster.opps_khz, effective_tier);
             if (freq > 0U) (void)write_managed_node(cluster.hispeed_freq_path, std::to_string(freq), now_ms);
         }
@@ -284,7 +295,7 @@ void ThermalEnvelopeActuator::apply(
             }
             target_load = target_load / std::clamp(profile_bias, 0.90, 1.08);
             // Smooth thermal backoff raises hispeed_load gradually as PID scale drops.
-            target_load += (1.0 - scale) * 14.0;
+            target_load += (1.0 - effective_scale) * 14.0;
             const uint32_t load = static_cast<uint32_t>(std::clamp(std::lround(target_load), 70L, 96L));
             (void)write_managed_node(cluster.hispeed_load_path, std::to_string(load), now_ms, 3U);
         }
@@ -292,14 +303,16 @@ void ThermalEnvelopeActuator::apply(
         const bool walt_zero_up = (cluster.governor == "walt" && cluster.has_baseline_up_rate_limit &&
                                    cluster.baseline_up_rate_limit_us == 0U);
         if (!cluster.up_rate_limit_path.empty() && (!walt_zero_up || thermal_guard)) {
-            // Derived continuously from frame_us (e.g. 0.04..0.25 frames) & PID scale.
+            // Derived continuously from frame_us (e.g. 0.04..0.25 frames), PID scale, and
+            // Rendering <-> Scheduler responsiveness coupling (tighter when render_pressure rises).
             // Never slow down Qualcomm WALT's instant 0 us ramp-up while cool.
             const double up_frames = thermal_guard ? 0.25 :
                 (mode == ContextMode::LaunchBurst || mode == ContextMode::Interactive) ? 0.04 :
                 mode == ContextMode::Gaming ? 0.06 : 0.16;
+            const double coupled_up_frames = thermal_guard ? up_frames : (up_frames * sched_resp_scale);
             const uint64_t up_us = static_cast<uint64_t>(
-                std::clamp(std::lround((frame_us * up_frames) / std::clamp(scale, 0.50, 1.0)), 300L, 6000L));
-            (void)write_managed_node(cluster.up_rate_limit_path, std::to_string(up_us), now_ms, 300U);
+                std::clamp(std::lround((frame_us * coupled_up_frames) / std::clamp(scale, 0.50, 1.0)), 250L, 6000L));
+            (void)write_managed_node(cluster.up_rate_limit_path, std::to_string(up_us), now_ms, 100U);
         }
 
         const bool walt_zero_down = (cluster.governor == "walt" && cluster.has_baseline_down_rate_limit &&
@@ -310,7 +323,7 @@ void ThermalEnvelopeActuator::apply(
                 (mode == ContextMode::LaunchBurst || mode == ContextMode::Gaming) ? (1.10 + gpu_norm * 0.30) :
                 mode == ContextMode::Interactive ? (0.85 + cpu_psi_norm * 0.25) : 0.50;
             const uint64_t down_us = static_cast<uint64_t>(
-                std::clamp(std::lround(frame_us * down_frames * scale), 3000L, 18000L));
+                std::clamp(std::lround(frame_us * down_frames * effective_scale), 3000L, 18000L));
             (void)write_managed_node(cluster.down_rate_limit_path, std::to_string(down_us), now_ms, 1500U);
         }
     }
@@ -322,7 +335,7 @@ void ThermalEnvelopeActuator::apply(
                 mode == ContextMode::Gaming ? (9.0 + gpu_norm * 4.0) :
                 (mode == ContextMode::LaunchBurst || mode == ContextMode::Interactive) ? (7.0 + gpu_norm * 3.0) : 5.0;
             const uint64_t idle_ms = static_cast<uint64_t>(
-                std::clamp(std::lround((frame_us / 1000.0) * frames * scale), 40L, 180L));
+                std::clamp(std::lround((frame_us / 1000.0) * frames * effective_scale), 40L, 180L));
             (void)write_managed_node(topo.gpu.idle_timer_path, std::to_string(idle_ms), now_ms, 15U);
         }
 
@@ -330,10 +343,10 @@ void ThermalEnvelopeActuator::apply(
             !topo.gpu.kgsl_max_pwrlevel_path.empty() &&
             !topo.gpu.kgsl_min_pwrlevel_path.empty()) {
             const auto [target_max, target_min] = compute_kgsl_levels(
-                topo.gpu.kgsl_num_pwrlevels, mode, profile, scale, thermal_guard);
+                topo.gpu.kgsl_num_pwrlevels, mode, profile, effective_scale, thermal_guard);
             // Collaborate with OEM GPU daemon (perfd): only touch min_pwrlevel during active
             // Gaming or thermal pacing; otherwise leave OEM min_pwrlevel untouched to avoid contention.
-            const bool manage_min = (mode == ContextMode::Gaming || thermal_guard || scale < 0.95);
+            const bool manage_min = (mode == ContextMode::Gaming || thermal_guard || effective_scale < 0.95);
             if (!manage_min) {
                 rollback_managed_node(topo.gpu.kgsl_min_pwrlevel_path);
                 if (target_max == 0U) {
@@ -354,7 +367,7 @@ void ThermalEnvelopeActuator::apply(
                 }
             }
         } else if (!topo.gpu.devfreq_max_freq_path.empty() && !topo.gpu.devfreq_opps_hz.empty()) {
-            if (!thermal_guard && scale >= 0.95 &&
+            if (!thermal_guard && effective_scale >= 0.95 &&
                 !(mode == ContextMode::Efficiency && profile == PerformanceProfile::Battery)) {
                 rollback_managed_node(topo.gpu.devfreq_max_freq_path);
             } else {
@@ -362,7 +375,7 @@ void ThermalEnvelopeActuator::apply(
                 if (thermal_guard) base_tier = 0.65;
                 else if (mode == ContextMode::ScreenOff) base_tier = 0.35;
                 else if (mode == ContextMode::Efficiency && profile == PerformanceProfile::Battery) base_tier = 0.85;
-                const double tier = std::clamp(base_tier * scale, 0.30, 1.0);
+                const double tier = std::clamp(base_tier * effective_scale, 0.30, 1.0);
                 const uint64_t freq = select_opp(topo.gpu.devfreq_opps_hz, tier);
                 if (freq > 0U) (void)write_managed_node(topo.gpu.devfreq_max_freq_path, std::to_string(freq), now_ms);
             }

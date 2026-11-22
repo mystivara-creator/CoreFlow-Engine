@@ -210,7 +210,16 @@ BatteryPowerTelemetry read_battery_telemetry(
         }
     }
 
-    bool fuel_gauge_uses_micro_units = (oem_baseline_ua > 20000U);
+    bool fuel_gauge_uses_micro_units = (oem_baseline_ua > 20000U) || (charge_limit_ua > 20000U);
+    if (!fuel_gauge_uses_micro_units && !battery_dir.empty()) {
+        const auto charge_max_path = fs::path(battery_dir) / "constant_charge_current_max";
+        if (regular_non_symlink(charge_max_path)) {
+            uint64_t raw_max = 0;
+            if (positive(line(charge_max_path.string()), raw_max) && raw_max > 20000U) {
+                fuel_gauge_uses_micro_units = true;
+            }
+        }
+    }
     const std::string volt_path = !voltage_node.empty()
         ? voltage_node
         : (!battery_dir.empty() ? (fs::path(battery_dir) / "voltage_now").string() : std::string{});
@@ -233,10 +242,10 @@ BatteryPowerTelemetry read_battery_telemetry(
     if (!cur_path.empty() && regular_non_symlink(cur_path)) {
         double raw_cur = 0.0;
         if (parse_ascii_double(line(cur_path), raw_cur) && std::isfinite(raw_cur)) {
-            // Linux power_supply current_now is microamperes (uA). When voltage_now
-            // or constant_charge_current_max confirms standard micro-unit ABI, always
-            // divide by 1000 so low idle/trickle currents (e.g. 15000 uA = 15 mA) are
-            // never misreported as multi-amp fast charging.
+            // Linux power_supply current_now is microamperes (uA). When voltage_now,
+            // oem_baseline_ua, charge_limit_ua, or constant_charge_current_max confirms
+            // standard micro-unit ABI, always divide by 1000 so low idle/trickle currents
+            // (e.g. 15000 uA = 15 mA) are never misreported as multi-amp fast charging.
             const double abs_cur = std::abs(raw_cur);
             out.current_ma = (fuel_gauge_uses_micro_units || abs_cur > 20000.0)
                 ? (raw_cur / 1000.0)
@@ -273,43 +282,44 @@ HardwareLongevityManager::HardwareLongevityManager(CentralMutationCoordinator& c
 }
 
 HardwareLongevityManager::~HardwareLongevityManager() {
+    std::vector<PendingLeaseRelease> releases;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (bypass_active_) (void)rollback_bypass_locked();
-        if (!battery_transaction_id_.empty()) (void)rollback_battery_locked();
-        if (!storage_transaction_id_.empty()) (void)rollback_storage_locked();
+        if (bypass_active_) (void)rollback_bypass_locked(releases);
+        if (battery_mutation_active_ || !battery_transaction_id_.empty()) {
+            (void)rollback_battery_locked(releases);
+        }
+        if (!storage_transaction_id_.empty()) (void)rollback_storage_locked(releases);
     }
+    flush_releases(releases);
     // unregister waits for any callback that was already dispatched.
     coordinator_.unregister_preemption_handler(controller_name_);
 }
 
-
-bool HardwareLongevityManager::acquire_lease_locked(
-    MutationDomain domain, ControllerPriority priority,
-    std::string& transaction_id, std::string_view prefix) {
-    auto& coordinator = coordinator_;
-    if (!transaction_id.empty()) {
-        return coordinator.acquire_lease(domain, controller_name_, transaction_id, priority);
+void HardwareLongevityManager::flush_releases(
+    std::vector<PendingLeaseRelease>& releases) noexcept {
+    for (const auto& item : releases) {
+        if (!item.transaction_id.empty()) {
+            coordinator_.release_lease(item.domain, controller_name_, item.transaction_id);
+        }
     }
-    transaction_id = std::string(prefix) + "-" + std::to_string(++transaction_generation_);
-    if (!coordinator.acquire_lease(domain, controller_name_, transaction_id, priority)) {
-        transaction_id.clear();
-        return false;
-    }
-    return true;
+    releases.clear();
 }
 
-void HardwareLongevityManager::release_lease_locked(
-    MutationDomain domain, std::string& transaction_id) noexcept {
-    if (transaction_id.empty()) return;
-    coordinator_.release_lease(domain, controller_name_, transaction_id);
-    transaction_id.clear();
+void HardwareLongevityManager::queue_power_release_if_idle_locked(
+    std::vector<PendingLeaseRelease>& releases) {
+    if (!battery_transaction_id_.empty() && !battery_mutation_active_ && !bypass_active_) {
+        releases.push_back({MutationDomain::PowerLongevity, std::move(battery_transaction_id_)});
+        battery_transaction_id_.clear();
+    }
 }
 
-bool HardwareLongevityManager::rollback_bypass_locked() noexcept {
+bool HardwareLongevityManager::rollback_bypass_locked(
+    std::vector<PendingLeaseRelease>& releases) noexcept {
     if (bypass_node_.empty() || !bypass_active_) {
         bypass_active_ = false;
         bypass_reason_ = "off";
+        queue_power_release_if_idle_locked(releases);
         return true;
     }
     auto& store = BaselineStore::instance();
@@ -317,12 +327,18 @@ bool HardwareLongevityManager::rollback_bypass_locked() noexcept {
     if (ok) {
         bypass_active_ = false;
         bypass_reason_ = "off";
+        queue_power_release_if_idle_locked(releases);
     }
     return ok;
 }
 
-bool HardwareLongevityManager::rollback_battery_locked() noexcept {
-    if (battery_transaction_id_.empty()) return !battery_mutation_active_;
+bool HardwareLongevityManager::rollback_battery_locked(
+    std::vector<PendingLeaseRelease>& releases) noexcept {
+    if (!battery_mutation_active_) {
+        battery_stepped_ = false;
+        queue_power_release_if_idle_locked(releases);
+        return true;
+    }
     if (battery_node_.empty()) return false;
 
     auto& store = BaselineStore::instance();
@@ -339,12 +355,16 @@ bool HardwareLongevityManager::rollback_battery_locked() noexcept {
     last_charge_ua_ = restored;
     battery_stepped_ = false;
     battery_mutation_active_ = false;
-    release_lease_locked(MutationDomain::PowerLongevity, battery_transaction_id_);
+    queue_power_release_if_idle_locked(releases);
     return true;
 }
 
-bool HardwareLongevityManager::rollback_storage_locked() noexcept {
-    if (storage_transaction_id_.empty()) return storage_mutation_paths_.empty();
+bool HardwareLongevityManager::rollback_storage_locked(
+    std::vector<PendingLeaseRelease>& releases) noexcept {
+    if (storage_transaction_id_.empty()) {
+        if (storage_mutation_paths_.empty()) storage_paced_ = false;
+        return storage_mutation_paths_.empty();
+    }
     auto& store = BaselineStore::instance();
     for (const auto& path : storage_mutation_paths_) {
         if (!store.rollback(path)) return false;
@@ -357,42 +377,63 @@ bool HardwareLongevityManager::rollback_storage_locked() noexcept {
     storage_mutation_paths_.clear();
     storage_paced_ = false;
     next_storage_probe_ = {};
-    release_lease_locked(MutationDomain::BlockIo, storage_transaction_id_);
+    releases.push_back({MutationDomain::BlockIo, std::move(storage_transaction_id_)});
+    storage_transaction_id_.clear();
     return true;
 }
 
 bool HardwareLongevityManager::handle_preemption(
     MutationDomain domain, std::string_view transaction_id) noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (domain == MutationDomain::PowerLongevity) {
-        if (battery_transaction_id_.empty() || battery_transaction_id_ != transaction_id) return false;
-        (void)rollback_bypass_locked();
-        return rollback_battery_locked();
+    std::vector<PendingLeaseRelease> releases;
+    bool ok = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (domain == MutationDomain::PowerLongevity) {
+            if (battery_transaction_id_.empty() || battery_transaction_id_ != transaction_id) {
+                return false;
+            }
+            const bool bypass_ok = !bypass_active_ || rollback_bypass_locked(releases);
+            const bool batt_ok = !battery_mutation_active_ || rollback_battery_locked(releases);
+            ok = bypass_ok && batt_ok;
+            if (ok && !battery_transaction_id_.empty()) {
+                releases.push_back({MutationDomain::PowerLongevity, std::move(battery_transaction_id_)});
+                battery_transaction_id_.clear();
+            }
+        } else if (domain == MutationDomain::BlockIo) {
+            if (storage_transaction_id_.empty() || storage_transaction_id_ != transaction_id) {
+                return false;
+            }
+            ok = rollback_storage_locked(releases);
+        }
     }
-    if (domain == MutationDomain::BlockIo) {
-        if (storage_transaction_id_.empty() || storage_transaction_id_ != transaction_id) return false;
-        return rollback_storage_locked();
-    }
-    return false;
+    flush_releases(releases);
+    return ok;
 }
 
 void HardwareLongevityManager::initialize(const LongevityConfig& config) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (bypass_active_) (void)rollback_bypass_locked();
-    if ((!battery_transaction_id_.empty() && !rollback_battery_locked()) ||
-        (!storage_transaction_id_.empty() && !rollback_storage_locked())) {
-        return;
+    std::vector<PendingLeaseRelease> releases;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const bool rollback_ok =
+            (!bypass_active_ || rollback_bypass_locked(releases)) &&
+            ((!battery_mutation_active_ && battery_transaction_id_.empty()) ||
+             rollback_battery_locked(releases)) &&
+            (storage_transaction_id_.empty() || rollback_storage_locked(releases));
+        if (rollback_ok) {
+            config_ = config;
+            battery_stepped_ = false;
+            bypass_active_ = false;
+            ceiling_latched_ = false;
+            soc_floor_latched_ = false;
+            active_charge_limit_pct_ = 0;
+            bypass_reason_ = "off";
+            storage_paced_ = false;
+            battery_mutation_active_ = false;
+            next_storage_probe_ = {};
+            discover_battery_node();
+        }
     }
-    config_ = config;
-    battery_stepped_ = false;
-    bypass_active_ = false;
-    ceiling_latched_ = false;
-    active_charge_limit_pct_ = 0;
-    bypass_reason_ = "off";
-    storage_paced_ = false;
-    battery_mutation_active_ = false;
-    next_storage_probe_ = {};
-    discover_battery_node();
+    flush_releases(releases);
 }
 
 void HardwareLongevityManager::discover_battery_node() {
@@ -442,252 +483,413 @@ void HardwareLongevityManager::discover_battery_node() {
 }
 
 bool HardwareLongevityManager::monitor_battery_thermals(float soc_temp) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!config_.enable_battery_step_charging || battery_node_.empty()) return false;
-
-    auto& store = BaselineStore::instance();
-    const auto battery_audit = store.get_audit_trail();
-    const auto* battery_snapshot = find_snapshot(battery_audit, battery_node_);
-    if (!battery_snapshot ||
-        (battery_snapshot->is_modified && battery_transaction_id_.empty())) {
-        // A journaled charging mutation not owned by this manager must never be
-        // treated as its OEM baseline, even if the current value looks familiar.
-        battery_node_.clear();
-        battery_stepped_ = false;
-        return false;
-    }
-    uint64_t current = 0;
-    if (!positive(line(battery_node_), current)) {
-        if (!battery_transaction_id_.empty()) (void)rollback_battery_locked();
-        battery_node_.clear();
-        battery_stepped_ = false;
-        return false;
-    }
-    if (current != last_charge_ua_) {
-        // An OEM/thermal service changed the limit. Relinquish only after the
-        // journal confirms ownership loss and the current value is preserved.
-        if (!battery_transaction_id_.empty() && !rollback_battery_locked()) return false;
-        battery_node_.clear();
-        battery_stepped_ = false;
-        return false;
-    }
-
-    double raw_temp = 0;
-    const bool battery_valid =
-        parse_ascii_double(line(battery_temp_node_), raw_temp) &&
-        raw_temp >= 0 && raw_temp <= 800; // power_supply temperature: tenths Celsius
     (void)soc_temp; // Charge policy uses battery temperature, never CPU junction temperature.
-    const bool charging = line(battery_status_node_) == "Charging";
-    if (!battery_valid || !charging) {
-        if (battery_stepped_) (void)rollback_battery_locked();
+    std::vector<PendingLeaseRelease> releases;
+    std::string tx_id;
+    uint64_t target = 0;
+    std::string target_node;
+    bool need_step_down = false;
+    bool rolled_back = false;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!config_.enable_battery_step_charging || battery_node_.empty()) return false;
+
+        auto& store = BaselineStore::instance();
+        const auto battery_audit = store.get_audit_trail();
+        const auto* battery_snapshot = find_snapshot(battery_audit, battery_node_);
+        if (!battery_snapshot ||
+            (battery_snapshot->is_modified && !battery_mutation_active_)) {
+            // A journaled charging mutation not owned by this manager must never be
+            // treated as its OEM baseline, even if the current value looks familiar.
+            battery_node_.clear();
+            battery_stepped_ = false;
+            return false;
+        }
+        uint64_t current = 0;
+        if (!positive(line(battery_node_), current)) {
+            if (battery_mutation_active_) (void)rollback_battery_locked(releases);
+            battery_node_.clear();
+            battery_stepped_ = false;
+            goto finish;
+        }
+        if (current != last_charge_ua_) {
+            // An OEM/thermal service changed the limit. Relinquish only after the
+            // journal confirms ownership loss and the current value is preserved.
+            if (battery_mutation_active_ && !rollback_battery_locked(releases)) goto finish;
+            battery_node_.clear();
+            battery_stepped_ = false;
+            goto finish;
+        }
+
+        double raw_temp = 0;
+        const bool battery_valid =
+            parse_ascii_double(line(battery_temp_node_), raw_temp) &&
+            raw_temp >= 0 && raw_temp <= 800; // power_supply temperature: tenths Celsius
+        const bool charging = line(battery_status_node_) == "Charging";
+        if (!battery_valid || !charging) {
+            if (battery_stepped_) (void)rollback_battery_locked(releases);
+            goto finish;
+        }
+
+        const double temperature = raw_temp / 10.0;
+        if (temperature >= config_.battery_step_temp_threshold && !battery_stepped_) {
+            target = std::min(
+                charge_baseline_ua_,
+                static_cast<uint64_t>(config_.stepped_charge_current_ma) * 1000);
+            if (target >= current) goto finish; // Never raise an OEM charging limit.
+            tx_id = battery_transaction_id_.empty()
+                ? ("battery-charge-" + std::to_string(++transaction_generation_))
+                : battery_transaction_id_;
+            target_node = battery_node_;
+            need_step_down = true;
+        } else if (temperature <= config_.battery_step_temp_threshold - 3.0 && battery_stepped_) {
+            rolled_back = rollback_battery_locked(releases);
+        }
+    }
+
+finish:
+    flush_releases(releases);
+    if (!need_step_down) return rolled_back;
+
+    // Acquire PowerLongevity lease strictly outside `mutex_` (T7 lock-ordering invariant).
+    if (!coordinator_.acquire_lease(
+            MutationDomain::PowerLongevity,
+            controller_name_,
+            tx_id,
+            ControllerPriority::ThermalStabilization)) {
         return false;
     }
 
-    const double temperature = raw_temp / 10.0;
-    if (temperature >= config_.battery_step_temp_threshold && !battery_stepped_) {
-        const auto target = std::min(
-            charge_baseline_ua_,
-            static_cast<uint64_t>(config_.stepped_charge_current_ma) * 1000);
-        if (target >= current) return false; // Never raise an OEM charging limit.
-        if (!acquire_lease_locked(
-                MutationDomain::PowerLongevity,
-                ControllerPriority::ThermalStabilization,
-                battery_transaction_id_, "battery-charge")) {
-            return false;
+    bool applied_ok = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (battery_node_.empty() || battery_node_ != target_node || battery_stepped_) {
+            if (battery_transaction_id_.empty()) {
+                releases.push_back({MutationDomain::PowerLongevity, tx_id});
+            }
+        } else {
+            if (battery_transaction_id_.empty()) battery_transaction_id_ = tx_id;
+            auto& store = BaselineStore::instance();
+            const bool applied = store.apply_mutation(battery_node_, std::to_string(target));
+            uint64_t readback = 0;
+            if (!positive(line(battery_node_), readback) || readback != target) {
+                battery_mutation_active_ = readback != charge_baseline_ua_;
+                if (battery_mutation_active_) {
+                    (void)rollback_battery_locked(releases);
+                } else {
+                    queue_power_release_if_idle_locked(releases);
+                }
+            } else if (!applied) {
+                battery_mutation_active_ = true;
+                (void)rollback_battery_locked(releases);
+            } else {
+                last_charge_ua_ = target;
+                battery_stepped_ = true;
+                battery_mutation_active_ = true;
+                applied_ok = true;
+            }
         }
-        const bool applied = store.apply_mutation(battery_node_, std::to_string(target));
-        uint64_t readback = 0;
-        if (!positive(line(battery_node_), readback) || readback != target) {
-            battery_mutation_active_ = readback != charge_baseline_ua_;
-            if (battery_mutation_active_) (void)rollback_battery_locked();
-            else release_lease_locked(MutationDomain::PowerLongevity, battery_transaction_id_);
-            return false;
-        }
-        if (!applied) {
-            battery_mutation_active_ = true;
-            (void)rollback_battery_locked();
-            return false;
-        }
-        last_charge_ua_ = target;
-        battery_stepped_ = true;
-        battery_mutation_active_ = true;
-        return true;
     }
-
-    if (temperature <= config_.battery_step_temp_threshold - 3.0 && battery_stepped_) {
-        return rollback_battery_locked();
-    }
-    return false;
+    flush_releases(releases);
+    return applied_ok;
 }
 
 bool HardwareLongevityManager::apply_storage_pacing() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!config_.enable_ufs_burst_pacing) return true;
+    std::vector<PendingLeaseRelease> releases;
+    std::string proc_root_copy;
+    uint32_t top_app_weight = 800U;
+    std::chrono::steady_clock::time_point now{};
 
-    auto& store = BaselineStore::instance();
-    if (!storage_transaction_id_.empty()) {
-        const auto audit = store.get_audit_trail();
-        for (const auto& path : storage_mutation_paths_) {
-            const auto* snapshot = find_snapshot(audit, path);
-            if (!snapshot || !store.owns_expected_state(path, snapshot->active_value)) {
-                if (!rollback_storage_locked()) return false;
-                return false; // OEM ownership changed; do not reassert in this cycle.
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!config_.enable_ufs_burst_pacing) return true;
+
+        auto& store = BaselineStore::instance();
+        if (!storage_transaction_id_.empty()) {
+            const auto audit = store.get_audit_trail();
+            for (const auto& path : storage_mutation_paths_) {
+                const auto* snapshot = find_snapshot(audit, path);
+                if (!snapshot || !store.owns_expected_state(path, snapshot->active_value)) {
+                    (void)rollback_storage_locked(releases);
+                    goto release_and_fail;
+                }
             }
         }
-    }
-    if (storage_paced_) return true;
-    // Foreground I/O discovery walks mountinfo and up to 4096 cgroup
-    // directories, then inspects process membership. Back off only when the
-    // resolver cannot find an eligible foreground io.weight target. If a
-    // group is found, keep evaluating its live ownership and access state on
-    // the next tick; active transactions always bypass the negative cache.
-    const auto now = std::chrono::steady_clock::now();
-    if (storage_transaction_id_.empty() && now < next_storage_probe_) return true;
+        if (storage_paced_) return true;
 
-    bool available = false;
-    // Resolve the actual foreground hierarchy from mountinfo + process cgroup
-    // membership and require the co-located I/O weight ABI. No group name or
-    // cgroup mountpoint is assumed by this controller.
-    MountTopologyResolver topology(proc_root_);
-    const auto foreground = topology.resolve_foreground_io_group();
-    if (!foreground) {
-        if (storage_transaction_id_.empty())
-            next_storage_probe_ = now + std::chrono::seconds(5);
-        storage_paced_ = false;
-        return true; // Unsupported/ambiguous I/O ABI remains observation-only.
+        // Foreground I/O discovery walks mountinfo and up to 4096 cgroup
+        // directories, then inspects process membership. Back off only when the
+        // resolver cannot find an eligible foreground io.weight target.
+        now = std::chrono::steady_clock::now();
+        if (storage_transaction_id_.empty() && now < next_storage_probe_) return true;
+        proc_root_copy = proc_root_;
+        top_app_weight = config_.top_app_io_weight;
     }
-    next_storage_probe_ = {};
-    for (const auto& io_target : {std::pair{foreground->io_weight_path, config_.top_app_io_weight}}) {
-        const std::string& path = io_target.first;
-        const uint32_t weight = io_target.second;
-        const auto before = line(path);
-        if (before.rfind("default ", 0) != 0 || ::access(path.c_str(), W_OK) != 0) continue;
-        uint64_t old_weight = 0;
-        if (!positive(before.substr(8), old_weight) || old_weight > 10000) continue;
-        if (!store.capture(path)) continue;
-        const auto audit_before = store.get_audit_trail();
-        const auto* snapshot_before = find_snapshot(audit_before, path);
-        const bool path_already_owned = std::find(
-            storage_mutation_paths_.begin(), storage_mutation_paths_.end(), path) !=
-            storage_mutation_paths_.end();
-        if (!snapshot_before ||
-            (snapshot_before->is_modified && !path_already_owned)) {
-            // Do not extend this controller's BlockIo transaction onto a path
-            // already modified by another or unresolved owner.
-            continue;
+
+    // Perform potentially expensive cgroup filesystem traversal strictly outside `mutex_` (T7).
+    {
+        MountTopologyResolver topology(proc_root_copy);
+        const auto foreground = topology.resolve_foreground_io_group();
+        if (!foreground) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (storage_transaction_id_.empty()) {
+                next_storage_probe_ = now + std::chrono::seconds(5);
+            }
+            storage_paced_ = false;
+            return true; // Unsupported/ambiguous I/O ABI remains observation-only.
         }
-        const std::string target =
-            "default " + std::to_string(std::clamp(weight, 1u, 10000u));
-        if (before == target) {
-            available = true;
-            continue;
+
+        const std::string& path = foreground->io_weight_path;
+        std::string before;
+        std::string target;
+        std::string tx_id;
+        bool need_mutation = false;
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            next_storage_probe_ = {};
+            before = line(path);
+            if (before.rfind("default ", 0) == 0 && ::access(path.c_str(), W_OK) == 0) {
+                uint64_t old_weight = 0;
+                if (positive(before.substr(8), old_weight) && old_weight <= 10000U) {
+                    auto& store = BaselineStore::instance();
+                    if (store.capture(path)) {
+                        const auto audit_before = store.get_audit_trail();
+                        const auto* snapshot_before = find_snapshot(audit_before, path);
+                        const bool path_already_owned = std::find(
+                            storage_mutation_paths_.begin(), storage_mutation_paths_.end(), path) !=
+                            storage_mutation_paths_.end();
+                        if (snapshot_before && (!snapshot_before->is_modified || path_already_owned)) {
+                            target = "default " + std::to_string(std::clamp(top_app_weight, 1u, 10000u));
+                            if (before == target) {
+                                storage_paced_ = true;
+                            } else {
+                                tx_id = storage_transaction_id_.empty()
+                                    ? ("storage-pacing-" + std::to_string(++transaction_generation_))
+                                    : storage_transaction_id_;
+                                need_mutation = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!need_mutation) {
+                if (storage_mutation_paths_.empty() && !storage_transaction_id_.empty()) {
+                    releases.push_back({MutationDomain::BlockIo, std::move(storage_transaction_id_)});
+                    storage_transaction_id_.clear();
+                }
+            }
         }
-        if (!acquire_lease_locked(
+        flush_releases(releases);
+        if (!need_mutation) return true;
+
+        // Acquire BlockIo lease strictly outside `mutex_` (T7 lock-ordering invariant).
+        if (!coordinator_.acquire_lease(
                 MutationDomain::BlockIo,
-                ControllerPriority::WorkloadOptimization,
-                storage_transaction_id_, "storage-pacing")) {
-            if (!storage_mutation_paths_.empty()) (void)rollback_storage_locked();
-            return false;
-        }
-
-        const bool applied = store.apply_mutation(path, target);
-        const std::string readback = line(path);
-        if (readback != before &&
-            std::find(storage_mutation_paths_.begin(), storage_mutation_paths_.end(), path) ==
-                storage_mutation_paths_.end()) {
-            storage_mutation_paths_.push_back(path);
-        }
-        if (!applied || readback != target) {
-            if (storage_mutation_paths_.empty()) {
-                release_lease_locked(MutationDomain::BlockIo, storage_transaction_id_);
-            } else {
-                (void)rollback_storage_locked();
+                controller_name_,
+                tx_id,
+                ControllerPriority::WorkloadOptimization)) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!storage_mutation_paths_.empty()) (void)rollback_storage_locked(releases);
+                storage_paced_ = false;
             }
+            flush_releases(releases);
             return false;
         }
-        available = true;
+
+        bool ok = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (storage_transaction_id_.empty()) storage_transaction_id_ = tx_id;
+            auto& store = BaselineStore::instance();
+            const bool applied = store.apply_mutation(path, target);
+            const std::string readback = line(path);
+            if (readback != before &&
+                std::find(storage_mutation_paths_.begin(), storage_mutation_paths_.end(), path) ==
+                    storage_mutation_paths_.end()) {
+                storage_mutation_paths_.push_back(path);
+            }
+            if (!applied || readback != target) {
+                if (storage_mutation_paths_.empty()) {
+                    releases.push_back({MutationDomain::BlockIo, std::move(storage_transaction_id_)});
+                    storage_transaction_id_.clear();
+                    storage_paced_ = false;
+                } else {
+                    (void)rollback_storage_locked(releases);
+                }
+            } else {
+                storage_paced_ = true;
+                ok = true;
+            }
+        }
+        flush_releases(releases);
+        return ok;
     }
 
-    storage_paced_ = available;
-    if (storage_mutation_paths_.empty() && !storage_transaction_id_.empty()) {
-        release_lease_locked(MutationDomain::BlockIo, storage_transaction_id_);
-    }
-    return true;
+release_and_fail:
+    flush_releases(releases);
+    return false;
 }
 
 bool HardwareLongevityManager::apply_power_control(
     bool manual_bypass, bool gaming_mode, bool bypass_on_gaming, uint32_t charge_limit_pct) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const uint32_t sanitized_limit = (charge_limit_pct >= 60U && charge_limit_pct <= 95U) ? charge_limit_pct : 0U;
-    active_charge_limit_pct_ = sanitized_limit;
-
-    if (bypass_node_.empty()) {
-        bypass_active_ = false;
-        ceiling_latched_ = false;
-        bypass_reason_ = "off";
-        return false;
-    }
-
-    int cap = -1;
-    if (!battery_capacity_node_.empty() && regular_non_symlink(battery_capacity_node_)) {
-        double raw_cap = -1.0;
-        if (parse_ascii_double(line(battery_capacity_node_), raw_cap) && raw_cap >= 0.0 && raw_cap <= 100.0) {
-            cap = static_cast<int>(std::lround(raw_cap));
-        }
-    }
-
-    if (sanitized_limit == 0U || cap < 0) {
-        ceiling_latched_ = false;
-    } else if (cap >= static_cast<int>(sanitized_limit)) {
-        ceiling_latched_ = true;
-    } else if (cap <= static_cast<int>(sanitized_limit) - 3) {
-        ceiling_latched_ = false;
-    }
-
-    const bool want_bypass = manual_bypass || (bypass_on_gaming && gaming_mode) || ceiling_latched_;
+    std::vector<PendingLeaseRelease> releases;
+    std::string tx_id;
+    std::string bypass_node_copy;
+    std::string bypass_enable_copy;
     std::string reason = "off";
-    if (manual_bypass) reason = "manual";
-    else if (bypass_on_gaming && gaming_mode) reason = "gaming";
-    else if (ceiling_latched_) reason = "charge_limit";
+    ControllerPriority lease_priority = ControllerPriority::WorkloadOptimization;
+    bool need_engage = false;
+    bool immediate_result = false;
 
-    if (!want_bypass) {
-        if (bypass_active_) {
-            return rollback_bypass_locked();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const uint32_t sanitized_limit =
+            (charge_limit_pct >= 60U && charge_limit_pct <= 95U) ? charge_limit_pct : 0U;
+        active_charge_limit_pct_ = sanitized_limit;
+
+        if (bypass_node_.empty()) {
+            bypass_active_ = false;
+            ceiling_latched_ = false;
+            soc_floor_latched_ = false;
+            bypass_reason_ = "off";
+            return false;
         }
-        bypass_reason_ = "off";
-        return true;
+
+        int cap = -1;
+        if (!battery_capacity_node_.empty() && regular_non_symlink(battery_capacity_node_)) {
+            double raw_cap = -1.0;
+            if (parse_ascii_double(line(battery_capacity_node_), raw_cap) &&
+                raw_cap >= 0.0 && raw_cap <= 100.0) {
+                cap = static_cast<int>(std::lround(raw_cap));
+            }
+        }
+
+        // Charge ceiling hysteresis (3% band)
+        if (sanitized_limit == 0U || cap < 0) {
+            ceiling_latched_ = false;
+        } else if (cap >= static_cast<int>(sanitized_limit)) {
+            ceiling_latched_ = true;
+        } else if (cap <= static_cast<int>(sanitized_limit) - 3) {
+            ceiling_latched_ = false;
+        }
+
+        const bool want_bypass = manual_bypass || (bypass_on_gaming && gaming_mode) || ceiling_latched_;
+
+        // T3: Hard lithium-ion SOC safety floor (fail-closed if capacity unreadable,
+        // auto-release at <= 20%, require >= 25% hysteresis before re-enabling).
+        if (cap < 0 || cap <= kBypassMinSocFloorPct) {
+            soc_floor_latched_ = true;
+        } else if (soc_floor_latched_ && cap >= kBypassResumeSocPct) {
+            soc_floor_latched_ = false;
+        }
+
+        if (soc_floor_latched_) {
+            ceiling_latched_ = false;
+            const bool released = !bypass_active_ || rollback_bypass_locked(releases);
+            if (!bypass_active_) {
+                bypass_reason_ = want_bypass ? "soc_floor" : "off";
+            }
+            // Refuse bypass activation when below safe SOC floor.
+            immediate_result = want_bypass ? false : released;
+            goto finish;
+        }
+
+        if (manual_bypass) reason = "manual";
+        else if (bypass_on_gaming && gaming_mode) reason = "gaming";
+        else if (ceiling_latched_) reason = "charge_limit";
+
+        if (!want_bypass) {
+            if (bypass_active_) {
+                immediate_result = rollback_bypass_locked(releases);
+            } else {
+                bypass_reason_ = "off";
+                immediate_result = true;
+            }
+            goto finish;
+        }
+
+        // Prepare coordinated PowerLongevity lease acquisition outside `mutex_` (T3 + T7).
+        lease_priority = battery_stepped_
+            ? ControllerPriority::ThermalStabilization
+            : ControllerPriority::WorkloadOptimization;
+        tx_id = battery_transaction_id_.empty()
+            ? ("power-bypass-" + std::to_string(++transaction_generation_))
+            : battery_transaction_id_;
+        bypass_node_copy = bypass_node_;
+        bypass_enable_copy = bypass_enable_val_;
+        need_engage = true;
     }
 
-    auto& store = BaselineStore::instance();
-    if (!store.capture(bypass_node_)) {
+finish:
+    flush_releases(releases);
+    if (!need_engage) return immediate_result;
+
+    if (!coordinator_.acquire_lease(
+            MutationDomain::PowerLongevity,
+            controller_name_,
+            tx_id,
+            lease_priority)) {
         return false;
     }
-    const std::string cur = line(bypass_node_);
-    if (cur == bypass_enable_val_) {
-        bypass_active_ = true;
-        bypass_reason_ = std::move(reason);
-        return true;
+
+    bool ok = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (bypass_node_.empty() || bypass_node_ != bypass_node_copy || soc_floor_latched_) {
+            if (battery_transaction_id_.empty()) {
+                releases.push_back({MutationDomain::PowerLongevity, tx_id});
+            }
+        } else {
+            if (battery_transaction_id_.empty()) battery_transaction_id_ = tx_id;
+            auto& store = BaselineStore::instance();
+            if (!store.capture(bypass_node_)) {
+                queue_power_release_if_idle_locked(releases);
+            } else {
+                const std::string cur = line(bypass_node_);
+                if (cur == bypass_enable_copy) {
+                    bypass_active_ = true;
+                    bypass_reason_ = std::move(reason);
+                    ok = true;
+                } else {
+                    const bool applied = store.apply_mutation(bypass_node_, bypass_enable_copy);
+                    const std::string readback = line(bypass_node_);
+                    if (!applied || readback != bypass_enable_copy) {
+                        (void)store.rollback(bypass_node_);
+                        bypass_active_ = false;
+                        bypass_reason_ = "off";
+                        queue_power_release_if_idle_locked(releases);
+                    } else {
+                        bypass_active_ = true;
+                        bypass_reason_ = std::move(reason);
+                        ok = true;
+                    }
+                }
+            }
+        }
     }
-    const bool applied = store.apply_mutation(bypass_node_, bypass_enable_val_);
-    const std::string readback = line(bypass_node_);
-    if (!applied || readback != bypass_enable_val_) {
-        (void)store.rollback(bypass_node_);
-        bypass_active_ = false;
-        bypass_reason_ = "off";
-        return false;
-    }
-    bypass_active_ = true;
-    bypass_reason_ = std::move(reason);
-    return true;
+    flush_releases(releases);
+    return ok;
 }
 
 void HardwareLongevityManager::restore_oem_baseline() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (bypass_active_) (void)rollback_bypass_locked();
-    ceiling_latched_ = false;
-    if (!battery_transaction_id_.empty()) (void)rollback_battery_locked();
-    if (!storage_transaction_id_.empty()) (void)rollback_storage_locked();
-    if (storage_transaction_id_.empty() && storage_mutation_paths_.empty()) storage_paced_ = false;
+    std::vector<PendingLeaseRelease> releases;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (bypass_active_) (void)rollback_bypass_locked(releases);
+        ceiling_latched_ = false;
+        soc_floor_latched_ = false;
+        if (battery_mutation_active_ || !battery_transaction_id_.empty()) {
+            (void)rollback_battery_locked(releases);
+        }
+        if (!storage_transaction_id_.empty()) (void)rollback_storage_locked(releases);
+        if (storage_transaction_id_.empty() && storage_mutation_paths_.empty()) {
+            storage_paced_ = false;
+        }
+    }
+    flush_releases(releases);
 }
 
 bool HardwareLongevityManager::is_battery_guarded() const noexcept {

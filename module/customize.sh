@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# CoreFlow Engine (CFAE) v6.2.0 — Advanced Read-Only Preflight, Integrity & Atomic Upgrade Installer.
+# CFAE System Framework / CoreFlow Engine v6.0.0-R — Sovereign Preflight, Hard-Block & Atomic Upgrade Installer.
 # All runtime capability discovery, hardware calibration, and kernel actuation remain owned by coreflowd.
 
 PATH="/system/bin:/system/xbin:/sbin:/vendor/bin:$PATH"
@@ -200,8 +200,9 @@ count_input_nodes() {
 
 detect_conflicting_modules() {
     CONFLICTS=""
+    CONFLICTS_JSON=""
     CONFLICT_COUNT=0
-    MOD_ROOT="/data/adb/modules"
+    MOD_ROOT="${COREFLOW_MODULES_ROOT:-/data/adb/modules}"
     [ -d "$MOD_ROOT" ] || return 0
     for DIR in "$MOD_ROOT"/*; do
         [ -d "$DIR" ] || continue
@@ -214,18 +215,40 @@ detect_conflicting_modules() {
         [ -r "$MPROP" ] || continue
         MNAME="$(awk -F= '$1 == "name" { print $2; exit }' "$MPROP" 2>/dev/null)"
         MDESC="$(awk -F= '$1 == "description" { print $2; exit }' "$MPROP" 2>/dev/null)"
-        FOLDED="$(printf '%s %s %s' "$MID" "$MNAME" "$MDESC" | tr 'A-Z' 'a-z')"
-        case "$FOLDED" in
-            *thermal*|*uclamp*|*perf*|*tweak*|*boost*|*governor*|*ktweak*|*fkm*|*magisk-perf*|*encore*|*celestial*|*strp*|*walt*)
-                CONFLICT_COUNT=$((CONFLICT_COUNT + 1))
-                [ -n "$MNAME" ] || MNAME="$MID"
-                if [ -z "$CONFLICTS" ]; then
-                    CONFLICTS="$MNAME"
-                else
-                    CONFLICTS="$CONFLICTS, $MNAME"
-                fi
+        FOLDED_ID_NAME="$(printf '%s %s' "$MID" "$MNAME" | tr 'A-Z' 'a-z')"
+        FOLDED_ALL="$(printf '%s %s %s' "$MID" "$MNAME" "$MDESC" | tr 'A-Z' 'a-z')"
+        IS_CONFLICT=0
+        # 1. Known competing performance/thermal/scheduler optimizer module IDs & names
+        case "$FOLDED_ID_NAME" in
+            *encore*|*uperf*|*fas-rs*|*fas_rs*|*fasrs*|*ktweak*|*magnetar*|*godspeed*|*celestial*|*strp*|*fkm*|*magisk-perf*|*kakarot*|*vortex*|*feast*|*nfs-injector*|*fde.ai*|*fde_ai*|*asopt*|*yc_sched*|*lyb*|*no-thermal*|*nothermal*|*stop-thermal*|*thermal-mod*|*thermal_mod*|*thermal-kill*|*disable-thermal*|*cpu-governor*|*uclamp*|*fpsgo*)
+                IS_CONFLICT=1
                 ;;
         esac
+        # 2. Explicit kernel/thermal/CPU-tuner phrases in full metadata (avoids false positives on
+        #    harmless audio "bass boost", UI "font tweaks", or "perfect integrity" modules)
+        if [ "$IS_CONFLICT" -eq 0 ]; then
+            case "$FOLDED_ALL" in
+                *"encore tweaks"*|*"fas-rs"*|*"fas_rs"*|*"franco kernel"*|*"uclamp"*|*"cpu governor"*|*"sched_boost"*|*"disable thermal"*|*"thermal throttling"*|*"thermal mod"*|*"thermal engine"*|*"kernel tweak"*|*"performance module"*|*"game optimizer"*|*"fpsgo"*|*"walt governor"*)
+                    IS_CONFLICT=1
+                    ;;
+            esac
+        fi
+        if [ "$IS_CONFLICT" -eq 1 ]; then
+            CONFLICT_COUNT=$((CONFLICT_COUNT + 1))
+            if [ -n "$MNAME" ] && [ "$MNAME" != "$MID" ]; then
+                ENTRY_LABEL="$MNAME ($MID)"
+            else
+                ENTRY_LABEL="$MID"
+            fi
+            SAFE_JSON_NAME="$(printf '%s' "$ENTRY_LABEL" | sed 's/["\\]/ /g')"
+            if [ -z "$CONFLICTS" ]; then
+                CONFLICTS="$ENTRY_LABEL"
+                CONFLICTS_JSON="\"$SAFE_JSON_NAME\""
+            else
+                CONFLICTS="$CONFLICTS, $ENTRY_LABEL"
+                CONFLICTS_JSON="$CONFLICTS_JSON,\"$SAFE_JSON_NAME\""
+            fi
+        fi
     done
 }
 
@@ -234,11 +257,11 @@ detect_conflicting_modules() {
 # ---------------------------------------------------------------------------
 ui ""
 ui "+======================================================+"
-ui "|             COREFLOW ENGINE  v6.2.0                  |"
-ui "|     AUTONOMOUS 4-PILLAR ANDROID SYSTEM ENGINE        |"
+ui "|       CFAE SYSTEM FRAMEWORK  v6.0.0-R (REBUILD)      |"
+ui "|      SOVEREIGN AUTONOMOUS ANDROID SYSTEM ENGINE      |"
 ui "|              by mystivara-creator                    |"
 ui "+======================================================+"
-ui "  Zero Fixed Values · Zero Hardcoded Paths · CFJ4 Safe"
+ui "  Sovereign Guard · Coupled Domains · Zero-Wear DNA"
 
 [ -n "$MODPATH" ] || die "MODPATH is not provided by the root-manager installer."
 [ -d "$MODPATH" ] || die "Module staging directory does not exist: $MODPATH"
@@ -252,7 +275,7 @@ LIVE_MOD="${COREFLOW_LIVE_MOD_DIR:-/data/adb/modules/cfae_framework}"
 mkdir -p "$STATE_DIR" || die "Cannot prepare runtime state directory."
 chmod 0700 "$STATE_DIR" 2>/dev/null
 
-PREFLIGHT_REPORT="CoreFlow Engine v6.2.0 — read-only installer preflight"
+PREFLIGHT_REPORT="CFAE System Framework / CoreFlow Engine v6.0.0-R — read-only installer preflight"
 
 # Detect previous installation version for transparent upgrade reporting
 PREV_VERSION=""
@@ -310,9 +333,9 @@ status_line "INFO" "Device   : $BRAND $MODEL ($DEVICE)"
 status_line "INFO" "Kernel   : $KERNEL_RELEASE"
 status_line "INFO" "Root/MAC : $ROOT_MANAGER · SELinux $SELINUX_STATE"
 if [ -n "$PREV_VERSION" ]; then
-    status_line "UPGRADE" "Detected existing installation: $PREV_VERSION -> v6.2.0"
+    status_line "UPGRADE" "Detected existing installation: $PREV_VERSION -> v6.0.0-R"
 else
-    status_line "INSTALL" "Fresh installation of CoreFlow Engine v6.2.0"
+    status_line "INSTALL" "Fresh installation of CFAE System Framework v6.0.0-R"
 fi
 
 # ---------------------------------------------------------------------------
@@ -478,15 +501,35 @@ fi
 
 status_line "READY" "Pillar 4 — Rust PID Thermal Pacing ($THERMAL_COUNT zones, PSI $PSI_AVAILABLE_COUNT/3, $INPUT_COUNT evdev)"
 
-# Non-blocking third-party module conflict advisory
+# Sovereign Pre-Install Conflict Gate (Hard-Block competing tweakers)
 CONFLICTS=""
+CONFLICTS_JSON=""
 CONFLICT_COUNT=0
 detect_conflicting_modules
+CONFLICT_FILE="$STATE_DIR/detected_conflicts.json"
 if [ "$CONFLICT_COUNT" -gt 0 ]; then
-    status_line "ADVISORY" "Possible competing performance modules ($CONFLICT_COUNT): $CONFLICTS"
-    status_line "INFO" "CoreFlow yields safely on OEM/external contention, but disabling overlapping tweakers gives cleanest results"
+    if [ ! -L "$CONFLICT_FILE" ]; then
+        printf '{"count":%s,"modules":[%s]}\n' "$CONFLICT_COUNT" "$CONFLICTS_JSON" > "$CONFLICT_FILE.tmp.$$" 2>/dev/null &&
+            chmod 0600 "$CONFLICT_FILE.tmp.$$" 2>/dev/null &&
+            mv -f "$CONFLICT_FILE.tmp.$$" "$CONFLICT_FILE" 2>/dev/null || rm -f "$CONFLICT_FILE.tmp.$$"
+    fi
+    ui ""
+    ui "  ======================================================"
+    ui "  [SOVEREIGN BLOCK] MODUL PERFORMA BENTROK TERDETEKSI!"
+    ui "  ======================================================"
+    status_line "CONFLICT" "Terdeteksi $CONFLICT_COUNT modul aktif: $CONFLICTS"
+    ui "  CFAE System Framework / CoreFlow Engine bersifat berdaulat"
+    ui "  dan tidak boleh berjalan bersamaan dengan modul tweaking"
+    ui "  performa/termal lain (seperti Encore Tweaks, UPerf, FAS-RS,"
+    ui "  KTweak, Magnetar, atau modul FKM) agar tidak terjadi"
+    ui "  bentrok kernel (tug-of-war) & lonjakan suhu."
+    ui ""
+    ui "  Tindakan wajib: Hapus atau nonaktifkan modul di atas di"
+    ui "  KernelSU / Magisk / APatch, reboot, lalu flash ulang CFAE."
+    die "Instalasi dibatalkan oleh Sovereign Guard karena modul bentrok: $CONFLICTS"
 else
-    status_line "PASS" "No overlapping performance/thermal modules detected"
+    rm -f "$CONFLICT_FILE" 2>/dev/null || true
+    status_line "PASS" "Zero conflicting performance/thermal modules detected (Sovereign Ready)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -506,7 +549,7 @@ elif [ -f "$DEFAULT_CONF" ] && [ ! -L "$DEFAULT_CONF" ]; then
     TMP_CONF="$USER_CONF.tmp.$$"
     rm -f "$TMP_CONF"
     if cp -f "$DEFAULT_CONF" "$TMP_CONF" && chmod 0600 "$TMP_CONF" && mv -f "$TMP_CONF" "$USER_CONF"; then
-        status_line "INIT" "Initialized default v6.2.0 configuration ($USER_CONF)"
+        status_line "INIT" "Initialized default v6.0.0-R configuration ($USER_CONF)"
     else
         rm -f "$TMP_CONF"
         status_line "WARN" "Could not initialize default config; daemon will use compiled defaults"
@@ -592,12 +635,12 @@ if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
                     START_ATTEMPT=$((START_ATTEMPT + 1))
                 done
                 if [ "$DAEMON_READY" -eq 1 ]; then
-                    status_line "LIVE" "CoreFlow v6.2.0 daemon restarted & verified via --status"
+                    status_line "LIVE" "CFAE System Framework v6.0.0-R daemon restarted & verified via --status"
                 else
-                    status_line "WARN" "Live restart unconfirmed; reboot once to activate v6.2.0"
+                    status_line "WARN" "Live restart unconfirmed; reboot once to activate v6.0.0-R"
                 fi
             else
-                status_line "WARN" "Live service.sh unavailable; reboot once to activate v6.2.0"
+                status_line "WARN" "Live service.sh unavailable; reboot once to activate v6.0.0-R"
             fi
         fi
     fi
@@ -607,7 +650,7 @@ fi
 
 ui ""
 ui "+======================================================+"
-ui "|  CoreFlow Engine v6.2.0 — Installation Successful    |"
+ui "|  CFAE System Framework v6.0.0-R — Install Complete   |"
 ui "+------------------------------------------------------+"
 ui "|  WebUI   : KernelSU / APatch (or KsuWebUI on Magisk) |"
 ui "|  Report  : $STATE_DIR/install-preflight.log"

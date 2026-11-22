@@ -67,6 +67,10 @@ case "${1:-}" in
     printf '%s\n' --rollback-baseline >> "$COREFLOW_DAEMON_COMMAND_LOG"
     exit "${COREFLOW_MOCK_ROLLBACK_RESULT:-0}"
     ;;
+  --recover-only)
+    printf '%s\n' --recover-only >> "$COREFLOW_DAEMON_COMMAND_LOG"
+    exit 0
+    ;;
 esac
 exit 0
 EOF
@@ -89,6 +93,12 @@ EPOCH_1="$(cat "$STATE_DIR/boot_epoch")"
 [ -f "$STATE_DIR/coreflow.conf" ] || { echo "FAIL: default.conf not copied"; exit 1; }
 [ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: boot lifecycle must not mutate vendor properties"; exit 1; }
 
+# 1b. T11: Non-destructive config migration appends new default keys without clobbering user keys
+printf 'profile = gaming\n' > "$STATE_DIR/coreflow.conf"
+sh "$MOD_DIR/post-fs-data.sh"
+grep -Eq '^profile = gaming$' "$STATE_DIR/coreflow.conf" || { echo "FAIL: config migration overwrote user key"; exit 1; }
+grep -Eq '^[[:space:]]*battery_step_temp_threshold[[:space:]]*=' "$STATE_DIR/coreflow.conf" || { echo "FAIL: config migration did not append missing default key"; exit 1; }
+
 # 2. Simulate 5 unconfirmed boots -> SAFE_MODE must trigger.
 printf '1\n' > "$STATE_DIR/boot_attempts"
 for i in 2 3 4 5; do
@@ -96,6 +106,11 @@ for i in 2 3 4 5; do
 done
 [ "$(cat "$STATE_DIR/boot_attempts")" = "5" ] || { echo "FAIL: boot_attempts != 5"; exit 1; }
 [ -f "$STATE_DIR/SAFE_MODE" ] || { echo "FAIL: SAFE_MODE not triggered at 5 boots"; exit 1; }
+
+# 2b. T4: service.sh under SAFE_MODE must invoke --recover-only before exiting without launching daemon
+COREFLOW_SKIP_BOOT_WAIT=1 sh "$MOD_DIR/service.sh"
+[ ! -s "$COREFLOW_LAUNCH_LOG" ] || { echo "FAIL: service.sh launched daemon under SAFE_MODE"; exit 1; }
+grep -q -- '--recover-only' "$COREFLOW_DAEMON_COMMAND_LOG" || { echo "FAIL: service.sh did not replay journal (--recover-only) under SAFE_MODE"; exit 1; }
 
 # 3. Test customize.sh hot-upgrade preserves SAFE_MODE and DISABLE markers (on Android 13 / API 33)
 mkdir -p "$LIVE_MOD/system/bin"
@@ -123,9 +138,30 @@ run_customize 33
 [ -f "$STATE_DIR/DISABLE" ] || { echo "FAIL: customize.sh deleted DISABLE"; exit 1; }
 [ ! -f "$STATE_DIR/coreflowd.pid" ] || { echo "FAIL: daemon started despite SAFE_MODE/DISABLE"; exit 1; }
 
+# 3b. Pre-Install Sovereign Conflict Hard-Block: active competing tweaker must abort install & record JSON
+FAKE_MODS="$TMP_ROOT/fake_modules"
+mkdir -p "$FAKE_MODS/encore_tweaks"
+printf 'id=encore_tweaks\nname=Encore Tweaks\n' > "$FAKE_MODS/encore_tweaks/module.prop"
+if COREFLOW_MODULES_ROOT="$FAKE_MODS" run_customize 35 2>/dev/null; then
+  echo "FAIL: customize.sh did not hard-block conflicting module encore_tweaks"
+  exit 1
+fi
+[ -f "$STATE_DIR/detected_conflicts.json" ] || { echo "FAIL: detected_conflicts.json not persisted"; exit 1; }
+grep -q 'encore_tweaks' "$STATE_DIR/detected_conflicts.json" || { echo "FAIL: encore_tweaks missing in detected_conflicts.json"; exit 1; }
+# Disabling or removing the conflicting module clears hard-block
+touch "$FAKE_MODS/encore_tweaks/disable"
+# Harmless modules mentioning "boost", "perfect", "tweak", or "schedule" must NEVER false-positive!
+mkdir -p "$FAKE_MODS/viper4android" "$FAKE_MODS/playintegrityfix" "$FAKE_MODS/auto_dark_theme"
+printf 'id=viper4android\nname=ViPER4Android FX\ndescription=Bass boost and audio tweaks for Android\n' > "$FAKE_MODS/viper4android/module.prop"
+printf 'id=playintegrityfix\nname=Play Integrity Fix\ndescription=Perfect Play Integrity compatibility\n' > "$FAKE_MODS/playintegrityfix/module.prop"
+printf 'id=auto_dark_theme\nname=Auto Dark Mode\ndescription=Scheduled UI theme switcher\n' > "$FAKE_MODS/auto_dark_theme/module.prop"
+COREFLOW_MODULES_ROOT="$FAKE_MODS" run_customize 35
+[ ! -e "$STATE_DIR/detected_conflicts.json" ] || { echo "FAIL: harmless modules falsely triggered conflict block"; exit 1; }
+rm -rf "$FAKE_MODS"
+
 # 4. Clear safety markers and verify customize.sh hot-reloads and verifies daemon status
 rm -f "$STATE_DIR/SAFE_MODE" "$STATE_DIR/DISABLE"
-run_customize 35
+COREFLOW_MODULES_ROOT="$TMP_ROOT/empty_mods" run_customize 35
 [ -f "$STATE_DIR/coreflowd.pid" ] || { echo "FAIL: daemon did not start after clearing markers"; exit 1; }
 
 # 5. Concurrent service invocations must result in one deterministic daemon launch.
@@ -178,6 +214,17 @@ printf 'wal\n' > "$STATE_DIR/direct-adaptive.wal"
 sh "$MOD_DIR/action.sh" rollback
 [ ! -e "$STATE_DIR/direct-adaptive.wal" ] || {
   echo "FAIL: action.sh did not clear WAL after verified rollback"
+  exit 1
+}
+touch "$STATE_DIR/SAFE_MODE" "$MOD_DIR/disable"
+printf '8\n' > "$STATE_DIR/boot_attempts"
+sh "$MOD_DIR/action.sh" clear-safety >/dev/null
+[ ! -e "$STATE_DIR/SAFE_MODE" ] && [ ! -e "$MOD_DIR/disable" ] || {
+  echo "FAIL: action.sh clear-safety did not remove SAFE_MODE / disable"
+  exit 1
+}
+[ "$(cat "$STATE_DIR/boot_attempts")" = "0" ] || {
+  echo "FAIL: action.sh clear-safety did not reset boot_attempts to 0"
   exit 1
 }
 

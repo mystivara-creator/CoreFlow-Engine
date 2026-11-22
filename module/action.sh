@@ -17,6 +17,21 @@ case "${1:-status}" in
   episodes) "$BIN" --episodes ;;
   journal) "$BIN" --journal ;;
   diag) "$BIN" --diag ;;
+  recover)
+    "$BIN" --recover-only
+    exit $?
+    ;;
+  clear-safety)
+    "$BIN" --recover-only >/dev/null 2>&1 || true
+    rm -f "$STATE/SAFE_MODE" "$STATE/DISABLE" "$MODDIR/disable" \
+      "/data/adb/modules/cfae_framework/disable" "/data/adb/modules/coreflow_engine/disable"
+    if [ ! -L "$STATE/boot_attempts" ]; then
+      TMP_ATTEMPTS="$STATE/boot_attempts.tmp.$$"
+      printf '0\n' > "$TMP_ATTEMPTS" && chmod 600 "$TMP_ATTEMPTS" && mv -f "$TMP_ATTEMPTS" "$STATE/boot_attempts"
+    fi
+    echo "CFAE safety markers cleared and boot_attempts reset to 0."
+    exit 0
+    ;;
   rollback)
     "$BIN" --rollback-baseline
     RESULT=$?
@@ -28,7 +43,7 @@ case "${1:-status}" in
     exit "$RESULT"
     ;;
   *)
-    echo "Usage: action.sh [status|atlas|episodes|journal|diag|rollback]" >&2
+    echo "Usage: action.sh [status|atlas|episodes|journal|diag|recover|clear-safety|rollback]" >&2
     exit 2
     ;;
 esac

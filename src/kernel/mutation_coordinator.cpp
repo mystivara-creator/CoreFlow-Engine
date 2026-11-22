@@ -468,11 +468,147 @@ std::vector<DomainLease> CentralMutationCoordinator::active_leases() const {
     return out;
 }
 
+const char* CentralMutationCoordinator::domain_name(MutationDomain domain) noexcept {
+    switch (domain) {
+        case MutationDomain::CpuPolicy: return "CpuPolicy";
+        case MutationDomain::BlockIo: return "BlockIo";
+        case MutationDomain::VmMemory: return "VmMemory";
+        case MutationDomain::UclampCgroup: return "UclampCgroup";
+        case MutationDomain::GpuDevfreq: return "GpuDevfreq";
+        case MutationDomain::PowerLongevity: return "PowerLongevity";
+        case MutationDomain::ThermalCore: return "ThermalCore";
+    }
+    return "Unknown";
+}
+
+void CentralMutationCoordinator::set_tamper_listener(TamperListener listener) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    tamper_listener_ = std::move(listener);
+}
+
+bool CentralMutationCoordinator::is_node_quarantined(
+    const std::string& node_path,
+    uint64_t now_ms) const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = tamper_trackers_.find(node_path);
+    return it != tamper_trackers_.end() && now_ms < it->second.quarantine_until_ms;
+}
+
+TamperGuardAction CentralMutationCoordinator::evaluate_tamper_reclaim(
+    MutationDomain /*domain*/,
+    const std::string& node_path,
+    const std::string& /*expected_value*/,
+    const std::string& /*observed_value*/,
+    uint64_t now_ms,
+    uint32_t* out_attempts) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto& tracker = tamper_trackers_[node_path];
+    if (now_ms < tracker.quarantine_until_ms) {
+        if (out_attempts != nullptr) {
+            *out_attempts = static_cast<uint32_t>(tracker.recent_attempt_ms.size());
+        }
+        return TamperGuardAction::CircuitOpenQuarantine;
+    }
+
+    // Prune timestamps outside the sliding 5-second circuit-breaker window.
+    auto& ts = tracker.recent_attempt_ms;
+    ts.erase(std::remove_if(ts.begin(), ts.end(), [&](uint64_t t) {
+                 return now_ms > t && (now_ms - t) > kTamperWindowMs;
+             }),
+             ts.end());
+    ts.push_back(now_ms);
+    const uint32_t attempts = static_cast<uint32_t>(ts.size());
+    if (out_attempts != nullptr) *out_attempts = attempts;
+
+    if (attempts >= kTamperMaxAttempts) {
+        // Circuit breaker trips at 3 attempts within 5s: hold 0444 lock & enter 30s quarantine
+        // to eliminate battery-draining tug-of-war write loops.
+        tracker.quarantine_until_ms = now_ms + kTamperQuarantineMs;
+        tracker.breaker_trips += 1U;
+        ts.clear();
+        return TamperGuardAction::CircuitOpenQuarantine;
+    }
+    return TamperGuardAction::ReclaimAndLock;
+}
+
+void CentralMutationCoordinator::finalize_tamper_event(
+    MutationDomain domain,
+    const std::string& node_path,
+    const std::string& expected_value,
+    const std::string& observed_value,
+    bool reclaimed,
+    bool circuit_open,
+    uint32_t attempts_in_window,
+    const std::string& reason,
+    uint64_t epoch_ms) noexcept {
+    TamperEvent ev{};
+    ev.ts_ms = epoch_ms;
+    ev.domain = domain;
+    ev.node_path = node_path;
+    ev.expected_value = expected_value;
+    ev.observed_value = observed_value;
+    ev.reclaimed = reclaimed;
+    ev.circuit_open = circuit_open;
+    ev.attempts_in_window = attempts_in_window;
+    ev.reason = reason;
+
+    TamperListener listener;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        tamper_history_.push_back(ev);
+        if (tamper_history_.size() > kMaxTamperHistory) {
+            tamper_history_.erase(tamper_history_.begin());
+        }
+        total_tamper_events_.fetch_add(1U, std::memory_order_relaxed);
+        listener = tamper_listener_;
+    }
+    if (listener) {
+        listener(ev);
+    }
+}
+
+void CentralMutationCoordinator::clear_node_quarantine(const std::string& node_path) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (node_path.empty() || node_path == "*") {
+        tamper_trackers_.clear();
+        return;
+    }
+    tamper_trackers_.erase(node_path);
+}
+
+std::vector<TamperEvent> CentralMutationCoordinator::recent_tamper_events(size_t limit) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (tamper_history_.empty() || limit == 0U) return {};
+    const size_t start = tamper_history_.size() > limit ? (tamper_history_.size() - limit) : 0U;
+    std::vector<TamperEvent> out(tamper_history_.begin() + static_cast<std::ptrdiff_t>(start),
+                                 tamper_history_.end());
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
+size_t CentralMutationCoordinator::quarantined_node_count(uint64_t now_ms) const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t count = 0U;
+    for (const auto& [_, tr] : tamper_trackers_) {
+        if (now_ms < tr.quarantine_until_ms) ++count;
+    }
+    return count;
+}
+
+uint32_t CentralMutationCoordinator::breaker_trip_count(const std::string& node_path) const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = tamper_trackers_.find(node_path);
+    return it == tamper_trackers_.end() ? 0U : it->second.breaker_trips;
+}
+
 void CentralMutationCoordinator::reset() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     leases_.clear();
+    tamper_trackers_.clear();
+    tamper_history_.clear();
     emergency_recovery_active_ = false;
     conflict_rejections_.store(0, std::memory_order_relaxed);
+    total_tamper_events_.store(0, std::memory_order_relaxed);
 }
 
 // ============================================================================

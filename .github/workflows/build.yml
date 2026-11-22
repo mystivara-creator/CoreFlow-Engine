@@ -2,7 +2,7 @@ name: CoreFlow Engine CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -33,16 +33,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: package.json
+          cache-dependency-path: package-lock.json
       - name: Install WebUI dependencies
         id: install
-        run: npm install --no-package-lock --no-audit --no-fund --prefer-online --fetch-retries=3 --fetch-timeout=120000
+        run: npm ci --no-audit --no-fund --prefer-online --fetch-retries=3 --fetch-timeout=120000
       - name: Run Node.js TypeScript tests
         if: always() && steps.install.outcome == 'success'
         run: node --experimental-strip-types --test webui/engine/__tests__/autonomousEngine.test.ts
@@ -54,7 +54,7 @@ jobs:
         run: npm run build
       - name: Upload WebUI build
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: coreflow-webui-build
           path: module/webroot/
@@ -67,7 +67,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Rust toolchain
         shell: bash
         run: |
@@ -86,14 +86,18 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
-      - name: Validate shell syntax and lifecycle
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Validate shell syntax, sepolicy hygiene, and lifecycle
         shell: bash
         run: |
           set -euo pipefail
           for file in module/*.sh tests/test_module_lifecycle.sh; do
             sh -n "$file"
           done
+          if grep -Eq '^[[:space:]]*allow[[:space:]].*[[:space:]]block_device[[:space:]]' module/sepolicy.rule; then
+            echo "::error::module/sepolicy.rule must never grant raw block_device permissions"
+            exit 1
+          fi
           sh tests/test_module_lifecycle.sh
 
   host-tests:
@@ -102,7 +106,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Rust toolchain for the C++/Rust bridge
         shell: bash
         run: |
@@ -143,7 +147,7 @@ jobs:
           exit "$result"
       - name: Upload host test diagnostics
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: coreflow-host-test-diagnostics
           path: |
@@ -158,7 +162,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Rust toolchain for the C++/Rust bridge
         shell: bash
         run: |
@@ -192,12 +196,60 @@ jobs:
           exit "$result"
       - name: Upload sanitizer diagnostics
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: coreflow-sanitizer-diagnostics
           path: |
             build/sanitize/ci-diagnostics/
             build/sanitize/Testing/Temporary/
+          if-no-files-found: warn
+          retention-days: 30
+
+  tsan:
+    name: ThreadSanitizer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Rust toolchain for the C++/Rust bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal
+          rustup override set "${RUST_TOOLCHAIN}"
+      - name: Configure ThreadSanitizer host build
+        run: |
+          cmake -S . -B build/tsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCORE_FLOW_BUILD_TESTS=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
+      - name: Build ThreadSanitizer tests
+        run: cmake --build build/tsan --parallel "$(nproc)"
+      - name: Run ThreadSanitizer tests with diagnostics
+        shell: bash
+        env:
+          TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
+        run: |
+          set -uo pipefail
+          mkdir -p build/tsan/ci-diagnostics
+          ctest --test-dir build/tsan --output-on-failure --no-tests=error \
+            --output-log build/tsan/ci-diagnostics/ctest.log
+          result=$?
+          if [ -f build/tsan/Testing/Temporary/LastTest.log ]; then
+            cp build/tsan/Testing/Temporary/LastTest.log build/tsan/ci-diagnostics/
+          fi
+          exit "$result"
+      - name: Upload ThreadSanitizer diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: coreflow-tsan-diagnostics
+          path: |
+            build/tsan/ci-diagnostics/
+            build/tsan/Testing/Temporary/
           if-no-files-found: warn
           retention-days: 30
 
@@ -207,7 +259,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Rust toolchain
         shell: bash
         run: |
@@ -224,9 +276,13 @@ jobs:
           MODULE_CODE="$(awk -F= '$1=="versionCode" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
           CMAKE_VERSION="$(sed -n 's/^project(CoreFlowEngine VERSION \([0-9.]*\) LANGUAGES CXX).*$/\1/p' CMakeLists.txt | head -n1)"
           [[ "$CMAKE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          EXPECTED_CODE="$(awk -F. '{printf "%d", $1 * 10000 + $2 * 1000 + $3 * 100}' <<< "$CMAKE_VERSION")"
-          test "$MODULE_CODE" = "$EXPECTED_CODE"
-          test "$MODULE_VERSION" = "v${CMAKE_VERSION}"
+          [[ "$MODULE_CODE" =~ ^[0-9]+$ ]]
+          EXPECTED_BASE_CODE="$(awk -F. '{printf "%d", $1 * 10000 + $2 * 1000 + $3 * 100}' <<< "$CMAKE_VERSION")"
+          test "$MODULE_CODE" -ge "$EXPECTED_BASE_CODE"
+          [[ "$MODULE_VERSION" =~ ^v${CMAKE_VERSION}(-[A-Za-z0-9.]+)?$ ]]
+          grep -Fq "${MODULE_VERSION}" SECURITY.md || { echo "::error::SECURITY.md missing ${MODULE_VERSION}"; exit 1; }
+          grep -Fq "${MODULE_VERSION}" README.md || { echo "::error::README.md missing ${MODULE_VERSION}"; exit 1; }
+          grep -Eq "^## ${MODULE_VERSION}" CHANGELOG.md || { echo "::error::CHANGELOG.md missing section for ${MODULE_VERSION}"; exit 1; }
           echo "version=${MODULE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
       - name: Set up Android NDK
@@ -241,14 +297,14 @@ jobs:
             echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> "$GITHUB_ENV"
           fi
       - name: Build WebUI payload
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: package.json
+          cache-dependency-path: package-lock.json
       - name: Install WebUI dependencies and build
         run: |
-          npm install --no-package-lock --no-audit --no-fund --prefer-online --fetch-retries=3 --fetch-timeout=120000
+          npm ci --no-audit --no-fund --prefer-online --fetch-retries=3 --fetch-timeout=120000
           npm run build
       - name: Configure Android ARM64 release
         run: |
@@ -315,14 +371,14 @@ jobs:
           echo "Validated flashable KernelSU / KernelSU-Next module: ${ZIP_NAME}"
           echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
       - name: Upload flashable package for inspection
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: CFAE-System-Framework-package
           path: artifacts/CFAE-System-Framework-package.zip
           if-no-files-found: error
           retention-days: 30
       - name: Upload unpacked module
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: CFAE-System-Framework-package-unpacked
           path: artifacts/CFAE-System-Framework/
@@ -332,7 +388,7 @@ jobs:
   ci-gate:
     name: CoreFlow CI gate
     if: always()
-    needs: [webui, rust, module, host-tests, sanitizers, android]
+    needs: [webui, rust, module, host-tests, sanitizers, tsan, android]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -344,11 +400,12 @@ jobs:
           MODULE: ${{ needs.module.result }}
           HOST_CPP: ${{ needs.host-tests.result }}
           SANITIZERS: ${{ needs.sanitizers.result }}
+          TSAN: ${{ needs.tsan.result }}
           ANDROID: ${{ needs.android.result }}
         run: |
           set -euo pipefail
           failed=0
-          for check in WEBUI RUST MODULE HOST_CPP SANITIZERS ANDROID; do
+          for check in WEBUI RUST MODULE HOST_CPP SANITIZERS TSAN ANDROID; do
             value="${!check}"
             echo "${check}: ${value}"
             if [ "$value" != "success" ]; then

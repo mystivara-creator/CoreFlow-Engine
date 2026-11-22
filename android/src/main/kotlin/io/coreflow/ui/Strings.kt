@@ -94,6 +94,25 @@ data class AppStrings(
     val labelFramePacing: String,
     val labelAppDna: String,
     val labelThermalEq: String,
+    val sectionDialogueConsole: String,
+    val dialogueInputHint: String,
+    val dialogueSend: String,
+    val dialogueQuickCardTitle: String,
+    val dialogueQuickCardSummary: String,
+    val sectionUpdateCenter: String,
+    val updateCheckNow: String,
+    val updateChecking: String,
+    val updateUpToDate: String,
+    val updateAvailable: String,
+    val updatePendingRelease: String,
+    val updateError: String,
+    val updateDownloadApk: String,
+    val updateDownloadModule: String,
+    val updateOpenReleases: String,
+    val updateModuleLabel: String,
+    val updateAppLabel: String,
+    val updateSkewWarning: String,
+    val updatePendingHint: String,
 ) {
     fun humanizeMode(mode: String): String = when (mode.uppercase(Locale.US)) {
         "LAUNCH_BURST" -> if (isIndonesian) "Lonjakan Buka" else "Launch Burst"
@@ -111,6 +130,8 @@ data class AppStrings(
     fun humanizeOutcome(outcome: String): String = when (outcome) {
         "oem_yield" -> "OEM Yield"
         "rolled_back" -> if (isIndonesian) "Dipulihkan" else "Rolled Back"
+        "reclaimed" -> if (isIndonesian) "Direbut Balik" else "Reclaimed"
+        "quarantined" -> if (isIndonesian) "Karantina 30d" else "Quarantined"
         "skipped" -> if (isIndonesian) "Dilewati" else "Skipped"
         else -> if (isIndonesian) "Terverifikasi" else "Verified"
     }
@@ -239,6 +260,25 @@ fun rememberAppStrings(languageIndex: Int): AppStrings {
                 labelFramePacing = "Frame Pacing",
                 labelAppDna = "App DNA",
                 labelThermalEq = "Termal Dual",
+                sectionDialogueConsole = "KONSOL DIALOG TELEMETRI CFAE",
+                dialogueInputHint = "Tanya telemetri atau minta pindah konteks...",
+                dialogueSend = "Kirim",
+                dialogueQuickCardTitle = "Konsol Dialog CFAE Sovereign",
+                dialogueQuickCardSummary = "Tanya alasan stutter, audit konflik/intervensi, atau ubah konteks langsung berbasis telemetri.",
+                sectionUpdateCenter = "PUSAT PEMBARUAN CFAE",
+                updateCheckNow = "Cek Pembaruan",
+                updateChecking = "Memeriksa rilis GitHub...",
+                updateUpToDate = "Modul & Aplikasi Mutakhir",
+                updateAvailable = "Pembaruan Tersedia",
+                updatePendingRelease = "Versi Baru di Main · Menunggu Rilis Publik",
+                updateError = "Gagal Memeriksa Pembaruan",
+                updateDownloadApk = "Unduh APK",
+                updateDownloadModule = "Unduh Modul ZIP",
+                updateOpenReleases = "Buka Halaman Rilis",
+                updateModuleLabel = "Modul CFAE Engine",
+                updateAppLabel = "Companion App",
+                updateSkewWarning = "Versi Modul & Aplikasi berbeda — samakan keduanya agar protokol telemetri tetap sinkron.",
+                updatePendingHint = "Versi baru sudah tercatat di update.json cabang main, tetapi GitHub Release publik belum diterbitkan. Cek halaman Releases atau Actions.",
             )
         } else {
             AppStrings(
@@ -336,6 +376,25 @@ fun rememberAppStrings(languageIndex: Int): AppStrings {
                 labelFramePacing = "Frame Pacing",
                 labelAppDna = "App DNA",
                 labelThermalEq = "Thermal Eq",
+                sectionDialogueConsole = "CFAE TELEMETRY DIALOGUE CONSOLE",
+                dialogueInputHint = "Ask live telemetry or request a context shift...",
+                dialogueSend = "Send",
+                dialogueQuickCardTitle = "CFAE Sovereign Dialogue Console",
+                dialogueQuickCardSummary = "Ask why frames dropped, inspect tamper/module forensics, or shift context with live telemetry.",
+                sectionUpdateCenter = "CFAE UPDATE CENTER",
+                updateCheckNow = "Check for Updates",
+                updateChecking = "Checking GitHub releases...",
+                updateUpToDate = "Module & App Up to Date",
+                updateAvailable = "Update Available",
+                updatePendingRelease = "Newer Version on Main · Pending Public Release",
+                updateError = "Update Check Failed",
+                updateDownloadApk = "Download APK",
+                updateDownloadModule = "Download Module ZIP",
+                updateOpenReleases = "Open Releases Page",
+                updateModuleLabel = "CFAE Engine Module",
+                updateAppLabel = "Companion App",
+                updateSkewWarning = "Module and App versions differ — keep both aligned for full telemetry parity.",
+                updatePendingHint = "A newer version is staged in main's update.json, but the public GitHub Release has not been published yet.",
             )
         }
     }

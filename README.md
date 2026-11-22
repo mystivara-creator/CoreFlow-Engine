@@ -1,21 +1,21 @@
 <p align="center">
-  <img src="docs/assets/coreflow-v6-banner.svg" width="100%" alt="CoreFlow Engine v6.0 NextGen">
+  <img src="docs/assets/coreflow-v6-banner.svg" width="100%" alt="CFAE System Framework / CoreFlow Engine v6.0.0-R">
 </p>
 
 <p align="center">
-  <strong>Android 13+ (API 33+) · ARM64 · C++20 + Rust Daemon · Miuix Compose Companion App · Magisk / KernelSU / APatch</strong>
+  <strong>Android 13+ (API 33+) · ARM64 · C++23 + Rust Daemon · Miuix Compose Companion App · Magisk / KernelSU / APatch</strong>
 </p>
 
 ---
 
 ## In Ten Seconds
 
-**CoreFlow Engine v6.0 NextGen** is an autonomous, capability-driven performance and power framework for rooted Android — engineered in **C++20 + Rust** (`~600 KB`, `~0.0%` idle battery overhead) paired with a native **Miuix Compose Companion App** and **MD3 WebUI**.
+**CFAE System Framework / CoreFlow Engine `v6.0.0-R`** is an autonomous, sovereign performance and power orchestration framework for rooted Android — engineered in **C++23 + Rust** (compact native binary targeting `< 0.3%` idle CPU and `< 3 MB` RSS, verifiable via `coreflowd --diag` and `/proc/<pid>/status`) paired with a native **Miuix Compose Companion App** and **MD3 WebUI**.
 
-Instead of dumping fake switches or fighting OEM thermal daemons, CoreFlow v6 follows four strict engineering rules:
+Instead of dumping manual frequency sliders or fighting OEM thermal daemons, CoreFlow follows four strict engineering rules:
 
 <p align="center">
-  <img src="docs/assets/coreflow-v6-pillars.svg" width="100%" alt="CoreFlow v6 Four Engineering Rules">
+  <img src="docs/assets/coreflow-v6-pillars.svg" width="100%" alt="CoreFlow Four Engineering Rules">
 </p>
 
 ---
@@ -23,17 +23,17 @@ Instead of dumping fake switches or fighting OEM thermal daemons, CoreFlow v6 fo
 ## 3-Plane Architecture
 
 <p align="center">
-  <img src="docs/assets/coreflow-v6-architecture.svg" width="100%" alt="CoreFlow v6 3-Plane Architecture">
+  <img src="docs/assets/coreflow-v6-architecture.svg" width="100%" alt="CoreFlow 3-Plane Architecture">
 </p>
 
-1. **Plane 1 — CoreFlow Atlas (`--atlas`)**: Single-pass hardware & kernel discovery across EAS CPU clusters/OPPs/governors, GPU (`KGSL`, `Mali`, `MediaTek GED`, `Xclipse`, `PowerVR`), UFS/eMMC queues, Linux `MGLRU` / `ZRAM` / `PSI`, OLED DRM DPMS, thermal zones, and safe writable charging control nodes.
-2. **Plane 2 — Single CFJ4 Control Plane**: Every sysfs and charging mutation flows through `BaselineStore (CFJ4)` with read-back verification, exponential-backoff OEM coexistence (`30s → 300s`), and 100% zero-trace OEM rollback:
+1. **Plane 1 — CoreFlow Atlas (`--atlas`)**: Single-pass hardware & kernel discovery across EAS CPU clusters/OPPs/governors, GPU (`KGSL`, `Mali`, `MediaTek GED`, `Xclipse`, `PowerVR`), memory bus `devfreq`, UFS/eMMC queues, Linux `MGLRU` / `ZRAM` / `PSI`, OLED DRM DPMS, thermal zones, and safe writable charging control nodes.
+2. **Plane 2 — Single CFJ4 Control Plane & Sovereign Tamper Guard**: Every sysfs and charging mutation flows through `BaselineStore (CFJ4)` with write-ahead journaling of captured baseline values, read-back verification, `0444` tamper locking on leased root nodes, OEM daemon coexistence (`30s → 300s`), and verified best-effort rollback to captured baseline values (see [SECURITY.md](SECURITY.md) for recovery semantics):
    - **Per-TID `SYS_sched_setattr` UClamp** driven by closed-loop `RenderLoadSampler` (`/proc/<pid>/task/<tid>/stat`).
    - **Dynamic UFS/eMMC Launch Burst** (`200ms` foreground detection) + background I/O QoS isolation.
    - **Automatic Linux MGLRU & Smart Pre-Read** (`posix_fadvise` library warmup).
-   - **Rust PID + Online RLS/MLP Thermal Pacing** (10-second predictive headroom control).
-   - **CFJ4-Protected Bypass Charging & Charge Ceiling %** (`input_suspend` / `charging_enabled` / `battery_charging_enabled` with 3% hysteresis — fail-closed if unsupported).
-3. **Plane 3 — Live Verified Decision Episodes (`--episodes`)**: Every boot, mode shift, launch burst, thermal guard, OEM yield, and bypass toggle is logged into a zero-allocation 32-slot ring buffer so you always see *what changed, why, and whether read-back succeeded*.
+   - **Rust PID + Coupled Multi-Domain Orchestrator** (10-second predictive headroom control & thermal step-down lead).
+   - **CFJ4-Protected Bypass Charging & Charge Ceiling %** (`input_suspend` / `charging_enabled` / `battery_charging_enabled` coordinated via `PowerLongevity` lease, 3% ceiling hysteresis, and a hard lithium-ion **20% SOC floor / 25% resume hysteresis** — fail-closed if unsupported or capacity is unreadable).
+3. **Plane 3 — Live Verified Decision Episodes (`--episodes`) & Telemetry Console**: Every boot, mode shift, launch burst, thermal guard, tamper block, OEM yield, and bypass toggle is logged into a zero-allocation ring buffer and queryable via the deterministic `CFAE TELEMETRY LINK` dialogue console.
 
 ---
 
@@ -43,7 +43,7 @@ Works directly on **Magisk, KernelSU, KernelSU-Next, and APatch** — **no KsuWe
 
 - **Home**: Aligned live telemetry pills (`SoC Temp`, `Render`, `UClamp`, `Headroom`), live **SoC Temp & Headroom Sparkline**, 4-Pillar readiness strip, 2x2 Autonomous Profiles (`Balanced`, `Smoothness`, `Gaming`, `Battery`), 1-tap **Pause (A/B Compare)**, and quick **Bypass Charging** toggle (when supported).
 - **Control Hub (Capability-Driven)**: Live per-cluster EAS frequency bars, GPU busy % & live **Thermal Zones**, **Bypass Charging / Auto Bypass in Games / Charge Ceiling (80% / 85% / 90%)**, RAM/ZRAM & PSI stall monitors, Real FPS HUD controls, and **2 Quick Settings Tiles** (*CoreFlow Mode* + *CoreFlow Bypass*).
-- **Live AI Feed**: Real-time stream of verified `DecisionEpisode` cards + 10-second AI thermal forecast.
+- **Live AI Feed & Sovereign Dialogue Console**: Real-time stream of verified `DecisionEpisode` cards, 10-second AI thermal forecast, and deterministic `CFAE TELEMETRY LINK` diagnostics.
 - **Deep Per-App Rules**: Real app icons & names via `PackageManager`, automatic Game detection, Effective State badges (`Using Global` / `Override Active`), and 5-mode overrides (`Auto / Gaming / Smooth / Battery / Stock`).
 - **Floating Real FPS Game HUD**: Draggable overlay over any game with real SurfaceFlinger FPS readout + **tap-to-expand Mini Game Panel** (4-profile pills, 1-tap Pause A/B, 1-tap Bypass Charging).
 - **Settings, Backup & Bilingual UI**: Instant **English / Bahasa Indonesia** switcher, live Miuix/Monet themes, **SAF Profile Export/Import** with SoC provenance verification, native Share Sheet `--diag`, CFJ4 Journal inspector, and Emergency OEM Rollback.
@@ -56,12 +56,12 @@ Works directly on **Magisk, KernelSU, KernelSU-Next, and APatch** — **no KsuWe
 - **Root**: KernelSU, KernelSU-Next, APatch, or Magisk
 
 ### 1. Flash the Engine Module
-1. Download **`CFAE-System-Framework-v6.0.0-arm64.zip`** from [GitHub Releases](https://github.com/mystivara-creator/CoreFlow-Engine/releases).
-2. Flash in **KernelSU / KernelSU-Next / APatch / Magisk** (supports atomic hot-upgrade with read-only 4-pillar preflight checks).
+1. Download **`CFAE-System-Framework-v6.0.0-R-arm64.zip`** from [GitHub Releases](https://github.com/mystivara-creator/CoreFlow-Engine/releases).
+2. Flash in **KernelSU / KernelSU-Next / APatch / Magisk** (supports atomic hot-upgrade with read-only 4-pillar preflight checks and conflicting-module hard-block).
 3. Reboot once on first install.
 
 ### 2. Install CoreFlow Companion App (Recommended)
-1. Download **`CoreFlow-Companion-v6.0.0-release.apk`** from [GitHub Releases](https://github.com/mystivara-creator/CoreFlow-Engine/releases).
+1. Download **`CoreFlow-Companion-v6.0.0-R-release.apk`** from [GitHub Releases](https://github.com/mystivara-creator/CoreFlow-Engine/releases).
 2. Install and grant root access when prompted by Magisk / KernelSU / APatch.
 3. *(Alternative)* Open the bundled **MD3 WebUI** directly in KernelSU / APatch (or via **KsuWebUI** / **MMRL** on Magisk).
 
@@ -73,10 +73,12 @@ Works directly on **Magisk, KernelSU, KernelSU-Next, and APatch** — **no KsuWe
 coreflowd --status            # Live JSON telemetry, thermal zones, clusters, episodes & history
 coreflowd --atlas             # Full capability-driven hardware & kernel Atlas JSON
 coreflowd --episodes          # Recent verified decision episodes
-coreflowd --journal           # Inspect CFJ4 OEM baseline rollback journal
+coreflowd --journal           # Inspect CFJ4 baseline rollback journal
 coreflowd --diag              # One-shot privacy-safe diagnostic bundle (coreflow-diag-v6)
+coreflowd --recover-only      # Replay pending same-boot CFJ4 journal without starting daemon
 coreflowd --set-config key=v  # Atomic configuration update + live SIGHUP reload
-coreflowd --rollback-baseline # Stop daemon & cleanly restore every modified OEM sysfs node
+coreflowd --rollback-baseline # Stop daemon & restore every modified kernel node to captured baseline
+sh action.sh clear-safety     # Clear boot-loop SAFE_MODE/disable markers & reset boot_attempts
 ```
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the UI & Honesty Contract and [SECURITY.md](SECURITY.md) for the security model.

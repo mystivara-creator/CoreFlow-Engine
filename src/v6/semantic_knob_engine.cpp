@@ -140,8 +140,9 @@ bool SemanticKnobEngine::is_forbidden_knob_name(std::string_view leaf) noexcept 
 
 SemanticKnobEngine::SemanticKnobEngine(
     BaselineStore& baseline,
-    OemCollaborationMap& oem_map) noexcept
-    : baseline_(baseline), oem_map_(oem_map) {}
+    OemCollaborationMap& oem_map,
+    CentralMutationCoordinator* coordinator) noexcept
+    : baseline_(baseline), oem_map_(oem_map), coordinator_(coordinator) {}
 
 bool is_allowlisted_knob_name(std::string_view lower) noexcept {
     constexpr std::string_view kAllowed[] = {
@@ -161,6 +162,33 @@ bool is_allowlisted_knob_name(std::string_view lower) noexcept {
         if (lower == name) return true;
     }
     return false;
+}
+
+void SemanticKnobEngine::try_register_memory_bus_node(
+    const v5::MemoryBusNodeInfo& bus,
+    std::unordered_map<std::string, bool>& seen) noexcept {
+    if (bus.min_freq_path.empty() || bus.opps_hz.size() < 2U || seen.contains(bus.min_freq_path)) return;
+    if (!is_regular_writable(bus.min_freq_path)) return;
+
+    const std::string base = read_line_trimmed(bus.min_freq_path);
+    int64_t ival = 0;
+    if (base.empty() || !parse_i64_exact(base, ival) || ival <= 0) return;
+
+    DiscoveredKnob knob{};
+    knob.path = bus.min_freq_path;
+    knob.leaf = bus.name + "/min_freq";
+    knob.family = KnobFamily::MemoryCache;
+    knob.kind = KnobValueKind::OppFreq;
+    knob.baseline_value = base;
+    knob.baseline_int = ival;
+    knob.is_memory_bus_opp = true;
+    knob.opp_table_khz = bus.opps_hz; // Sorted ascending OPP table (Hz/kHz unit preserved from node)
+    knob.apply_in_launch_burst = true;
+    knob.apply_in_gaming = true;
+    knob.apply_in_interactive = true;
+
+    seen[knob.path] = true;
+    knobs_.push_back(std::move(knob));
 }
 
 void SemanticKnobEngine::try_register_node(
@@ -441,9 +469,12 @@ void SemanticKnobEngine::discover(
         }
     }
 
-    // 4. VM cache tuning
+    // 4. VM cache tuning + Coupled Devfreq Memory Bus nodes
     if (!topo.vm.vfs_cache_pressure_path.empty()) {
         try_register_node(topo.vm.vfs_cache_pressure_path, "vfs_cache_pressure", {}, seen);
+    }
+    for (const auto& bus : topo.memory_bus_nodes) {
+        try_register_memory_bus_node(bus, seen);
     }
 
     // Sorted ascending: sched_downmigrate precedes sched_upmigrate during activation (lowering).
@@ -457,7 +488,10 @@ void SemanticKnobEngine::discover(
             case KnobFamily::CpuBoost: ++stats_.cpu_knobs; break;
             case KnobFamily::GpuLatency: ++stats_.gpu_knobs; break;
             case KnobFamily::StorageLatency: ++stats_.storage_knobs; break;
-            case KnobFamily::MemoryCache: ++stats_.memory_knobs; break;
+            case KnobFamily::MemoryCache:
+                ++stats_.memory_knobs;
+                if (k.is_memory_bus_opp) ++stats_.memory_bus_knobs;
+                break;
         }
     }
 }
@@ -467,7 +501,12 @@ bool SemanticKnobEngine::write_knob(
     const std::string& target,
     uint64_t now_ms) noexcept {
     if (knob.path.empty() || target.empty()) return false;
+    // Dual-Boundary Rule: OEM-owned passive nodes remain untouched.
     if (oem_map_.is_blocked(knob.path, now_ms)) return false;
+    // Sovereign Circuit Breaker: if quarantined (3 attempts / 5s), do not enter a write-loop.
+    if (coordinator_ != nullptr && coordinator_->is_node_quarantined(knob.path, now_ms)) {
+        return false;
+    }
 
     const std::string live = read_line_trimmed(knob.path);
     if (live.empty()) return false;
@@ -478,6 +517,56 @@ bool SemanticKnobEngine::write_knob(
 
     const auto prev = last_written_.find(knob.path);
     if (prev != last_written_.end() && live != prev->second) {
+        if (coordinator_ != nullptr) {
+            // Sovereign Tamper Guard (Reclaim-First + 3x/5s Circuit Breaker):
+            // An external writer modified a CFAE actively-leased node!
+            const MutationDomain domain =
+                knob.family == KnobFamily::GpuLatency ? MutationDomain::GpuDevfreq :
+                knob.family == KnobFamily::StorageLatency ? MutationDomain::BlockIo :
+                knob.family == KnobFamily::MemoryCache ? MutationDomain::VmMemory :
+                MutationDomain::CpuPolicy;
+            const std::string reason = "CFAE Sovereign Thermal & Scheduling Equilibrium";
+            uint32_t attempts = 0U;
+            const auto action = coordinator_->evaluate_tamper_reclaim(
+                domain, knob.path, prev->second, live, now_ms, &attempts);
+            if (action == TamperGuardAction::CircuitOpenQuarantine) {
+                if (coordinator_->breaker_trip_count(knob.path) >= 2U) {
+                    // Repeated breaker trips across quarantine windows indicate a persistent root OEM
+                    // daemon (e.g. mi_thermald / perf-hal) rather than a one-off user tweaker.
+                    // Unlock 0444, roll back cleanly, and hand over to OemCollaborationMap to prevent
+                    // perpetual 30s tug-of-war cycles and notification spam.
+                    (void)baseline_.rollback(knob.path);
+                    oem_map_.record_contention(knob.path, live, now_ms);
+                    last_written_.erase(knob.path);
+                    return false;
+                }
+                (void)baseline_.lock_node_readonly(knob.path);
+                coordinator_->finalize_tamper_event(
+                    domain, knob.path, prev->second, live, false, true, attempts, reason, now_ms);
+                return false;
+            }
+            // Reclaim-First: restore our target value, verify readback, and re-lock 0444.
+            const std::string reclaim_target = target.empty() ? prev->second : target;
+            bool reclaimed = false;
+            if (baseline_.reclaim_mutation(knob.path, reclaim_target)) {
+                const std::string verify = read_line_trimmed(knob.path);
+                if (verify == reclaim_target) {
+                    (void)baseline_.lock_node_readonly(knob.path);
+                    last_written_[knob.path] = verify;
+                    reclaimed = true;
+                }
+            }
+            coordinator_->finalize_tamper_event(
+                domain, knob.path, reclaim_target, live, reclaimed, false, attempts, reason, now_ms);
+            if (reclaimed) {
+                return true;
+            }
+            // If kernel/OEM hardware strictly rejected reclaim, roll back cleanly and yield to OEM map.
+            (void)baseline_.rollback(knob.path);
+            oem_map_.record_contention(knob.path, live, now_ms);
+            last_written_.erase(knob.path);
+            return false;
+        }
         (void)baseline_.rollback(knob.path);
         oem_map_.record_contention(knob.path, live, now_ms);
         last_written_.erase(knob.path);
@@ -487,6 +576,9 @@ bool SemanticKnobEngine::write_knob(
     // If the kernel already holds the target value and we never mutated this node,
     // leave it completely untouched so stats stay honest and OEM changes never false-contend.
     if (live == target) {
+        if (coordinator_ != nullptr && prev != last_written_.end()) {
+            (void)baseline_.lock_node_readonly(knob.path);
+        }
         return true;
     }
 
@@ -499,7 +591,31 @@ bool SemanticKnobEngine::write_knob(
         last_written_.erase(knob.path);
         return false;
     }
+    if (coordinator_ != nullptr) {
+        // Lock actively leased node read-only (0444) to deter external user tweakers (e.g. FKM).
+        (void)baseline_.lock_node_readonly(knob.path);
+    }
     last_written_[knob.path] = verify;
+    return true;
+}
+
+bool SemanticKnobEngine::force_resync_node(const std::string& path, uint64_t now_ms) noexcept {
+    if (path.empty()) return false;
+    if (coordinator_ != nullptr) {
+        coordinator_->clear_node_quarantine(path);
+    }
+    const auto it = last_written_.find(path);
+    if (it == last_written_.end()) return false;
+    if (oem_map_.is_blocked(path, now_ms)) return false;
+
+    const std::string expected = it->second;
+    if (!baseline_.reclaim_mutation(path, expected)) return false;
+    const std::string verify = read_line_trimmed(path);
+    if (verify != expected) return false;
+    if (coordinator_ != nullptr) {
+        (void)baseline_.lock_node_readonly(path);
+    }
+    last_written_[path] = verify;
     return true;
 }
 
@@ -558,6 +674,9 @@ void SemanticKnobEngine::apply(
     const bool is_gaming = (mode == v5::ContextMode::Gaming);
     const bool is_interactive = (mode == v5::ContextMode::Interactive);
     const bool battery_profile = (profile == v5::PerformanceProfile::Battery);
+    const double bus_scale = std::isfinite(hints.memory_bus_scale)
+        ? std::clamp(hints.memory_bus_scale, 1.0, 1.25)
+        : 1.0;
 
     // Phase 1: Roll back any knobs that should no longer be active (reverse order preserves up >= down).
     std::vector<size_t> to_apply;
@@ -568,6 +687,12 @@ void SemanticKnobEngine::apply(
             (is_burst && knob.apply_in_launch_burst) ||
             (is_gaming && knob.apply_in_gaming) ||
             (is_interactive && knob.apply_in_interactive);
+
+        // Coupled Compute <-> Memory Bus: only raise memory bus floor when orchestrator requests > 1.02x
+        // and battery profile isn't restricting non-burst boost.
+        if (knob.is_memory_bus_opp) {
+            should_apply = should_apply && !battery_profile && (bus_scale > 1.02);
+        }
 
         // Symbiotic GPU/Memory co-pacing: allow GPU latency & bus supply knobs during GPU-bound Interactive
         if (!should_apply && is_interactive && hints.boost_gpu_memory_supply &&
@@ -584,7 +709,8 @@ void SemanticKnobEngine::apply(
             (knob.family == KnobFamily::CpuBoost || knob.family == KnobFamily::GpuLatency)) {
             should_apply = false;
         }
-        if (knob.family == KnobFamily::MemoryCache && (avail_ram_ratio < 0.30 || mem_psi >= 8.0)) {
+        if (knob.family == KnobFamily::MemoryCache && !knob.is_memory_bus_opp &&
+            (avail_ram_ratio < 0.30 || mem_psi >= 8.0)) {
             should_apply = false;
         }
 
@@ -627,6 +753,35 @@ void SemanticKnobEngine::apply(
                 break;
             }
             case KnobValueKind::OppFreq: {
+                if (knob.is_memory_bus_opp) {
+                    // Strictly OEM-relative <= 1.25x baseline OPP selected from discovered devfreq table,
+                    // capped below 75% OPP index and never exceeding live sibling thermal max_freq.
+                    const uint64_t rel_cap = knob.baseline_int > 0
+                        ? static_cast<uint64_t>(std::llround(static_cast<double>(knob.baseline_int) * bus_scale))
+                        : 0U;
+                    const uint64_t opp_75_cap = select_opp_by_fraction(knob.opp_table_khz, 0.75);
+                    uint64_t bus_ceiling = (rel_cap > 0U && opp_75_cap > 0U)
+                        ? std::min(rel_cap, opp_75_cap)
+                        : rel_cap;
+                    const fs::path max_freq_path = fs::path(knob.path).parent_path() / "max_freq";
+                    int64_t live_max = 0;
+                    if (parse_i64_exact(read_line_trimmed(max_freq_path.string()), live_max) && live_max > 0) {
+                        bus_ceiling = std::min(bus_ceiling, static_cast<uint64_t>(live_max));
+                    }
+                    uint64_t chosen = 0U;
+                    for (uint64_t freq : knob.opp_table_khz) {
+                        if (freq <= bus_ceiling && static_cast<int64_t>(freq) > knob.baseline_int) {
+                            chosen = freq;
+                        }
+                    }
+                    if (chosen > 0U) {
+                        target = std::to_string(chosen);
+                    } else {
+                        rollback_knob(knob.path);
+                        continue;
+                    }
+                    break;
+                }
                 const double frac = is_burst ? 0.60 : 0.55;
                 const uint64_t opp_cap = select_opp_by_fraction(knob.opp_table_khz, frac);
                 const double rel_mult = is_burst ? 1.30 : 1.20;

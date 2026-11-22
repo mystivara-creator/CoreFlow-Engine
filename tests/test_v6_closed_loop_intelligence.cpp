@@ -275,7 +275,70 @@ int main() {
         assert(d_timeout.exit_reason == "max_uptime_timeout");
     }
 
+    // 5. Pillar 3: Zero-Wear Context Learning (CFDNA2 cost-to-gain RAM modulation, significant-drift gating, CFDNA1 compat)
+    {
+        const fs::path zw_state = root / "state_zerowear";
+        fs::create_directories(zw_state);
+        // Seed legacy CFDNA1 file and verify seamless backward-compatible load
+        write_file(zw_state / "app_dna.map",
+                   "CFDNA1\ncom.legacy.app 0.9400 0.5000 0.0100 4 12 9000\n");
+        AppDnaStore zw;
+        zw.initialize(zw_state.string());
+        assert(zw.learned_count() == 1U);
+        assert(std::abs(zw.uclamp_bias_for("com.legacy.app") - 0.94) < 1e-3);
+        assert(std::abs(zw.efficiency_weight_for("com.legacy.app") - 1.0) < 1e-3);
+        assert(!zw.has_significant_drift());
+        assert(zw.flush_if_significant());
+        assert(zw.flush_count() == 0U); // Zero flash wear when no significant drift occurred!
+
+        // Wake ramp samples are ignored completely so cold transitions never pollute DNA
+        ContextLearningSample wake_sample{};
+        wake_sample.jank_ratio = 0.20;
+        wake_sample.in_wake_ramp = true;
+        zw.observe_context("com.legacy.app", wake_sample, 10000ULL);
+        assert(!zw.has_significant_drift());
+        assert(zw.flush_if_significant());
+        assert(zw.flush_count() == 0U);
+
+        // Single tiny smooth sample (< 0.025 drift) stays in RAM — zero disk flush!
+        ContextLearningSample tiny_sample{};
+        tiny_sample.jank_ratio = 0.002;
+        tiny_sample.measured_fps = 60.0;
+        tiny_sample.target_fps = 60.0;
+        tiny_sample.power_mw = 1200.0;
+        zw.observe_context("com.legacy.app", tiny_sample, 11000ULL);
+        assert(!zw.has_significant_drift());
+        assert(zw.flush_if_significant());
+        assert(zw.flush_count() == 0U);
+
+        // Sustained high-cost low-battery samples shift bias & efficiency_weight significantly -> triggers 1 atomic CFDNA2 flush!
+        ContextLearningSample costly_sample{};
+        costly_sample.jank_ratio = 0.004;
+        costly_sample.measured_fps = 59.5;
+        costly_sample.target_fps = 60.0;
+        costly_sample.thermal_velocity_cpm = 3.2;
+        costly_sample.power_mw = 5200.0;
+        costly_sample.low_battery = true;
+        for (uint64_t i = 0; i < 6; ++i) {
+            zw.observe_context("com.legacy.app", costly_sample, 12000ULL + i * 1000ULL);
+        }
+        assert(zw.has_significant_drift());
+        assert(zw.flush_if_significant());
+        assert(zw.flush_count() == 1U);
+        assert(!zw.has_significant_drift()); // Clean after flush!
+
+        // Verify CFDNA2 header written and reloads efficiency_weight accurately
+        std::ifstream in(zw_state / "app_dna.map");
+        std::string hdr;
+        std::getline(in, hdr);
+        assert(hdr == "CFDNA2");
+        AppDnaStore zw2;
+        zw2.initialize(zw_state.string());
+        assert(zw2.uclamp_bias_for("com.legacy.app") < 0.90);
+        assert(zw2.efficiency_weight_for("com.legacy.app") < 0.98);
+    }
+
     fs::remove_all(root);
-    std::cout << "v6.2 Closed-Loop Frame Pacing, VBlank IRQ Fallback, Bayesian App DNA & Boot-Calm Sanctuary tests passed\n";
+    std::cout << "v6.0.0-R Closed-Loop Frame Pacing, Zero-Wear CFDNA2 & Boot-Calm Sanctuary tests passed\n";
     return 0;
 }

@@ -180,25 +180,44 @@ int main() {
         assert(mgr2.is_bypass_supported());
         assert(!mgr2.is_bypass_active());
 
-        // 1. Manual bypass engages input_suspend=1 with read-back verification
+        // 1. Manual bypass engages input_suspend=1 with read-back verification AND PowerLongevity lease (T3)
         assert(mgr2.apply_power_control(true, false, false, 0));
         assert(mgr2.is_bypass_active());
         assert(get(pwr_bat / "input_suspend") == "1");
         assert(mgr2.sample_battery_telemetry().bypass_reason == "manual");
+        {
+            const auto leases = coord2.active_leases();
+            assert(leases.size() == 1U);
+            assert(leases.front().domain == coreflow::MutationDomain::PowerLongevity);
+        }
 
-        // 2. Disabling manual bypass cleanly rolls back input_suspend=0 via CFJ4
+        // 1b. T3: Emergency preemption on PowerLongevity deterministically rolls back bypass & releases lease
+        coord2.emergency_preempt_all("test-bypass-preemption");
+        assert(!mgr2.is_bypass_active());
+        assert(get(pwr_bat / "input_suspend") == "0");
+        assert(coord2.active_leases().empty());
+
+        // Re-engage manual bypass then cleanly disable
+        assert(mgr2.apply_power_control(true, false, false, 0));
+        assert(mgr2.is_bypass_active());
+        assert(coord2.active_leases().size() == 1U);
+
+        // 2. Disabling manual bypass cleanly rolls back input_suspend=0 via CFJ4 & releases lease
         assert(mgr2.apply_power_control(false, false, false, 0));
         assert(!mgr2.is_bypass_active());
         assert(get(pwr_bat / "input_suspend") == "0");
+        assert(coord2.active_leases().empty());
 
         // 3. Auto bypass during Gaming mode
         assert(mgr2.apply_power_control(false, true, true, 0));
         assert(mgr2.is_bypass_active());
         assert(mgr2.sample_battery_telemetry().bypass_reason == "gaming");
         assert(get(pwr_bat / "input_suspend") == "1");
+        assert(coord2.active_leases().size() == 1U);
         assert(mgr2.apply_power_control(false, false, true, 0));
         assert(!mgr2.is_bypass_active());
         assert(get(pwr_bat / "input_suspend") == "0");
+        assert(coord2.active_leases().empty());
 
         // 4. Charge ceiling 80% with 3% hysteresis (engage at 80, hold at 79, release at 77)
         put(pwr_bat / "capacity", "80");
@@ -215,6 +234,36 @@ int main() {
         assert(mgr2.apply_power_control(false, false, false, 80));
         assert(!mgr2.is_bypass_active());
         assert(get(pwr_bat / "input_suspend") == "0");
+        assert(coord2.active_leases().empty());
+
+        // 4b. T3: Hard lithium-ion SOC floor (<= 20% auto-releases, < 25% hysteresis blocks re-engage)
+        assert(mgr2.apply_power_control(true, false, false, 0));
+        assert(mgr2.is_bypass_active());
+        put(pwr_bat / "capacity", "20");
+        assert(!mgr2.apply_power_control(true, false, false, 0));
+        assert(!mgr2.is_bypass_active());
+        assert(get(pwr_bat / "input_suspend") == "0");
+        assert(mgr2.sample_battery_telemetry().bypass_reason == "soc_floor");
+        assert(coord2.active_leases().empty());
+
+        // Inside hysteresis band (24% < 25%): must remain blocked
+        put(pwr_bat / "capacity", "24");
+        assert(!mgr2.apply_power_control(true, false, false, 0));
+        assert(!mgr2.is_bypass_active());
+        assert(mgr2.sample_battery_telemetry().bypass_reason == "soc_floor");
+
+        // At >= 25%: hysteresis clears and bypass may re-engage
+        put(pwr_bat / "capacity", "25");
+        assert(mgr2.apply_power_control(true, false, false, 0));
+        assert(mgr2.is_bypass_active());
+        assert(get(pwr_bat / "input_suspend") == "1");
+
+        // Unreadable capacity node must fail-closed and release bypass
+        fs::remove(pwr_bat / "capacity");
+        assert(!mgr2.apply_power_control(true, false, false, 0));
+        assert(!mgr2.is_bypass_active());
+        assert(get(pwr_bat / "input_suspend") == "0");
+        assert(coord2.active_leases().empty());
 
         // 5. Fail-closed when no bypass node exists
         const auto no_bp_sys = root / "v6_no_bypass_sys";
@@ -227,6 +276,29 @@ int main() {
         assert(!mgr3.is_bypass_supported());
         assert(!mgr3.apply_power_control(true, true, true, 80));
         assert(!mgr3.is_bypass_active());
+
+        // 6. T8: Trickle current (15000 uA) without voltage_now must use constant_charge_current_max
+        // to detect micro-unit ABI and never misreport 15000 mA fast charging.
+        const auto no_volt_sys = root / "v6_no_voltage_sys";
+        const auto no_volt_bat = no_volt_sys / "class/power_supply/battery";
+        put(no_volt_bat / "type", "Battery");
+        put(no_volt_bat / "temp", "330");
+        put(no_volt_bat / "status", "Charging");
+        put(no_volt_bat / "current_now", "15000");
+        put(no_volt_bat / "constant_charge_current_max", "3000000");
+        const auto no_volt_probe =
+            coreflow::HardwareLongevityManager::probe_battery_telemetry(no_volt_sys.string());
+        assert(no_volt_probe.available);
+        assert(no_volt_probe.charging);
+        assert(!no_volt_probe.fast_charging);
+        assert(no_volt_probe.current_ma >= 14.5 && no_volt_probe.current_ma <= 15.5);
+
+        coreflow::HardwareLongevityManager mgr4(coord2, no_volt_sys.string(), (root / "proc").string());
+        mgr4.initialize({false, false, 41.5f, 1500, 800, 50});
+        const auto no_volt_sample = mgr4.sample_battery_telemetry();
+        assert(no_volt_sample.available);
+        assert(!no_volt_sample.fast_charging);
+        assert(no_volt_sample.current_ma >= 14.5 && no_volt_sample.current_ma <= 15.5);
     }
 
     fs::remove_all(root);

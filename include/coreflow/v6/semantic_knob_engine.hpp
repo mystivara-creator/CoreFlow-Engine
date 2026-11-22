@@ -6,6 +6,7 @@
 #pragma once
 
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/mutation_coordinator.hpp"
 #include "coreflow/v5/context_engine.hpp"
 #include "coreflow/v5/hardware_probe.hpp"
 #include "coreflow/v6/oem_collaboration_map.hpp"
@@ -30,7 +31,7 @@ enum class KnobValueKind : uint8_t {
     IntLevel = 1,       // Small discrete level (e.g. adrenoboost 0..3, rq_affinity 1..2)
     RelativeInt = 2,    // Integer adjusted proportionally relative to OEM baseline
     MigratePair = 3,    // WALT/EAS multi-cluster threshold pair ("85 95")
-    OppFreq = 4,        // Frequency chosen strictly from discovered cluster OPP table
+    OppFreq = 4,        // Frequency chosen strictly from discovered cluster/bus OPP table
 };
 
 struct DiscoveredKnob {
@@ -47,6 +48,7 @@ struct DiscoveredKnob {
     bool apply_in_gaming{false};
     bool apply_in_interactive{false};
     bool uses_yn_bool{false};
+    bool is_memory_bus_opp{false};
     std::vector<uint64_t> opp_table_khz;
 };
 
@@ -57,28 +59,35 @@ struct SemanticKnobStats {
     uint32_t gpu_knobs{0};
     uint32_t storage_knobs{0};
     uint32_t memory_knobs{0};
+    uint32_t memory_bus_knobs{0};
 };
 
 struct SymbioticHints {
     bool boost_gpu_memory_supply{false};
     bool encourage_cluster_spread{false};
+    double memory_bus_scale{1.0};               // 1.00..1.25 coupled memory bus floor scale
+    double scheduler_responsiveness_scale{1.0}; // 0.70..1.00 coupled scheduler responsiveness
+    double thermal_stepdown_lead{0.0};          // 0.00..0.15 coupled thermal headroom lead
 };
 
 class SemanticKnobEngine {
 public:
     SemanticKnobEngine(BaselineStore& baseline,
-                       OemCollaborationMap& oem_map) noexcept;
+                       OemCollaborationMap& oem_map,
+                       CentralMutationCoordinator* coordinator = nullptr) noexcept;
 
-    // Dynamically scans safe CPU/WALT/EAS, GPU/Adreno/GED, UFS/Block, and VM sysfs/procfs
+    // Dynamically scans safe CPU/WALT/EAS, GPU/Adreno/GED, UFS/Block, VM, and devfreq memory bus
     // subsystems, classifying discovered writable nodes with OEM-relative safe bounds.
     void discover(const v5::HardwareTopology& topo,
                   const std::string& sysfs_root = "/sys",
                   const std::string& procfs_root = "/proc") noexcept;
 
-    // Instant Reflex + Release-on-Calm actuator:
+    // Instant Reflex + Release-on-Calm + Sovereign Tamper Guard actuator:
     //  - Activates relevant discovered knobs immediately on LaunchBurst / Gaming / Interactive load.
-    //  - Releases ALL managed semantic knobs back to OEM baseline on Efficiency / ScreenOff /
-    //    Excluded / ThermalGuard / thermal throttling (capacity_scale < 0.90).
+    //  - Locks actively leased nodes to 0444 (read-only) and enforces Reclaim-First + 3x/5s breaker
+    //    if an external tool mutates them (outside passive OemCollaborationMap nodes).
+    //  - Releases ALL managed semantic knobs (restoring original permissions + factory values) on
+    //    Efficiency / ScreenOff / Excluded / ThermalGuard / thermal throttling (capacity_scale < 0.90).
     void apply(v5::ContextMode mode,
                v5::PerformanceProfile profile,
                double capacity_scale,
@@ -89,6 +98,9 @@ public:
                uint64_t now_ms,
                bool passive_media_only = false,
                const SymbioticHints& hints = {}) noexcept;
+
+    // Clears quarantine and immediately reclaims + re-locks a leased node on RESYNC / ENFORCE.
+    bool force_resync_node(const std::string& path, uint64_t now_ms) noexcept;
 
     void rollback_all() noexcept;
 
@@ -106,9 +118,12 @@ private:
                            const std::string& leaf,
                            const std::vector<uint64_t>& cluster_opps,
                            std::unordered_map<std::string, bool>& seen) noexcept;
+    void try_register_memory_bus_node(const v5::MemoryBusNodeInfo& bus,
+                                      std::unordered_map<std::string, bool>& seen) noexcept;
 
     BaselineStore& baseline_;
     OemCollaborationMap& oem_map_;
+    CentralMutationCoordinator* coordinator_{nullptr};
     std::vector<DiscoveredKnob> knobs_;
     std::unordered_map<std::string, std::string> last_written_;
     SemanticKnobStats stats_{};

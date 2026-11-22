@@ -497,6 +497,45 @@ HardwareTopology HardwareProbe::discover() const noexcept {
         }
     }
 
+    // 4b. Safe Devfreq Memory Bus Discovery (DDR / LLCC / GPUBW / MEMLAT / DRAM)
+    {
+        for (const auto& entry : child_dirs(sys / "class/devfreq", 48U)) {
+            if (topo.memory_bus_nodes.size() >= 8U) break;
+            const auto resolved = canonical_under(entry, sys);
+            if (resolved.empty()) continue;
+            if (topo.gpu.available && !topo.gpu.device_path.empty() &&
+                resolved.string() == topo.gpu.device_path) {
+                continue;
+            }
+            const std::string dev_name = entry.filename().string();
+            const std::string folded = to_lower_copy(dev_name + " " + resolved.string());
+            const bool is_mem_bus =
+                folded.find("ddr") != std::string::npos ||
+                folded.find("llcc") != std::string::npos ||
+                folded.find("gpubw") != std::string::npos ||
+                folded.find("memlat") != std::string::npos ||
+                folded.find("dram") != std::string::npos ||
+                folded.find("l3-cpu") != std::string::npos;
+            if (!is_mem_bus) continue;
+            // Exclude thermal/voltage/clock/debug devfreq nodes defensively
+            if (folded.find("thermal") != std::string::npos ||
+                folded.find("volt") != std::string::npos ||
+                folded.find("debug") != std::string::npos) {
+                continue;
+            }
+            const fs::path min_freq = resolved / "min_freq";
+            if (!is_regular_writable(min_freq)) continue;
+            const auto opps = parse_u64_list_sorted(read_first_line(resolved / "available_frequencies"));
+            if (opps.size() < 2U) continue;
+            MemoryBusNodeInfo bus{};
+            bus.name = dev_name;
+            bus.device_path = resolved.string();
+            bus.min_freq_path = min_freq.string();
+            bus.opps_hz = opps;
+            topo.memory_bus_nodes.push_back(std::move(bus));
+        }
+    }
+
     // 5. Dynamic Physical + Active Mapper Storage Discovery (UFS / NVMe / eMMC + mounted /data,/system dm-*)
     {
         // Discover block major:minor IDs backing active Android partitions dynamically from mountinfo.

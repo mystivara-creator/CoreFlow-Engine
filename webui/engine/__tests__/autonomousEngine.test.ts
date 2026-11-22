@@ -62,7 +62,7 @@ test('buildSafeSetConfigArg allowlists only v5.1 keys and safe single-quoted val
 test('parseV5Status parses live daemon payload and rejects malformed schema', () => {
   const sample = createPreviewStatus();
   const parsed = parseV5Status(sample);
-  assert.equal(parsed.version, '6.2.0');
+  assert.equal(parsed.version, '6.0.0-R');
   assert.equal(parsed.profile, 'balanced');
   assert.equal(parsed.effectiveProfile, 'balanced');
   assert.equal(parsed.hardware.storageType, 'UFS');
@@ -72,6 +72,9 @@ test('parseV5Status parses live daemon payload and rejects malformed schema', ()
   assert.ok(parsed.actuators.semanticKnobLeaves.length > 0);
   assert.equal(parsed.hyperFluid.framePacingAvailable, true);
   assert.equal(parsed.hyperFluid.appDnaLearned, 12);
+  assert.equal(parsed.tamperGuard.enabled, true);
+  assert.equal(parsed.coupledOrchestration.memoryBusScale, 1.0);
+  assert.deepEqual(parsed.conflictingModules, []);
   assert.equal(parsed.powerConfig.chargeLimitPct, 85);
   assert.equal(parsed.batteryPower.bypassSupported, true);
   assert.ok(parsed.cpuClusters.length > 0);

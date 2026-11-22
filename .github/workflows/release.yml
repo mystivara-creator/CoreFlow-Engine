@@ -34,7 +34,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || {
             echo "::error::Refusing non-semver version tag: $TAG"
             exit 1
           }
@@ -54,14 +54,21 @@ jobs:
             echo "::error::No successful CoreFlow Engine CI run (push or workflow_dispatch) exists for exact tag commit $TAG_SHA."
             exit 1
           }
+          APK_JSON="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "CoreFlow Companion APK Build" --status success --limit 50 --json databaseId,headSha,conclusion,event)"
+          APK_RUN_ID="$(jq -r --arg sha "$TAG_SHA" '[.[] | select(.headSha == $sha and .conclusion == "success")] | first | .databaseId // empty' <<< "$APK_JSON")"
+          if [[ -z "$APK_RUN_ID" ]]; then
+            # Fallback when the tag commit did not touch android/**: use latest successful main/dispatch APK run
+            APK_RUN_ID="$(jq -r '[.[] | select(.conclusion == "success" and (.event == "push" or .event == "workflow_dispatch"))] | first | .databaseId // empty' <<< "$APK_JSON")"
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "sha=$TAG_SHA" >> "$GITHUB_OUTPUT"
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "apk_run_id=$APK_RUN_ID" >> "$GITHUB_OUTPUT"
       - name: Checkout exact validated tag commit
         uses: actions/checkout@v7
         with:
           ref: ${{ steps.source.outputs.sha }}
-      - name: Download package from exact successful CI run
+      - name: Download module package from exact successful CI run
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -70,7 +77,17 @@ jobs:
           pattern: CFAE-System-Framework*package
           path: release-artifacts
           merge-multiple: true
-      - name: Verify package and version identity
+      - name: Download Companion Release APK from verified APK CI run
+        if: steps.source.outputs.apk_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.apk_run_id }}
+          pattern: CoreFlow-Companion-APK-Release
+          path: release-apk-artifacts
+          merge-multiple: true
+      - name: Verify package, APK, and version identity
         shell: bash
         env:
           TAG: ${{ steps.source.outputs.tag }}
@@ -91,16 +108,34 @@ jobs:
             exit 1
           }
           echo "Verified release package: $PACKAGE ($VERSION)"
-      - name: Publish GitHub Release
+      - name: Publish GitHub Release (Module ZIP + Companion APK + SHA256SUMS)
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.source.outputs.tag }}
         run: |
           set -euo pipefail
+          STAGE_DIR="$RUNNER_TEMP/release-stage"
+          mkdir -p "$STAGE_DIR"
           PACKAGE="$(find release-artifacts -type f \( -name 'CFAE-System-Framework-package.zip' -o -name 'CFAE-System-Framework-*-arm64.zip' \) -print -quit)"
-          RELEASE_ASSET="$RUNNER_TEMP/CFAE-System-Framework-${TAG}-arm64.zip"
-          cp "$PACKAGE" "$RELEASE_ASSET"
+          RELEASE_ZIP="$STAGE_DIR/CFAE-System-Framework-${TAG}-arm64.zip"
+          cp "$PACKAGE" "$RELEASE_ZIP"
+          ASSETS=("$RELEASE_ZIP")
+
+          if [ -d release-apk-artifacts ]; then
+            APK_SRC="$(find release-apk-artifacts -type f -name 'CoreFlow-Companion-*-release.apk' -print -quit || true)"
+            if [ -n "$APK_SRC" ] && [ -s "$APK_SRC" ]; then
+              RELEASE_APK="$STAGE_DIR/CoreFlow-Companion-${TAG}-release.apk"
+              cp "$APK_SRC" "$RELEASE_APK"
+              ASSETS+=("$RELEASE_APK")
+              echo "Bundled Companion Release APK: $(basename "$RELEASE_APK")"
+            fi
+          fi
+
+          (cd "$STAGE_DIR" && sha256sum * > SHA256SUMS.txt)
+          ASSETS+=("$STAGE_DIR/SHA256SUMS.txt")
+          cat "$STAGE_DIR/SHA256SUMS.txt"
+
           awk -v ver="$TAG" '
             BEGIN { prefix = "## " ver }
             index($0, prefix) == 1 && (length($0) == length(prefix) || substr($0, length(prefix) + 1, 1) ~ /[[:space:]—-]/) { found=1; next }
@@ -115,6 +150,6 @@ jobs:
             echo "::error::Release $TAG already exists; refusing to overwrite or replace a published release."
             exit 1
           fi
-          gh release create "$TAG" "$RELEASE_ASSET" --repo "$GITHUB_REPOSITORY" \
+          gh release create "$TAG" "${ASSETS[@]}" --repo "$GITHUB_REPOSITORY" \
             --title "CFAE System Framework $TAG" \
             --notes-file "$RUNNER_TEMP/release-notes.md"

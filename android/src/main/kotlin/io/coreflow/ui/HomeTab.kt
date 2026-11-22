@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.coreflow.CoreFlowManager
+import io.coreflow.CoreFlowUpdateChecker
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -71,6 +72,9 @@ fun HomeTab(
     onTogglePause: (Boolean) -> Unit,
     onToggleBypass: (Boolean) -> Unit,
     onStartDaemon: () -> Unit,
+    onOpenDialogue: (String?) -> Unit = {},
+    updateReport: CoreFlowUpdateChecker.UpdateCheckReport? = null,
+    onOpenUpdateCenter: () -> Unit = {},
 ) {
     val dark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
     val pullState = rememberPullToRefreshState()
@@ -117,6 +121,65 @@ fun HomeTab(
                             style = MiuixTheme.textStyles.body2,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
+                    }
+                }
+            }
+
+            if (updateReport != null &&
+                (updateReport.state == CoreFlowUpdateChecker.UpdateState.UPDATE_AVAILABLE ||
+                    updateReport.state == CoreFlowUpdateChecker.UpdateState.PENDING_PUBLIC_RELEASE)
+            ) {
+                item {
+                    val accent = if (updateReport.pendingPublicRelease) Color(0xFFF59E0B) else Color(0xFF38BDF8)
+                    val titleText = if (updateReport.pendingPublicRelease) {
+                        "${strings.updatePendingRelease} · v${updateReport.latestVersion}"
+                    } else {
+                        "${strings.updateAvailable} · v${updateReport.latestVersion}"
+                    }
+                    val detailText = buildString {
+                        val parts = mutableListOf<String>()
+                        if (updateReport.moduleUpdateAvailable) parts.add(strings.updateModuleLabel)
+                        if (updateReport.appUpdateAvailable) parts.add(strings.updateAppLabel)
+                        append(parts.joinToString(" + "))
+                        append(
+                            if (strings.isIndonesian) {
+                                " · Ketuk untuk membuka Pusat Pembaruan"
+                            } else {
+                                " · Tap to open Update Center"
+                            },
+                        )
+                    }
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        insideMargin = PaddingValues(14.dp),
+                        pressFeedbackType = PressFeedbackType.Tilt,
+                        onClick = onOpenUpdateCenter,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(9.dp)
+                                    .clip(CircleShape)
+                                    .background(accent),
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = titleText,
+                                    style = MiuixTheme.textStyles.body2,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = accent,
+                                )
+                                Text(
+                                    text = detailText,
+                                    style = MiuixTheme.textStyles.footnote1,
+                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -367,6 +430,56 @@ fun HomeTab(
                                 modifier = Modifier.weight(1f),
                             )
                         }
+                    }
+                }
+            }
+
+            // Pillar 1 & 4: Compact Sovereign Guard + 1-Tap Dialogue Console Quick-Access Card
+            item {
+                val locked = status?.tamperGuard?.lockedNodes ?: 0
+                val tamperCount = status?.tamperGuard?.totalEvents ?: 0L
+                val conflictCount = status?.conflictingModules?.size ?: 0
+                val guardColor = when {
+                    conflictCount > 0 -> Color(0xFFEF4444)
+                    tamperCount > 0L -> Color(0xFFF59E0B)
+                    else -> Color(0xFF38BDF8)
+                }
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.defaultColors(
+                        color = if (dark) Color(0xFF101722) else MiuixTheme.colorScheme.surfaceContainer,
+                    ),
+                    insideMargin = PaddingValues(14.dp),
+                    pressFeedbackType = PressFeedbackType.Tilt,
+                    onClick = { onOpenDialogue(null) },
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = strings.dialogueQuickCardTitle,
+                                style = MiuixTheme.textStyles.body1,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                text = strings.dialogueQuickCardSummary,
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Spacer(Modifier.size(10.dp))
+                        HeroStatusBadge(
+                            text = if (tamperCount > 0L) "Guard !$tamperCount" else "0444 · $locked",
+                            accent = guardColor,
+                        )
                     }
                 }
             }

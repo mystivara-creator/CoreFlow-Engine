@@ -1,6 +1,10 @@
 package io.coreflow.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,25 +20,38 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.coreflow.CoreFlowDialogueEngine
 import io.coreflow.CoreFlowManager
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
@@ -44,6 +61,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private data class DialogueMessage(
+    val id: Long,
+    val fromUser: Boolean,
+    val text: String,
+    val tags: List<String> = emptyList(),
+)
+
 @Composable
 fun LiveFeedTab(
     strings: AppStrings,
@@ -52,10 +76,51 @@ fun LiveFeedTab(
     contentPadding: PaddingValues,
     scrollBehavior: ScrollBehavior,
     onRefresh: () -> Unit,
+    pendingPrompt: String? = null,
+    onConsumePrompt: () -> Unit = {},
+    onSelectProfile: (CoreFlowManager.Profile) -> Unit = {},
+    onResolveTamper: (String) -> Unit = {},
 ) {
     val episodes = status?.episodes.orEmpty()
     val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
     val pullState = rememberPullToRefreshState()
+
+    val messages = remember { mutableStateListOf<DialogueMessage>() }
+    var inputQuery by remember { mutableStateOf("") }
+    var msgSeq by remember { mutableStateOf(1L) }
+
+    fun submitQuery(raw: String) {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return
+        messages.add(DialogueMessage(id = msgSeq++, fromUser = true, text = trimmed))
+        val res = CoreFlowDialogueEngine.evaluate(
+            rawQuery = trimmed,
+            status = status,
+            isIndonesian = strings.isIndonesian,
+            journalEntryCount = status?.baselineNodesSnapshotted,
+        )
+        messages.add(
+            DialogueMessage(
+                id = msgSeq++,
+                fromUser = false,
+                text = res.reply,
+                tags = res.telemetryTags,
+            ),
+        )
+        while (messages.size > 16) {
+            messages.removeAt(0)
+        }
+        res.requestedProfile?.let { onSelectProfile(it) }
+        res.requestedTamperResyncNode?.let { onResolveTamper(it) }
+        inputQuery = ""
+    }
+
+    LaunchedEffect(pendingPrompt, status?.isRunning) {
+        if (!pendingPrompt.isNullOrBlank()) {
+            submitQuery(pendingPrompt)
+            onConsumePrompt()
+        }
+    }
 
     PullToRefresh(
         isRefreshing = isRefreshing,
@@ -80,6 +145,210 @@ fun LiveFeedTab(
             ),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // Pillar 4: Minimalist Dark CFAE Telemetry-Driven Sovereign Dialogue Console
+            item { SmallTitle(text = strings.sectionDialogueConsole) }
+
+            item {
+                val consoleBg = Color(0xFF0E131B)
+                val consoleBorder = Color(0xFF223047)
+                val quickPrompts = remember(strings.isIndonesian) {
+                    CoreFlowDialogueEngine.quickPrompts(strings.isIndonesian)
+                }
+                val lockedNodes = status?.tamperGuard?.lockedNodes ?: 0
+                val tamperEvents = status?.tamperGuard?.totalEvents ?: 0L
+                val busScale = status?.coupledOrchestration?.memoryBusScale ?: 1.0f
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(BorderStroke(1.dp, consoleBorder), RoundedCornerShape(20.dp)),
+                    colors = CardDefaults.defaultColors(color = consoleBg),
+                    insideMargin = PaddingValues(14.dp),
+                ) {
+                    // Active live telemetry indicator bar
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (tamperEvents > 0L) Color(0xFFF59E0B)
+                                        else if (status?.isRunning == true) Color(0xFF10B981)
+                                        else Color(0xFF64748B),
+                                    ),
+                            )
+                            Text(
+                                text = "CFAE TELEMETRY LINK",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFE2E8F0),
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            BadgeTag("0444: $lockedNodes", Color(0xFF38BDF8))
+                            BadgeTag(
+                                String.format(Locale.US, "BUS %.2fx", busScale),
+                                if (busScale > 1.02f) Color(0xFF10B981) else Color(0xFF94A3B8),
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+
+                    // One-tap deterministic suggestion chips
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        for (chip in quickPrompts) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color(0xFF192231))
+                                    .border(BorderStroke(0.75.dp, Color(0xFF2B3B55)), RoundedCornerShape(10.dp))
+                                    .clickable { submitQuery(chip) }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                            ) {
+                                Text(
+                                    text = chip,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFFCBD5E1),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+
+                    // Dialogue transcript (or live sovereign welcome prompt)
+                    if (messages.isEmpty()) {
+                        val welcome = CoreFlowDialogueEngine.evaluate(
+                            rawQuery = "",
+                            status = status,
+                            isIndonesian = strings.isIndonesian,
+                            journalEntryCount = status?.baselineNodesSnapshotted,
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF141C28))
+                                .padding(11.dp),
+                        ) {
+                            Text(
+                                text = welcome.reply,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                                color = Color(0xFF94A3B8),
+                            )
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            for (m in messages.takeLast(6)) {
+                                Box(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentAlignment = if (m.fromUser) Alignment.CenterEnd else Alignment.CenterStart,
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth(if (m.fromUser) 0.85f else 1f)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(
+                                                if (m.fromUser) Color(0xFF1D4ED8).copy(alpha = 0.28f)
+                                                else Color(0xFF141C28),
+                                            )
+                                            .border(
+                                                BorderStroke(
+                                                    0.75.dp,
+                                                    if (m.fromUser) Color(0xFF3B82F6).copy(alpha = 0.45f)
+                                                    else Color(0xFF233249),
+                                                ),
+                                                RoundedCornerShape(12.dp),
+                                            )
+                                            .padding(10.dp),
+                                    ) {
+                                        Text(
+                                            text = m.text,
+                                            fontSize = 12.sp,
+                                            lineHeight = 17.sp,
+                                            color = if (m.fromUser) Color(0xFFEFF6FF) else Color(0xFFE2E8F0),
+                                        )
+                                        if (m.tags.isNotEmpty()) {
+                                            Spacer(Modifier.height(6.dp))
+                                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                                for (tag in m.tags.take(3)) {
+                                                    BadgeTag(tag, Color(0xFF38BDF8))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+
+                    // Minimalist dark CFAE input row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF161F2D))
+                                .border(BorderStroke(0.75.dp, Color(0xFF2B3B55)), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                        ) {
+                            if (inputQuery.isEmpty()) {
+                                Text(
+                                    text = strings.dialogueInputHint,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF64748B),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            BasicTextField(
+                                value = inputQuery,
+                                onValueChange = { inputQuery = it },
+                                singleLine = true,
+                                textStyle = TextStyle(
+                                    color = Color(0xFFF1F5F9),
+                                    fontSize = 12.sp,
+                                ),
+                                cursorBrush = SolidColor(Color(0xFF38BDF8)),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        TextButton(
+                            text = strings.dialogueSend,
+                            onClick = { submitQuery(inputQuery) },
+                            enabled = inputQuery.isNotBlank(),
+                            colors = ButtonDefaults.textButtonColorsPrimary(),
+                        )
+                    }
+                }
+            }
+
             item { SmallTitle(text = strings.sectionAiBrain) }
 
             item {
@@ -208,6 +477,7 @@ fun LiveFeedTab(
             } else {
                 items(items = episodes, key = { it.id }) { ep ->
                     val domainColor = when (ep.domain) {
+                        "sovereign" -> Color(0xFFEF4444)
                         "power" -> Color(0xFF10B981)
                         "thermal" -> Color(0xFFF59E0B)
                         "storage" -> Color(0xFF38BDF8)
@@ -218,6 +488,7 @@ fun LiveFeedTab(
                     }
                     val outcomeColor = when (ep.outcome) {
                         "oem_yield" -> Color(0xFFF59E0B)
+                        "quarantined" -> Color(0xFFF97316)
                         "rolled_back" -> Color(0xFFEF4444)
                         "skipped" -> Color(0xFF64748B)
                         else -> Color(0xFF22C55E)

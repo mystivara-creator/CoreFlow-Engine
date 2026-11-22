@@ -28,6 +28,8 @@ struct EnvelopeTelemetry {
     double gpu_busy_pct{0.0};
     double render_pressure{0.0};
     bool passive_media_only{false};
+    double scheduler_responsiveness_scale{1.0}; // 0.70..1.00 (tightens up_rate_limit_us under render pressure)
+    double thermal_stepdown_lead{0.0};          // 0.00..0.15 (shifts thermal envelope step-down earlier)
 };
 
 class ThermalEnvelopeActuator {

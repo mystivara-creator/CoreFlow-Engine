@@ -29,6 +29,8 @@ struct NodeSnapshot {
     std::string prior_value;
     uint64_t dev{0};
     uint64_t ino{0};
+    uint32_t original_mode{0};
+    bool permission_locked{false};
 };
 
 struct RetainedPerformanceBaseline final {
@@ -48,6 +50,17 @@ public:
 
     /// Record a planned mutation; returns false if node wasn't snapshotted or write failed
     bool apply_mutation(const std::string& path, const std::string& new_value);
+
+    /// Sovereign Tamper Guard: temporarily lock an actively-leased sysfs node to 0444 (read-only)
+    /// after verified write, saving original POSIX mode for clean restoration on rollback/Release-on-Calm.
+    bool lock_node_readonly(const std::string& path) noexcept;
+    /// Restore the saved POSIX write permission (e.g. 0644/0664) before CFAE writes or releases a node.
+    bool unlock_node_permission(const std::string& path) noexcept;
+    /// Sovereign Reclaim-First: unlock 0444 if locked, reclaim an actively-leased node overwritten
+    /// by an external writer (preserving original factory_value and inode check), and verify readback.
+    bool reclaim_mutation(const std::string& path, const std::string& expected_value);
+    /// Count of nodes currently locked read-only (0444) under active CFAE sovereign lease.
+    [[nodiscard]] size_t locked_node_count() const noexcept;
 
     /// Persist a verified performance operating point independently of OEM recovery data.
     /// Idempotent for an identical transaction ID and payload.
