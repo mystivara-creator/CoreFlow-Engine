@@ -94,6 +94,10 @@ int main() {
     assert(sym_cpu.regime == 2U);
     assert(sym_cpu.cpu_uclamp_scale > 1.0);
     assert(sym_cpu.helper_uclamp_ratio >= 0.72);
+    assert(sym_cpu.memory_bus_scale > 1.05 && sym_cpu.memory_bus_scale <= 1.25);
+    assert(sym_cpu.scheduler_responsiveness_scale >= 0.70 && sym_cpu.scheduler_responsiveness_scale < 0.90);
+    assert(sym_cpu.thermal_stepdown_lead > 0.02 && sym_cpu.thermal_stepdown_lead <= 0.15);
+    assert(sym_cpu.coupling_mask == 0x07U);
 
     // Background 92% CPU (dex2oat/post-boot storm) with 0% GPU must NEVER trigger CpuDrawBound
     auto sym_bg_storm = compute_symbiotic_plan({0.55, 0.65, 0.72, 92.0, 0.22, 0.0, 24.0, 2.0, 2.0, 0.50, 1.0, false});
@@ -103,6 +107,10 @@ int main() {
     auto sym_hot_guard = compute_symbiotic_plan({0.30, 0.40, 0.95, 65.0, 0.85, 88.0, 22.0, 5.0, 14.0, 0.45, 0.75, true});
     assert(!sym_hot_guard.boost_gpu_memory_supply && !sym_hot_guard.io_supply_boost);
     assert(sym_hot_guard.cpu_uclamp_scale <= 1.0);
+    assert(sym_hot_guard.memory_bus_scale == 1.0);
+    assert(sym_hot_guard.scheduler_responsiveness_scale == 1.0);
+    assert(sym_hot_guard.thermal_stepdown_lead == 0.0);
+    assert(sym_hot_guard.coupling_mask == 0U);
 
     // 6. Rust Markov AppPreloader + Cross-Reboot export_state/import_state
     auto preloader = new_app_preloader();

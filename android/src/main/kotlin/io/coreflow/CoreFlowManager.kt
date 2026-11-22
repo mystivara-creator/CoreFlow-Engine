@@ -7,7 +7,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * CoreFlowManager: Root-bridged Android client for CoreFlow Engine v6.2.0 Closed-Loop Intelligence (coreflowd).
+ * CoreFlowManager: Root-bridged Android client for CFAE System Framework / CoreFlow Engine v6.0.0-R (coreflowd).
  * Uses libsu persistent root shell for fast, zero-intermediary access on Magisk, KernelSU,
  * KernelSU-Next, and APatch.
  */
@@ -210,7 +210,38 @@ object CoreFlowManager {
         val jankRatio: Float? = null,
         val appDnaLearned: Int = 0,
         val activeAppBias: Float = 1.0f,
+        val activeAppEfficiencyWeight: Float = 1.0f,
+        val appDnaFlushCount: Long = 0L,
         val chargingDamped: Boolean = false,
+    )
+
+    data class TamperGuardStats(
+        val enabled: Boolean = true,
+        val lockedNodes: Int = 0,
+        val quarantinedNodes: Int = 0,
+        val totalEvents: Long = 0L,
+    )
+
+    data class TamperEventInfo(
+        val id: Long,
+        val tsMs: Long,
+        val nodePath: String,
+        val domain: String,
+        val expectedValue: String,
+        val observedValue: String,
+        val reason: String,
+        val reclaimed: Boolean,
+        val circuitBreakerOpen: Boolean,
+        val attemptsInWindow: Int,
+    )
+
+    data class CoupledOrchestrationStats(
+        val regime: Int = 0,
+        val memoryBusScale: Float = 1.0f,
+        val schedulerResponsivenessScale: Float = 1.0f,
+        val thermalStepdownLead: Float = 0.0f,
+        val couplingMask: Int = 0,
+        val memoryBusNodes: Int = 0,
     )
 
     enum class AuditLevel { PASS, WARN, FAIL }
@@ -258,6 +289,7 @@ object CoreFlowManager {
         val managedEnvelopeNodes: Int,
         val semanticKnobsDiscovered: Int = 0,
         val semanticKnobsActive: Int = 0,
+        val memoryBusKnobs: Int = 0,
         val semanticKnobLeaves: List<String> = emptyList(),
         val contendedPaths: List<String>,
         val oemYieldedNodes: Int = 0,
@@ -280,6 +312,10 @@ object CoreFlowManager {
         val thermalGuardActive: Boolean = false,
         val features: EngineFeatures = EngineFeatures(),
         val hyperFluid: HyperFluidStats = HyperFluidStats(),
+        val tamperGuard: TamperGuardStats = TamperGuardStats(),
+        val tamperEvents: List<TamperEventInfo> = emptyList(),
+        val coupledOrchestration: CoupledOrchestrationStats = CoupledOrchestrationStats(),
+        val conflictingModules: List<String> = emptyList(),
         val powerConfig: PowerConfig = PowerConfig(),
         val batteryPower: BatteryPower = BatteryPower(),
         val hardware: HardwareInfo = HardwareInfo(),
@@ -428,8 +464,33 @@ object CoreFlowManager {
                 }
             }
 
+            val tamperGuardJson = json.optJSONObject("tamperGuard")
+            val coupledJson = json.optJSONObject("coupledOrchestration")
+            val tamperEvents = buildList {
+                val arr = json.optJSONArray("tamperEvents") ?: return@buildList
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val path = obj.optString("nodePath", "").trim()
+                    if (path.isEmpty()) continue
+                    add(
+                        TamperEventInfo(
+                            id = obj.optLong("id", 0L),
+                            tsMs = obj.optLong("tsMs", 0L),
+                            nodePath = path,
+                            domain = obj.optString("domain", "cpu_policy"),
+                            expectedValue = obj.optString("expectedValue", ""),
+                            observedValue = obj.optString("observedValue", ""),
+                            reason = obj.optString("reason", ""),
+                            reclaimed = obj.optBoolean("reclaimed", false),
+                            circuitBreakerOpen = obj.optBoolean("circuitBreakerOpen", false),
+                            attemptsInWindow = obj.optInt("attemptsInWindow", 0),
+                        ),
+                    )
+                }
+            }
+
             DaemonStatus(
-                version = json.optString("version", "6.2.0"),
+                version = json.optString("version", "6.0.0-R"),
                 isRunning = json.optBoolean("running", false),
                 pid = json.optInt("pid", 0),
                 profile = Profile.fromConfigValue(json.optString("profile", "balanced")),
@@ -453,6 +514,7 @@ object CoreFlowManager {
                 managedEnvelopeNodes = actuators?.optInt("managedEnvelopeNodes", 0) ?: 0,
                 semanticKnobsDiscovered = actuators?.optInt("semanticKnobsDiscovered", 0) ?: 0,
                 semanticKnobsActive = actuators?.optInt("semanticKnobsActive", 0) ?: 0,
+                memoryBusKnobs = actuators?.optInt("memoryBusKnobs", 0) ?: 0,
                 semanticKnobLeaves = actuators?.optJSONArray("semanticKnobLeaves").toStringList(),
                 contendedPaths = actuators?.optJSONArray("contendedPaths").toStringList(),
                 oemYieldedNodes = actuators?.optInt("oemYieldedNodes", 0) ?: 0,
@@ -497,9 +559,27 @@ object CoreFlowManager {
                         jankRatio = hf.optNullableFloat("jankRatio"),
                         appDnaLearned = hf?.optInt("appDnaLearned", 0) ?: 0,
                         activeAppBias = hf.optFiniteFloat("activeAppBias", 1.0f),
+                        activeAppEfficiencyWeight = hf.optFiniteFloat("activeAppEfficiencyWeight", 1.0f),
+                        appDnaFlushCount = hf?.optLong("appDnaFlushCount", 0L) ?: 0L,
                         chargingDamped = hf?.optBoolean("chargingDamped", false) ?: false,
                     )
                 },
+                tamperGuard = TamperGuardStats(
+                    enabled = tamperGuardJson?.optBoolean("enabled", true) ?: true,
+                    lockedNodes = tamperGuardJson?.optInt("lockedNodes", 0) ?: 0,
+                    quarantinedNodes = tamperGuardJson?.optInt("quarantinedNodes", 0) ?: 0,
+                    totalEvents = tamperGuardJson?.optLong("totalEvents", 0L) ?: 0L,
+                ),
+                tamperEvents = tamperEvents,
+                coupledOrchestration = CoupledOrchestrationStats(
+                    regime = coupledJson?.optInt("regime", 0) ?: 0,
+                    memoryBusScale = coupledJson.optFiniteFloat("memoryBusScale", 1.0f),
+                    schedulerResponsivenessScale = coupledJson.optFiniteFloat("schedulerResponsivenessScale", 1.0f),
+                    thermalStepdownLead = coupledJson.optFiniteFloat("thermalStepdownLead", 0.0f),
+                    couplingMask = coupledJson?.optInt("couplingMask", 0) ?: 0,
+                    memoryBusNodes = coupledJson?.optInt("memoryBusNodes", 0) ?: 0,
+                ),
+                conflictingModules = json.optJSONArray("conflictingModules").toStringList(),
                 powerConfig = PowerConfig(
                     bypassCharging = powerCfgJson?.optBoolean("bypassCharging", false) ?: false,
                     bypassOnGaming = powerCfgJson?.optBoolean("bypassOnGaming", false) ?: false,
@@ -556,6 +636,21 @@ object CoreFlowManager {
                     excluded = appsJson?.optJSONArray("excluded").toStringList(),
                 ),
             )
+        }
+    }
+
+    suspend fun resolveTamper(nodePath: String, actionCode: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val code = actionCode.trim().uppercase(java.util.Locale.US)
+            require(code == "RESYNC" || code == "ENFORCE") {
+                "CFAE Sovereign Guard rejects compromise action: $actionCode"
+            }
+            val safeNode = nodePath.trim()
+            require(safeNode.isNotEmpty() && safeNode.length <= 512 && !safeNode.contains('\'') && !safeNode.contains('\n')) {
+                "Invalid sysfs node path"
+            }
+            execRootCommand("$RESOLVE_DAEMON; \"\$BIN\" --resolve-tamper '$safeNode' '$code'")
+            Unit
         }
     }
 

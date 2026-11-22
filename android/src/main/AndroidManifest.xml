@@ -82,6 +82,22 @@
                 <action android:name="android.intent.action.ACTION_POWER_DISCONNECTED" />
             </intent-filter>
         </receiver>
+
+        <!-- Sovereign Tamper Guard IPC receiver: strictly protected by android.permission.DUMP
+             so only root coreflowd / privileged system can dispatch tamper alerts (anti-spoofing). -->
+        <receiver
+            android:name="io.coreflow.CoreFlowTamperReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="io.coreflow.ACTION_NODE_TAMPER" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Internal non-exported receiver for Tamper notification actions (Tandai Dibaca / Inline Reply). -->
+        <receiver
+            android:name="io.coreflow.CoreFlowTamperActionReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>

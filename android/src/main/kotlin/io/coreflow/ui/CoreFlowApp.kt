@@ -95,12 +95,16 @@ private data class NavTabSpec(
 fun CoreFlowApp(
     themeModeIndex: Int,
     onThemeModeChange: (Int) -> Unit,
+    pendingTab: Int? = null,
+    pendingDialoguePrompt: String? = null,
+    onConsumeDeepLink: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var activeDialoguePrompt by remember { mutableStateOf<String?>(null) }
     var showAboutScreen by rememberSaveable { mutableStateOf(false) }
     var pollIntervalIndex by remember { mutableIntStateOf(AppPreferences.getPollIntervalIndex(context)) }
     var languageIndex by remember { mutableIntStateOf(AppPreferences.getLanguageIndex(context)) }
@@ -119,6 +123,17 @@ fun CoreFlowApp(
     var journalText by remember { mutableStateOf<String?>(null) }
     var selfAuditReport by remember { mutableStateOf<CoreFlowManager.SelfAuditReport?>(null) }
     var auditBusy by remember { mutableStateOf(false) }
+
+    LaunchedEffect(pendingTab, pendingDialoguePrompt) {
+        if (pendingTab != null || pendingDialoguePrompt != null) {
+            pendingTab?.let { if (it in 0..4) selectedTab = it }
+            if (!pendingDialoguePrompt.isNullOrBlank()) {
+                activeDialoguePrompt = pendingDialoguePrompt
+            }
+            showAboutScreen = false
+            onConsumeDeepLink()
+        }
+    }
 
     suspend fun refreshStatus() {
         val rootOk = hasRoot ?: CoreFlowManager.checkRootAccess().also { hasRoot = it }
@@ -384,6 +399,12 @@ fun CoreFlowApp(
                                 busyAction = false
                             }
                         },
+                        onOpenDialogue = { prompt ->
+                            if (!prompt.isNullOrBlank()) {
+                                activeDialoguePrompt = prompt
+                            }
+                            selectedTab = 2
+                        },
                     )
 
                     1 -> ControlHubTab(
@@ -434,6 +455,36 @@ fun CoreFlowApp(
                         contentPadding = innerPadding,
                         scrollBehavior = scrollBehavior,
                         onRefresh = { triggerPullRefresh() },
+                        pendingPrompt = activeDialoguePrompt,
+                        onConsumePrompt = { activeDialoguePrompt = null },
+                        onSelectProfile = { profile ->
+                            scope.launch {
+                                busyAction = true
+                                CoreFlowManager.applyProfile(profile)
+                                    .onSuccess {
+                                        refreshStatus()
+                                        snackbarHostState.showSnackbar("CFAE context -> ${profile.label}")
+                                    }
+                                    .onFailure { err ->
+                                        snackbarHostState.showSnackbar(err.message ?: "Failed to shift context")
+                                    }
+                                busyAction = false
+                            }
+                        },
+                        onResolveTamper = { nodePath ->
+                            scope.launch {
+                                busyAction = true
+                                CoreFlowManager.resolveTamper(nodePath, "RESYNC")
+                                    .onSuccess {
+                                        refreshStatus()
+                                        snackbarHostState.showSnackbar("CFAE Sovereign RESYNC verified")
+                                    }
+                                    .onFailure { err ->
+                                        snackbarHostState.showSnackbar(err.message ?: "Failed to resync node")
+                                    }
+                                busyAction = false
+                            }
+                        },
                     )
 
                     3 -> AppsTab(

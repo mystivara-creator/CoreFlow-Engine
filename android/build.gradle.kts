@@ -23,8 +23,8 @@ android {
         applicationId = "io.coreflow.companion"
         minSdk = 33
         targetSdk = 36
-        versionCode = 62000 + ciBuildNumber
-        versionName = "6.2.0"
+        versionCode = 63000 + ciBuildNumber
+        versionName = "6.0.0-R"
     }
 
     signingConfigs {
@@ -98,4 +98,6 @@ dependencies {
 
     // Persistent root shell for Magisk, KernelSU, KernelSU-Next & APatch
     implementation("com.github.topjohnwu.libsu:core:6.0.0")
+
+    testImplementation("junit:junit:4.13.2")
 }

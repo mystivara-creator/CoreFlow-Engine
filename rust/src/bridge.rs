@@ -80,6 +80,10 @@ pub mod ffi {
         boost_gpu_memory_supply: bool,
         io_supply_boost: bool,
         encourage_cluster_spread: bool,
+        memory_bus_scale: f64,
+        scheduler_responsiveness_scale: f64,
+        thermal_stepdown_lead: f64,
+        coupling_mask: u8,
     }
     struct ThermalTrendResult {
         velocity_cpm: f64,

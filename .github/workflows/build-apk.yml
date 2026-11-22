@@ -72,7 +72,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          gradle assembleDebug assembleRelease --stacktrace
+          gradle testDebugUnitTest assembleDebug assembleRelease --stacktrace
 
       - name: Stage and verify versioned APK outputs
         shell: bash
@@ -129,7 +129,7 @@ jobs:
           TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || {
             echo "::error::Invalid semver release tag: $TAG"
             exit 1
           }

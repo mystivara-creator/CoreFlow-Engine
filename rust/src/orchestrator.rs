@@ -12,6 +12,11 @@ pub const REGIME_CPU_DRAW_BOUND: u8 = 2;
 pub const REGIME_MEMORY_IO_STARVED: u8 = 3;
 pub const REGIME_SINGLE_HOTSPOT_SPREAD: u8 = 4;
 
+/// Active coupled-domain bitmask flags exported via `SymbioticPlan::coupling_mask`:
+pub const COUPLING_COMPUTE_MEMORY_BUS: u8 = 1 << 0;
+pub const COUPLING_RENDERING_SCHEDULER: u8 = 1 << 1;
+pub const COUPLING_HEADROOM_THERMAL: u8 = 1 << 2;
+
 fn sanitize_unit(v: f64) -> f64 {
     if v.is_finite() {
         v.clamp(0.0, 1.0)
@@ -22,8 +27,8 @@ fn sanitize_unit(v: f64) -> f64 {
 
 /// Orthogonal Symbiotic Orchestrator:
 /// Uses Little's Law queue balance (L = lambda * W) across CPU, GPU, and Memory/I/O
-/// plus cross-cluster saturation gradient detection so no single core, cluster, or
-/// subsystem becomes a solitary thermal/latency hotspot while companions sit idle.
+/// plus cross-cluster saturation gradient detection and coupled multi-domain physics
+/// (Compute <-> Memory Bus, Rendering <-> Scheduler, Headroom <-> Thermal Envelope).
 pub fn compute_symbiotic_plan(input: SymbioticInput) -> SymbioticPlan {
     let cap_scale = if input.capacity_scale.is_finite() {
         input.capacity_scale.clamp(0.25, 1.0)
@@ -41,6 +46,10 @@ pub fn compute_symbiotic_plan(input: SymbioticInput) -> SymbioticPlan {
             boost_gpu_memory_supply: false,
             io_supply_boost: false,
             encourage_cluster_spread: false,
+            memory_bus_scale: 1.0,
+            scheduler_responsiveness_scale: 1.0,
+            thermal_stepdown_lead: 0.0,
+            coupling_mask: 0,
         };
     }
 
@@ -147,6 +156,45 @@ pub fn compute_symbiotic_plan(input: SymbioticInput) -> SymbioticPlan {
         }
     }
 
+    // 3. Coupled Multi-Domain Orchestration (Pillar 2):
+    //    (a) Compute <-> Memory Bus: scale memory bus floor up to 1.25x OEM baseline
+    //        whenever sustained compute demand (CPU/GPU/mem-IO) rises while thermal headroom holds.
+    let mut coupling_mask: u8 = 0;
+    let compute_demand = l_gpu.max(l_cpu * 0.90).max(l_mem_io);
+    let mut memory_bus_scale = 1.0;
+    if compute_demand >= 0.55 || boost_gpu_memory_supply || io_supply_boost {
+        let excess = ((compute_demand - 0.50) / 0.50).clamp(0.0, 1.0);
+        let boost = (0.06 + excess * 0.19) * cap_scale;
+        memory_bus_scale = (1.0 + boost).clamp(1.0, 1.25);
+        if memory_bus_scale > 1.02 {
+            coupling_mask |= COUPLING_COMPUTE_MEMORY_BUS;
+        }
+    }
+
+    //    (b) Rendering <-> Scheduler Responsiveness: tighten up_rate_limit_us (0.70..1.00)
+    //        proportionally as foreground render_pressure climbs.
+    let mut scheduler_responsiveness_scale = 1.0;
+    if render_q >= 0.35 {
+        let render_excess = ((render_q - 0.35) / 0.65).clamp(0.0, 1.0);
+        scheduler_responsiveness_scale = (1.0 - render_excess * 0.30).clamp(0.70, 1.0);
+        if scheduler_responsiveness_scale < 0.98 {
+            coupling_mask |= COUPLING_RENDERING_SCHEDULER;
+        }
+    }
+
+    //    (c) Performance Headroom <-> Thermal Envelope Step-Down Lead:
+    //        Whenever wider headroom is opened (memory bus raised, CPU UClamp boosted,
+    //        or GPU/IO supply boosted), shift thermal step-down earlier (0.00..0.15)
+    //        so silicon transitions smoothly instead of slamming into thermal throttle.
+    let headroom_open = (memory_bus_scale - 1.0) * 0.32
+        + (cpu_uclamp_scale - 1.0).max(0.0) * 0.55
+        + if boost_gpu_memory_supply { 0.03 } else { 0.0 }
+        + if io_supply_boost { 0.02 } else { 0.0 };
+    let thermal_stepdown_lead = headroom_open.clamp(0.0, 0.15);
+    if thermal_stepdown_lead >= 0.02 {
+        coupling_mask |= COUPLING_HEADROOM_THERMAL;
+    }
+
     SymbioticPlan {
         regime,
         cluster_imbalance,
@@ -155,6 +203,10 @@ pub fn compute_symbiotic_plan(input: SymbioticInput) -> SymbioticPlan {
         boost_gpu_memory_supply,
         io_supply_boost,
         encourage_cluster_spread,
+        memory_bus_scale,
+        scheduler_responsiveness_scale,
+        thermal_stepdown_lead,
+        coupling_mask,
     }
 }
 
@@ -233,6 +285,26 @@ mod tests {
         assert!(!plan.boost_gpu_memory_supply);
         assert!(!plan.io_supply_boost);
         assert!(!plan.encourage_cluster_spread);
+        assert_eq!(plan.memory_bus_scale, 1.0);
+        assert_eq!(plan.scheduler_responsiveness_scale, 1.0);
+        assert_eq!(plan.thermal_stepdown_lead, 0.0);
+        assert_eq!(plan.coupling_mask, 0);
+    }
+
+    #[test]
+    fn coupled_domains_scale_bus_scheduler_and_thermal_lead_together() {
+        let mut inp = neutral_input();
+        inp.render_pressure = 0.88;
+        inp.cpu_psi = 26.0;
+        inp.gpu_busy_pct = 42.0;
+        inp.mem_psi = 14.0;
+        let plan = compute_symbiotic_plan(inp);
+        assert!(plan.memory_bus_scale > 1.10 && plan.memory_bus_scale <= 1.25);
+        assert!(plan.scheduler_responsiveness_scale >= 0.70 && plan.scheduler_responsiveness_scale < 0.85);
+        assert!(plan.thermal_stepdown_lead >= 0.05 && plan.thermal_stepdown_lead <= 0.15);
+        assert_ne!(plan.coupling_mask & COUPLING_COMPUTE_MEMORY_BUS, 0);
+        assert_ne!(plan.coupling_mask & COUPLING_RENDERING_SCHEDULER, 0);
+        assert_ne!(plan.coupling_mask & COUPLING_HEADROOM_THERMAL, 0);
     }
 
     #[test]

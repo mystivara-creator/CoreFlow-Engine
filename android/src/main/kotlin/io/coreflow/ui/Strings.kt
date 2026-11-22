@@ -94,6 +94,11 @@ data class AppStrings(
     val labelFramePacing: String,
     val labelAppDna: String,
     val labelThermalEq: String,
+    val sectionDialogueConsole: String,
+    val dialogueInputHint: String,
+    val dialogueSend: String,
+    val dialogueQuickCardTitle: String,
+    val dialogueQuickCardSummary: String,
 ) {
     fun humanizeMode(mode: String): String = when (mode.uppercase(Locale.US)) {
         "LAUNCH_BURST" -> if (isIndonesian) "Lonjakan Buka" else "Launch Burst"
@@ -111,6 +116,8 @@ data class AppStrings(
     fun humanizeOutcome(outcome: String): String = when (outcome) {
         "oem_yield" -> "OEM Yield"
         "rolled_back" -> if (isIndonesian) "Dipulihkan" else "Rolled Back"
+        "reclaimed" -> if (isIndonesian) "Direbut Balik" else "Reclaimed"
+        "quarantined" -> if (isIndonesian) "Karantina 30d" else "Quarantined"
         "skipped" -> if (isIndonesian) "Dilewati" else "Skipped"
         else -> if (isIndonesian) "Terverifikasi" else "Verified"
     }
@@ -239,6 +246,11 @@ fun rememberAppStrings(languageIndex: Int): AppStrings {
                 labelFramePacing = "Frame Pacing",
                 labelAppDna = "App DNA",
                 labelThermalEq = "Termal Dual",
+                sectionDialogueConsole = "KONSOL DIALOG TELEMETRI CFAE",
+                dialogueInputHint = "Tanya telemetri atau minta pindah konteks...",
+                dialogueSend = "Kirim",
+                dialogueQuickCardTitle = "Konsol Dialog CFAE Sovereign",
+                dialogueQuickCardSummary = "Tanya alasan stutter, audit konflik/intervensi, atau ubah konteks langsung berbasis telemetri.",
             )
         } else {
             AppStrings(
@@ -336,6 +348,11 @@ fun rememberAppStrings(languageIndex: Int): AppStrings {
                 labelFramePacing = "Frame Pacing",
                 labelAppDna = "App DNA",
                 labelThermalEq = "Thermal Eq",
+                sectionDialogueConsole = "CFAE TELEMETRY DIALOGUE CONSOLE",
+                dialogueInputHint = "Ask live telemetry or request a context shift...",
+                dialogueSend = "Send",
+                dialogueQuickCardTitle = "CFAE Sovereign Dialogue Console",
+                dialogueQuickCardSummary = "Ask why frames dropped, inspect tamper/module forensics, or shift context with live telemetry.",
             )
         }
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify CoreFlow v6.2.0 Closed-Loop Intelligence daemon CLI & safety contracts."""
+"""Verify CFAE System Framework / CoreFlow Engine v6.0.0-R Sovereign Rebuild daemon CLI & safety contracts."""
 import json
 import subprocess
 import sys
@@ -9,9 +9,9 @@ repo = Path(__file__).resolve().parents[1]
 source = (repo / "src/daemon/main.cpp").read_text()
 config = (repo / "include/coreflow/config.hpp").read_text()
 
-# Core v6.2 architecture & safety invariants
-assert 'constexpr char kVersion[] = "6.2.0";' in source
-assert 'std::string version{"6.2.0"};' in config
+# Core v6.0.0-R Sovereign Rebuild architecture & safety invariants
+assert 'constexpr char kVersion[] = "6.0.0-R";' in source
+assert 'std::string version{"6.0.0-R"};' in config
 assert "VulkanController" not in source
 assert "DeviceValidationRecorder" not in source
 assert "ThreadSchedulerActuator" in source
@@ -29,6 +29,10 @@ assert "feedforward_freeze_until_ms" in source
 assert "vblank_irq_token" in source
 assert "to_dna_signature" in source
 assert "BootCalmSanctuary" in source
+assert "dispatch_tamper_broadcast" in source
+assert "handle_resolve_tamper_cli" in source
+assert "observe_context" in source
+assert "flush_if_significant" in source
 assert "O_EXCL" in source and "renameat" in source
 assert "baseline.recover_pending()" in source
 assert "baseline.rollback_all()" in source
@@ -57,7 +61,7 @@ if len(sys.argv) >= 2:
         payload = json.loads(lines[-1])
         assert isinstance(payload, dict), f"{flag} JSON root is not an object"
         if flag == "--status":
-            assert payload.get("version") == "6.2.0"
+            assert payload.get("version") == "6.0.0-R"
             assert "profile" in payload
             assert "effectiveProfile" in payload
             assert "mode" in payload
@@ -76,15 +80,33 @@ if len(sys.argv) >= 2:
                 "jankRatio",
                 "appDnaLearned",
                 "activeAppBias",
+                "activeAppEfficiencyWeight",
+                "appDnaFlushCount",
                 "chargingDamped",
             ):
                 assert hf_key in payload["hyperFluid"], f"Missing hyperFluid.{hf_key}"
+            assert "tamperGuard" in payload and isinstance(payload["tamperGuard"], dict)
+            for tg_key in ("enabled", "lockedNodes", "quarantinedNodes", "totalEvents"):
+                assert tg_key in payload["tamperGuard"], f"Missing tamperGuard.{tg_key}"
+            assert isinstance(payload.get("tamperEvents"), list)
+            assert "coupledOrchestration" in payload and isinstance(payload["coupledOrchestration"], dict)
+            for co_key in (
+                "regime",
+                "memoryBusScale",
+                "schedulerResponsivenessScale",
+                "thermalStepdownLead",
+                "couplingMask",
+                "memoryBusNodes",
+            ):
+                assert co_key in payload["coupledOrchestration"], f"Missing coupledOrchestration.{co_key}"
+            assert isinstance(payload.get("conflictingModules"), list)
             assert "powerConfig" in payload and isinstance(payload["powerConfig"], dict)
             assert "apps" in payload and isinstance(payload["apps"], dict)
             for bucket in ("gaming", "smoothness", "battery", "excluded"):
                 assert isinstance(payload["apps"].get(bucket), list)
             assert "actuators" in payload and isinstance(payload["actuators"], dict)
             assert isinstance(payload["actuators"].get("contendedPaths"), list)
+            assert "memoryBusKnobs" in payload["actuators"]
             assert "hardware" in payload and isinstance(payload["hardware"], dict)
             assert "memory" in payload and isinstance(payload["memory"], dict)
             assert isinstance(payload.get("cpuClusters"), list)
@@ -96,30 +118,40 @@ if len(sys.argv) >= 2:
             assert "history" in payload and isinstance(payload["history"], list)
             assert "vulkan" not in payload
         elif flag == "--capabilities":
-            assert payload.get("version") == "6.2.0"
+            assert payload.get("version") == "6.0.0-R"
             assert payload.get("rustPidEngine") is True
             assert "perThreadUclampSupported" in payload
             assert "bypassChargingSupported" in payload
             assert "storageType" in payload
         elif flag == "--atlas":
             assert payload.get("atlasFormat") == "coreflow-atlas-v6"
-            assert payload.get("version") == "6.2.0"
+            assert payload.get("version") == "6.0.0-R"
             assert isinstance(payload.get("cpuClusters"), list)
             assert isinstance(payload.get("gpu"), dict)
             assert isinstance(payload.get("powerControl"), dict)
             assert isinstance(payload.get("thermalZones"), list)
         elif flag == "--episodes":
-            assert payload.get("version") == "6.2.0"
+            assert payload.get("version") == "6.0.0-R"
             assert isinstance(payload.get("episodes"), list)
         elif flag == "--journal":
             assert payload.get("format") == "CFJ4"
             assert isinstance(payload.get("entries"), list)
         elif flag == "--diag":
             assert payload.get("reportFormat") == "coreflow-diag-v6"
-            assert payload.get("version") == "6.2.0"
+            assert payload.get("version") == "6.0.0-R"
             assert isinstance(payload.get("capabilities"), dict)
             assert isinstance(payload.get("atlas"), dict)
             assert isinstance(payload.get("status"), dict)
             assert isinstance(payload.get("journal"), dict)
 
-print("CoreFlow v6.2.0 CLI lifecycle contract PASS")
+    # Verify --resolve-tamper strictly rejects YIELD/bypass compromise actions!
+    bad_tamper = subprocess.run(
+        [str(binary), "--resolve-tamper", "/sys/test/node", "YIELD"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert bad_tamper.returncode == 2, "Sovereign CLI must reject YIELD action!"
+
+print("CoreFlow v6.0.0-R Sovereign Rebuild CLI lifecycle contract PASS")

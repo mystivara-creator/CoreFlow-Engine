@@ -787,9 +787,17 @@ bool BaselineStore::capture_durable(const std::string& path) {
 
 bool BaselineStore::rollback_path_locked(const std::string& path) {
     auto it = store_.find(path);
-    if (it == store_.end() || !it->second.is_modified) return true;
-
+    if (it == store_.end()) return true;
     auto& snap = it->second;
+    if (snap.permission_locked) {
+        const mode_t restore_mode = snap.original_mode != 0U
+            ? static_cast<mode_t>(snap.original_mode & 0777U)
+            : static_cast<mode_t>(0644);
+        (void)::chmod(path.c_str(), restore_mode);
+        snap.permission_locked = false;
+    }
+    if (!snap.is_modified) return true;
+
     uint64_t cur_dev = 0;
     uint64_t cur_ino = 0;
     const std::string actual = read_raw_node(path, &cur_dev, &cur_ino);
@@ -819,6 +827,16 @@ bool BaselineStore::rollback_path_locked(const std::string& path) {
 
 size_t BaselineStore::rollback_locked() {
     size_t restored = 0;
+    // Restore any read-only 0444 locks first so rollback writes always succeed cleanly.
+    for (auto& [path, snap] : store_) {
+        if (snap.permission_locked) {
+            const mode_t restore_mode = snap.original_mode != 0U
+                ? static_cast<mode_t>(snap.original_mode & 0777U)
+                : static_cast<mode_t>(0644);
+            (void)::chmod(path.c_str(), restore_mode);
+            snap.permission_locked = false;
+        }
+    }
     // A clamp pair can require the other member to be restored first.
     for (int pass = 0; pass < 2; ++pass) {
         for (auto& [path, snap] : store_) {
@@ -871,7 +889,14 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
         uint64_t ino = 0;
         const std::string before = read_raw_node(path, &dev, &ino);
         if (before.empty()) return false;
-        it = store_.emplace(path, NodeSnapshot{path, before, before, false, before, dev, ino}).first;
+        it = store_.emplace(path, NodeSnapshot{path, before, before, false, before, dev, ino, 0U, false}).first;
+    }
+    if (it->second.permission_locked) {
+        const mode_t restore_mode = it->second.original_mode != 0U
+            ? static_cast<mode_t>(it->second.original_mode & 0777U)
+            : static_cast<mode_t>(0644);
+        (void)::chmod(path.c_str(), restore_mode);
+        it->second.permission_locked = false;
     }
     uint64_t cur_dev = 0;
     uint64_t cur_ino = 0;
@@ -934,6 +959,81 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
         return false;
     }
     return true;
+}
+
+bool BaselineStore::lock_node_readonly(const std::string& path) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!path_safe(path)) return false;
+    auto it = store_.find(path);
+    if (it == store_.end()) return false;
+    if (it->second.permission_locked) return true;
+
+    struct stat st{};
+    if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    if (it->second.original_mode == 0U) {
+        it->second.original_mode = static_cast<uint32_t>(st.st_mode & 0777U);
+    }
+    if (::chmod(path.c_str(), 0444) != 0) return false;
+    it->second.permission_locked = true;
+    return true;
+}
+
+bool BaselineStore::unlock_node_permission(const std::string& path) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!path_safe(path)) return false;
+    auto it = store_.find(path);
+    if (it == store_.end() || !it->second.permission_locked) return true;
+
+    const mode_t restore_mode = it->second.original_mode != 0U
+        ? static_cast<mode_t>(it->second.original_mode & 0777U)
+        : static_cast<mode_t>(0644);
+    const bool ok = (::chmod(path.c_str(), restore_mode) == 0);
+    it->second.permission_locked = false;
+    return ok;
+}
+
+bool BaselineStore::reclaim_mutation(const std::string& path, const std::string& expected_value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!recovery_checked_ || identity_unavailable_ || !path_safe(path) || expected_value.empty()) {
+        return false;
+    }
+    auto it = store_.find(path);
+    if (it == store_.end()) return false;
+
+    auto& snap = it->second;
+    if (snap.permission_locked) {
+        const mode_t restore_mode = snap.original_mode != 0U
+            ? static_cast<mode_t>(snap.original_mode & 0777U)
+            : static_cast<mode_t>(0644);
+        (void)::chmod(path.c_str(), restore_mode);
+        snap.permission_locked = false;
+    }
+    uint64_t cur_dev = 0;
+    uint64_t cur_ino = 0;
+    const std::string actual = read_raw_node(path, &cur_dev, &cur_ino);
+    if (actual.empty()) return false;
+    if (snap.ino != 0 && (cur_dev != snap.dev || cur_ino != snap.ino)) {
+        return false;
+    }
+    if (!readback_matches(path, expected_value, actual)) {
+        if (!write_raw_node(path, expected_value, snap.dev, snap.ino)) {
+            return false;
+        }
+    }
+    snap.prior_value = snap.active_value;
+    snap.active_value = expected_value;
+    snap.is_modified = (expected_value != snap.factory_value);
+    (void)persist_locked();
+    return true;
+}
+
+size_t BaselineStore::locked_node_count() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t count = 0U;
+    for (const auto& [_, snap] : store_) {
+        if (snap.permission_locked) ++count;
+    }
+    return count;
 }
 
 bool BaselineStore::rollback(const std::string& path) {

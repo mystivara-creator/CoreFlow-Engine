@@ -123,9 +123,24 @@ run_customize 33
 [ -f "$STATE_DIR/DISABLE" ] || { echo "FAIL: customize.sh deleted DISABLE"; exit 1; }
 [ ! -f "$STATE_DIR/coreflowd.pid" ] || { echo "FAIL: daemon started despite SAFE_MODE/DISABLE"; exit 1; }
 
+# 3b. Pre-Install Sovereign Conflict Hard-Block: active competing tweaker must abort install & record JSON
+FAKE_MODS="$TMP_ROOT/fake_modules"
+mkdir -p "$FAKE_MODS/encore_tweaks"
+printf 'id=encore_tweaks\nname=Encore Tweaks\n' > "$FAKE_MODS/encore_tweaks/module.prop"
+if COREFLOW_MODULES_ROOT="$FAKE_MODS" run_customize 35 2>/dev/null; then
+  echo "FAIL: customize.sh did not hard-block conflicting module encore_tweaks"
+  exit 1
+fi
+[ -f "$STATE_DIR/detected_conflicts.json" ] || { echo "FAIL: detected_conflicts.json not persisted"; exit 1; }
+grep -q 'encore_tweaks' "$STATE_DIR/detected_conflicts.json" || { echo "FAIL: encore_tweaks missing in detected_conflicts.json"; exit 1; }
+# Disabling or removing the conflicting module clears hard-block
+touch "$FAKE_MODS/encore_tweaks/disable"
+COREFLOW_MODULES_ROOT="$FAKE_MODS" run_customize 35
+rm -rf "$FAKE_MODS"
+
 # 4. Clear safety markers and verify customize.sh hot-reloads and verifies daemon status
 rm -f "$STATE_DIR/SAFE_MODE" "$STATE_DIR/DISABLE"
-run_customize 35
+COREFLOW_MODULES_ROOT="$TMP_ROOT/empty_mods" run_customize 35
 [ -f "$STATE_DIR/coreflowd.pid" ] || { echo "FAIL: daemon did not start after clearing markers"; exit 1; }
 
 # 5. Concurrent service invocations must result in one deterministic daemon launch.

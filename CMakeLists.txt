@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(CoreFlowEngine VERSION 6.2.0 LANGUAGES CXX)
+project(CoreFlowEngine VERSION 6.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -142,6 +142,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/v6/semantic_knob_engine.cpp
         src/v5/hardware_probe.cpp
         src/kernel/mount_topology.cpp
+        src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
     )
     if(NOT ANDROID)

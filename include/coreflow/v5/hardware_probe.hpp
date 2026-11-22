@@ -99,6 +99,13 @@ struct CgroupPathsInfo {
     bool uclamp_uses_percent{true};
 };
 
+struct MemoryBusNodeInfo {
+    std::string name;
+    std::string device_path;
+    std::string min_freq_path;
+    std::vector<uint64_t> opps_hz;
+};
+
 struct MemorySnapshot {
     uint64_t total_bytes{0};
     uint64_t available_bytes{0};
@@ -131,6 +138,7 @@ struct HardwareTopology {
     StorageType primary_storage{StorageType::Unknown};
     std::vector<CpuClusterInfo> cpu_clusters;
     GpuInfo gpu;
+    std::vector<MemoryBusNodeInfo> memory_bus_nodes;
     std::vector<StorageQueueInfo> storage_queues;
     VmNodesInfo vm;
     CgroupPathsInfo cgroups;

@@ -137,10 +137,34 @@ int main() {
     assert(read_file(kgsl_max) == "0");
     assert(read_file(kgsl_min) == "5");
 
+    // 5. Pillar 2: Coupled Rendering <-> Scheduler Responsiveness & Headroom <-> Thermal Step-Down Lead
+    topo.cpu_clusters[0].governor = "schedutil";
+    topo.cpu_clusters[0].baseline_up_rate_limit_us = 2000U;
+    write_file(up_rate, "2000\n");
+    write_file(hispeed, "1800000\n");
+    baseline.reinitialize();
+    assert(baseline.recover_pending());
+    act.reset_contention();
+
+    // Neutral scheduler responsiveness (1.0) vs high render-pressure coupled responsiveness (0.70)
+    // and thermal_stepdown_lead (0.14) pulling ceiling down earlier at scale=0.75
+    EnvelopeTelemetry tel_neutral{15.0, 40.0, 0.25, false, 1.0, 0.0};
+    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 0.75, false, true, tel_neutral, 40000);
+    const uint64_t up_neutral = std::stoull(read_file(up_rate));
+    const uint64_t hispeed_no_lead = std::stoull(read_file(hispeed));
+
+    EnvelopeTelemetry tel_coupled{15.0, 40.0, 0.92, false, 0.70, 0.14};
+    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 0.75, false, true, tel_coupled, 41000);
+    const uint64_t up_tightened = std::stoull(read_file(up_rate));
+    const uint64_t hispeed_early_lead = std::stoull(read_file(hispeed));
+    assert(up_tightened < up_neutral);
+    assert(hispeed_early_lead < hispeed_no_lead);
+
+    act.apply(topo, ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, {}, 42000);
     assert(!baseline.has_active_mutations());
     assert(baseline.verify_and_persist_clear_state());
     (void)::unsetenv("COREFLOW_TEST_STATE_DIR");
     fs::remove_all(root);
-    std::cout << "v5 ThermalEnvelopeActuator tests passed\n";
+    std::cout << "v5/v6.0.0-R Coupled ThermalEnvelopeActuator tests passed\n";
     return 0;
 }

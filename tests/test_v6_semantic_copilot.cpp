@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 
 using namespace coreflow;
@@ -256,8 +257,85 @@ int main() {
     const auto exynos_topo = exynos_probe.discover();
     assert(exynos_topo.refresh_hz == 90U);
 
+    // 5. Pillar 1 & 2: Sovereign Tamper Guard (0444 lock + Reclaim-First + 3x/5s circuit breaker + force_resync)
+    //    AND Coupled Devfreq Memory Bus (<= 1.25x OEM OPP floor scaling + Release-on-Calm permission restore)
+    {
+        const fs::path ddr_dir = sys / "class/devfreq/soc:qcom,cpu-cpu-ddr-bw";
+        const fs::path ddr_min = ddr_dir / "min_freq";
+        const fs::path ddr_opps = ddr_dir / "available_frequencies";
+        write_file(ddr_min, "1000000\n");
+        write_file(ddr_opps, "547000 768000 1000000 1144000 1248000 1555000 2092000\n");
+        ::chmod(ddr_min.c_str(), 0644);
+        ::chmod(gpu_adrenoboost.c_str(), 0644);
+
+        HardwareProbe bus_probe(sys.string(), proc.string());
+        HardwareTopology bus_topo = bus_probe.discover();
+        assert(bus_topo.memory_bus_nodes.size() == 1U);
+        bus_topo.gpu.available = true;
+        bus_topo.gpu.device_path = gpu_dir.string();
+
+        CentralMutationCoordinator coord;
+        std::vector<TamperEvent> captured_events;
+        coord.set_tamper_listener([&](const TamperEvent& ev) { captured_events.push_back(ev); });
+
+        SemanticKnobEngine sov_engine(baseline, oem_map, &coord);
+        sov_engine.discover(bus_topo, sys.string(), proc.string());
+        assert(sov_engine.stats().memory_bus_knobs == 1U);
+
+        // Coupled memory_bus_scale = 1.25x -> selects 1248000 (<= 1.25x of 1000000, never 1555000) and locks 0444!
+        SymbioticHints bus_hints{};
+        bus_hints.memory_bus_scale = 1.25;
+        sov_engine.apply(ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, 0.50, 0.5, 10000, false, bus_hints);
+        assert(read_file(ddr_min) == "1248000");
+        assert(read_file(gpu_adrenoboost) == "2");
+
+        struct stat st_locked{};
+        assert(::lstat(gpu_adrenoboost.c_str(), &st_locked) == 0);
+        assert((st_locked.st_mode & 0777) == 0444);
+        assert(baseline.locked_node_count() >= 2U);
+
+        // Simulate external root tool (e.g. FKM) chmod'ing & tampering adrenoboost to "0" -> Reclaim-First!
+        auto simulate_fkm_tamper = [&](uint64_t ts_ms) {
+            assert(::chmod(gpu_adrenoboost.c_str(), 0644) == 0);
+            write_file(gpu_adrenoboost, "0\n");
+            sov_engine.apply(ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, 0.50, 0.5, ts_ms, false, bus_hints);
+        };
+
+        // Attempt 1 & 2 within 5s window -> reclaimed to "2" and re-locked 0444!
+        simulate_fkm_tamper(11000);
+        assert(read_file(gpu_adrenoboost) == "2");
+        assert(::lstat(gpu_adrenoboost.c_str(), &st_locked) == 0 && (st_locked.st_mode & 0777) == 0444);
+        assert(captured_events.size() == 1U && captured_events.back().reclaimed && !captured_events.back().circuit_open);
+
+        simulate_fkm_tamper(12000);
+        assert(read_file(gpu_adrenoboost) == "2");
+        assert(captured_events.size() == 2U && captured_events.back().reclaimed && !captured_events.back().circuit_open);
+
+        // Attempt 3 within 5s window -> trips circuit breaker (30s quarantine, zero write-loop, re-locks 0444)
+        simulate_fkm_tamper(13000);
+        assert(captured_events.size() == 3U && captured_events.back().circuit_open);
+        assert(coord.is_node_quarantined(gpu_adrenoboost.string(), 14000));
+        assert(coord.quarantined_node_count(14000) == 1U);
+
+        // Inline Reply RESYNC / ENFORCE clears quarantine and immediately reclaims & re-locks 0444!
+        assert(sov_engine.force_resync_node(gpu_adrenoboost.string(), 14500));
+        assert(!coord.is_node_quarantined(gpu_adrenoboost.string(), 14500));
+        assert(read_file(gpu_adrenoboost) == "2");
+        assert(::lstat(gpu_adrenoboost.c_str(), &st_locked) == 0 && (st_locked.st_mode & 0777) == 0444);
+
+        // Release-on-Calm (Efficiency) unlocks 0444 back to 0644 and restores factory values!
+        sov_engine.apply(ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, 0.50, 0.5, 16000);
+        assert(read_file(ddr_min) == "1000000");
+        assert(read_file(gpu_adrenoboost) == "0");
+        struct stat st_restored{};
+        assert(::lstat(gpu_adrenoboost.c_str(), &st_restored) == 0);
+        assert((st_restored.st_mode & 0777) == 0644);
+        assert(baseline.locked_node_count() == 0U);
+        assert(!baseline.has_active_mutations());
+    }
+
     (void)::unsetenv("COREFLOW_TEST_STATE_DIR");
     fs::remove_all(root);
-    std::cout << "v6.2 Cross-SoC Semantic Co-Pilot & OEM Collaboration tests passed\n";
+    std::cout << "v6.0.0-R Sovereign Tamper Guard, Coupled Memory Bus & Cross-SoC Semantic Co-Pilot tests passed\n";
     return 0;
 }

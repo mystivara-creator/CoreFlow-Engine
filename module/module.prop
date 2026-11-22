@@ -1,7 +1,7 @@
 id=cfae_framework
 name=CoreFlow Engine (CFAE)
-version=v6.2.0
-versionCode=62000
+version=v6.0.0-R
+versionCode=63000
 author=mystivara-creator
-description=CoreFlow v6.2 Closed-Loop Intelligence (Android 13+): Closed-loop FPS/jank UClamp, role-tiered per-TID boost, persistent App DNA & Markov Preloader, Dual-Timescale thermal equilibrium, Cross-SoC Co-Pilot & CFJ4 Bypass Charging.
+description=CFAE System Framework / CoreFlow Engine v6.0.0-R (Rebuild): Sovereign Tamper Guard (0444 lock + Reclaim-First), Coupled Multi-Domain Orchestration, Zero-Wear CFDNA2 Context Learning, Boot-Calm Sanctuary & Telemetry-Driven Intent Dialogue.
 updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json

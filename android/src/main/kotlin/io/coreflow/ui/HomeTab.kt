@@ -71,6 +71,7 @@ fun HomeTab(
     onTogglePause: (Boolean) -> Unit,
     onToggleBypass: (Boolean) -> Unit,
     onStartDaemon: () -> Unit,
+    onOpenDialogue: (String?) -> Unit = {},
 ) {
     val dark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
     val pullState = rememberPullToRefreshState()
@@ -367,6 +368,56 @@ fun HomeTab(
                                 modifier = Modifier.weight(1f),
                             )
                         }
+                    }
+                }
+            }
+
+            // Pillar 1 & 4: Compact Sovereign Guard + 1-Tap Dialogue Console Quick-Access Card
+            item {
+                val locked = status?.tamperGuard?.lockedNodes ?: 0
+                val tamperCount = status?.tamperGuard?.totalEvents ?: 0L
+                val conflictCount = status?.conflictingModules?.size ?: 0
+                val guardColor = when {
+                    conflictCount > 0 -> Color(0xFFEF4444)
+                    tamperCount > 0L -> Color(0xFFF59E0B)
+                    else -> Color(0xFF38BDF8)
+                }
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.defaultColors(
+                        color = if (dark) Color(0xFF101722) else MiuixTheme.colorScheme.surfaceContainer,
+                    ),
+                    insideMargin = PaddingValues(14.dp),
+                    pressFeedbackType = PressFeedbackType.Tilt,
+                    onClick = { onOpenDialogue(null) },
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = strings.dialogueQuickCardTitle,
+                                style = MiuixTheme.textStyles.body1,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                text = strings.dialogueQuickCardSummary,
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Spacer(Modifier.size(10.dp))
+                        HeroStatusBadge(
+                            text = if (tamperCount > 0L) "Guard !$tamperCount" else "0444 · $locked",
+                            accent = guardColor,
+                        )
                     }
                 }
             }
