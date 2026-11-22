@@ -530,6 +530,16 @@ bool SemanticKnobEngine::write_knob(
             const auto action = coordinator_->evaluate_tamper_reclaim(
                 domain, knob.path, prev->second, live, now_ms, &attempts);
             if (action == TamperGuardAction::CircuitOpenQuarantine) {
+                if (coordinator_->breaker_trip_count(knob.path) >= 2U) {
+                    // Repeated breaker trips across quarantine windows indicate a persistent root OEM
+                    // daemon (e.g. mi_thermald / perf-hal) rather than a one-off user tweaker.
+                    // Unlock 0444, roll back cleanly, and hand over to OemCollaborationMap to prevent
+                    // perpetual 30s tug-of-war cycles and notification spam.
+                    (void)baseline_.rollback(knob.path);
+                    oem_map_.record_contention(knob.path, live, now_ms);
+                    last_written_.erase(knob.path);
+                    return false;
+                }
                 (void)baseline_.lock_node_readonly(knob.path);
                 coordinator_->finalize_tamper_event(
                     domain, knob.path, prev->second, live, false, true, attempts, reason, now_ms);
@@ -744,13 +754,23 @@ void SemanticKnobEngine::apply(
             }
             case KnobValueKind::OppFreq: {
                 if (knob.is_memory_bus_opp) {
-                    // Strictly OEM-relative <= 1.25x baseline OPP selected from discovered devfreq table.
+                    // Strictly OEM-relative <= 1.25x baseline OPP selected from discovered devfreq table,
+                    // capped below 75% OPP index and never exceeding live sibling thermal max_freq.
                     const uint64_t rel_cap = knob.baseline_int > 0
                         ? static_cast<uint64_t>(std::llround(static_cast<double>(knob.baseline_int) * bus_scale))
                         : 0U;
+                    const uint64_t opp_75_cap = select_opp_by_fraction(knob.opp_table_khz, 0.75);
+                    uint64_t bus_ceiling = (rel_cap > 0U && opp_75_cap > 0U)
+                        ? std::min(rel_cap, opp_75_cap)
+                        : rel_cap;
+                    const fs::path max_freq_path = fs::path(knob.path).parent_path() / "max_freq";
+                    int64_t live_max = 0;
+                    if (parse_i64_exact(read_line_trimmed(max_freq_path.string()), live_max) && live_max > 0) {
+                        bus_ceiling = std::min(bus_ceiling, static_cast<uint64_t>(live_max));
+                    }
                     uint64_t chosen = 0U;
                     for (uint64_t freq : knob.opp_table_khz) {
-                        if (freq <= rel_cap && static_cast<int64_t>(freq) > knob.baseline_int) {
+                        if (freq <= bus_ceiling && static_cast<int64_t>(freq) > knob.baseline_int) {
                             chosen = freq;
                         }
                     }

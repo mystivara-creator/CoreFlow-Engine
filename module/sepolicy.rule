@@ -72,19 +72,19 @@ allow magisk system_app file { read open getattr }
 # ---------------------------------------------------------------------------
 # CPU clusters & cpufreq governors
 allow su sysfs_devices_system_cpu dir { read open search getattr }
-allow su sysfs_devices_system_cpu file { read write open getattr }
+allow su sysfs_devices_system_cpu file { read write open getattr setattr }
 allow magisk sysfs_devices_system_cpu dir { read open search getattr }
-allow magisk sysfs_devices_system_cpu file { read write open getattr }
+allow magisk sysfs_devices_system_cpu file { read write open getattr setattr }
 
 # GPU (Qualcomm KGSL & generic devfreq)
 allow su sysfs_kgsl dir { read open search getattr }
-allow su sysfs_kgsl file { read write open getattr }
+allow su sysfs_kgsl file { read write open getattr setattr }
 allow su sysfs_devfreq dir { read open search getattr }
-allow su sysfs_devfreq file { read write open getattr }
+allow su sysfs_devfreq file { read write open getattr setattr }
 allow magisk sysfs_kgsl dir { read open search getattr }
-allow magisk sysfs_kgsl file { read write open getattr }
+allow magisk sysfs_kgsl file { read write open getattr setattr }
 allow magisk sysfs_devfreq dir { read open search getattr }
-allow magisk sysfs_devfreq file { read write open getattr }
+allow magisk sysfs_devfreq file { read write open getattr setattr }
 
 # Thermal telemetry & thermal zones
 allow su sysfs_thermal dir { read open search getattr }
@@ -107,46 +107,46 @@ allow su block_device dir { read open search getattr }
 allow su block_device blk_file { read write open getattr }
 allow su block_device file { read write open getattr }
 allow su sysfs_block dir { read open search getattr }
-allow su sysfs_block file { read write open getattr }
+allow su sysfs_block file { read write open getattr setattr }
 allow su sysfs_devices_block dir { read open search getattr }
-allow su sysfs_devices_block file { read write open getattr }
+allow su sysfs_devices_block file { read write open getattr setattr }
 allow su sysfs_ufs dir { read open search getattr }
-allow su sysfs_ufs file { read write open getattr }
+allow su sysfs_ufs file { read write open getattr setattr }
 allow su sysfs_dm dir { read open search getattr }
-allow su sysfs_dm file { read write open getattr }
+allow su sysfs_dm file { read write open getattr setattr }
 allow su sysfs_zram dir { read open search getattr }
 allow su sysfs_zram file { read write open getattr }
 allow su sysfs dir { read open search getattr }
-allow su sysfs file { read write open getattr }
+allow su sysfs file { read write open getattr setattr }
 
 allow magisk block_device dir { read open search getattr }
 allow magisk block_device blk_file { read write open getattr }
 allow magisk block_device file { read write open getattr }
 allow magisk sysfs_block dir { read open search getattr }
-allow magisk sysfs_block file { read write open getattr }
+allow magisk sysfs_block file { read write open getattr setattr }
 allow magisk sysfs_devices_block dir { read open search getattr }
-allow magisk sysfs_devices_block file { read write open getattr }
+allow magisk sysfs_devices_block file { read write open getattr setattr }
 allow magisk sysfs_ufs dir { read open search getattr }
-allow magisk sysfs_ufs file { read write open getattr }
+allow magisk sysfs_ufs file { read write open getattr setattr }
 allow magisk sysfs_dm dir { read open search getattr }
-allow magisk sysfs_dm file { read write open getattr }
+allow magisk sysfs_dm file { read write open getattr setattr }
 allow magisk sysfs_zram dir { read open search getattr }
 allow magisk sysfs_zram file { read write open getattr }
 allow magisk sysfs dir { read open search getattr }
-allow magisk sysfs file { read write open getattr }
+allow magisk sysfs file { read write open getattr setattr }
 
 # Anti-stutter VM sysctl (swappiness, compaction) & native touch input detection
 allow su proc_vmstat file { read open getattr }
 allow su proc_pressure file { read open getattr }
 allow su sysctl_vm dir { read open search getattr }
-allow su sysctl_vm file { read write open getattr }
+allow su sysctl_vm file { read write open getattr setattr }
 allow su input_device dir { read open search getattr }
 allow su input_device chr_file { read open getattr ioctl }
 
 allow magisk proc_vmstat file { read open getattr }
 allow magisk proc_pressure file { read open getattr }
 allow magisk sysctl_vm dir { read open search getattr }
-allow magisk sysctl_vm file { read write open getattr }
+allow magisk sysctl_vm file { read write open getattr setattr }
 allow magisk input_device dir { read open search getattr }
 allow magisk input_device chr_file { read open getattr ioctl }
 
@@ -198,7 +198,7 @@ allow magisk sysfs_battery_supply file { read write open getattr }
 # v6.1 Live Display Refresh Rate (mi_display / DRM / graphics) & WALT/Sched semantic knobs
 allow su sysfs_graphics dir { read open search getattr }
 allow su sysfs_graphics file { read open getattr }
-allow su proc_sched file { read write open getattr }
+allow su proc_sched file { read write open getattr setattr }
 allow magisk sysfs_graphics dir { read open search getattr }
 allow magisk sysfs_graphics file { read open getattr }
-allow magisk proc_sched file { read write open getattr }
+allow magisk proc_sched file { read write open getattr setattr }

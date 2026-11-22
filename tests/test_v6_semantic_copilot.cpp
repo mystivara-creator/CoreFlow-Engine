@@ -332,6 +332,53 @@ int main() {
         assert((st_restored.st_mode & 0777) == 0644);
         assert(baseline.locked_node_count() == 0U);
         assert(!baseline.has_active_mutations());
+
+        // 6. Thermal sibling max_freq cap on memory bus devfreq:
+        //    If OEM thermal daemon lowers ddr/max_freq to 1144000, CFAE must NEVER write min_freq > 1144000!
+        const fs::path ddr_max = ddr_dir / "max_freq";
+        write_file(ddr_max, "1144000\n");
+        sov_engine.apply(ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, 0.50, 0.5, 17000, false, bus_hints);
+        assert(read_file(ddr_min) == "1144000");
+
+        // 7. SIGKILL crash-recovery permission safety:
+        //    Simulate abrupt daemon crash while gpu_adrenoboost is locked 0444, then reinitialize BaselineStore
+        //    from CFJ4 journal and verify recover_if_needed() restores BOTH factory value AND writable 0644 mode!
+        assert(::lstat(gpu_adrenoboost.c_str(), &st_locked) == 0 && (st_locked.st_mode & 0777) == 0444);
+        baseline.reinitialize();
+        assert(baseline.recover_pending());
+        assert(read_file(gpu_adrenoboost) == "0");
+        assert(read_file(ddr_min) == "1000000");
+        assert(::lstat(gpu_adrenoboost.c_str(), &st_restored) == 0);
+        assert((st_restored.st_mode & 0777) == 0644);
+
+        // 8. Persistent multi-window root OEM daemon escalation (e.g. mi_thermald / perf-hal):
+        //    After 2 circuit-breaker trips across quarantine windows, CFAE must cleanly unlock 0444,
+        //    roll back, and hand over to OemCollaborationMap instead of fighting forever.
+        CentralMutationCoordinator oem_coord;
+        OemCollaborationMap oem_escalate_map;
+        SemanticKnobEngine oem_engine(baseline, oem_escalate_map, &oem_coord);
+        oem_engine.discover(bus_topo, sys.string(), proc.string());
+        oem_engine.apply(ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, 0.50, 0.5, 20000, false, bus_hints);
+        assert(read_file(gpu_adrenoboost) == "2");
+        auto simulate_oem_overwrite = [&](uint64_t ts_ms) {
+            assert(::chmod(gpu_adrenoboost.c_str(), 0644) == 0);
+            write_file(gpu_adrenoboost, "0\n");
+            oem_engine.apply(ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, 0.50, 0.5, ts_ms, false, bus_hints);
+        };
+        // Window 1: 3 overwrites -> 1st circuit breaker trip (30s quarantine)
+        simulate_oem_overwrite(21000);
+        simulate_oem_overwrite(22000);
+        simulate_oem_overwrite(23000);
+        assert(oem_coord.breaker_trip_count(gpu_adrenoboost.string()) == 1U);
+        assert(!oem_escalate_map.is_blocked(gpu_adrenoboost.string(), 24000));
+        // Window 2 (after 30s quarantine expires at 53000): 3 more overwrites -> 2nd breaker trip -> yields to OEM map & unlocks!
+        simulate_oem_overwrite(54000);
+        simulate_oem_overwrite(55000);
+        simulate_oem_overwrite(56000);
+        assert(oem_coord.breaker_trip_count(gpu_adrenoboost.string()) == 2U);
+        assert(oem_escalate_map.is_blocked(gpu_adrenoboost.string(), 57000));
+        assert(::lstat(gpu_adrenoboost.c_str(), &st_restored) == 0 && (st_restored.st_mode & 0777) == 0644);
+        oem_engine.rollback_all();
     }
 
     (void)::unsetenv("COREFLOW_TEST_STATE_DIR");

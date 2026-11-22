@@ -1901,7 +1901,10 @@ int main(int argc, char* argv[]) {
             signalfd_siginfo info{};
             while (::read(signal_fd.get(), &info, sizeof(info)) == static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == SIGUSR1) {
-                    const std::string req_path = std::string(kStateDir) + "/tamper_cmd.req";
+                    const char* sig_env_dir = std::getenv("COREFLOW_STATE_DIR");
+                    const std::string sig_state_dir = (sig_env_dir && sig_env_dir[0] != '\0')
+                        ? std::string(sig_env_dir) : std::string(kStateDir);
+                    const std::string req_path = sig_state_dir + "/tamper_cmd.req";
                     UniqueFd rfd(::open(req_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
                     if (rfd.valid()) {
                         char rbuf[1024];

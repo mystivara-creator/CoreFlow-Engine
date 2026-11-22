@@ -135,7 +135,13 @@ fi
 grep -q 'encore_tweaks' "$STATE_DIR/detected_conflicts.json" || { echo "FAIL: encore_tweaks missing in detected_conflicts.json"; exit 1; }
 # Disabling or removing the conflicting module clears hard-block
 touch "$FAKE_MODS/encore_tweaks/disable"
+# Harmless modules mentioning "boost", "perfect", "tweak", or "schedule" must NEVER false-positive!
+mkdir -p "$FAKE_MODS/viper4android" "$FAKE_MODS/playintegrityfix" "$FAKE_MODS/auto_dark_theme"
+printf 'id=viper4android\nname=ViPER4Android FX\ndescription=Bass boost and audio tweaks for Android\n' > "$FAKE_MODS/viper4android/module.prop"
+printf 'id=playintegrityfix\nname=Play Integrity Fix\ndescription=Perfect Play Integrity compatibility\n' > "$FAKE_MODS/playintegrityfix/module.prop"
+printf 'id=auto_dark_theme\nname=Auto Dark Mode\ndescription=Scheduled UI theme switcher\n' > "$FAKE_MODS/auto_dark_theme/module.prop"
 COREFLOW_MODULES_ROOT="$FAKE_MODS" run_customize 35
+[ ! -e "$STATE_DIR/detected_conflicts.json" ] || { echo "FAIL: harmless modules falsely triggered conflict block"; exit 1; }
 rm -rf "$FAKE_MODS"
 
 # 4. Clear safety markers and verify customize.sh hot-reloads and verifies daemon status

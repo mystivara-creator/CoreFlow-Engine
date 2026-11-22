@@ -215,25 +215,40 @@ detect_conflicting_modules() {
         [ -r "$MPROP" ] || continue
         MNAME="$(awk -F= '$1 == "name" { print $2; exit }' "$MPROP" 2>/dev/null)"
         MDESC="$(awk -F= '$1 == "description" { print $2; exit }' "$MPROP" 2>/dev/null)"
-        FOLDED="$(printf '%s %s %s' "$MID" "$MNAME" "$MDESC" | tr 'A-Z' 'a-z')"
-        case "$FOLDED" in
-            *thermal*|*uclamp*|*perf*|*tweak*|*boost*|*governor*|*ktweak*|*fkm*|*magisk-perf*|*encore*|*uperf*|*fas-rs*|*fas_rs*|*fasrs*|*magnetar*|*godspeed*|*celestial*|*strp*|*walt*|*kakarot*|*vortex*|*fpsgo*|*feast*|*sched*|*game*opt*)
-                CONFLICT_COUNT=$((CONFLICT_COUNT + 1))
-                if [ -n "$MNAME" ] && [ "$MNAME" != "$MID" ]; then
-                    ENTRY_LABEL="$MNAME ($MID)"
-                else
-                    ENTRY_LABEL="$MID"
-                fi
-                SAFE_JSON_NAME="$(printf '%s' "$ENTRY_LABEL" | sed 's/["\\]/ /g')"
-                if [ -z "$CONFLICTS" ]; then
-                    CONFLICTS="$ENTRY_LABEL"
-                    CONFLICTS_JSON="\"$SAFE_JSON_NAME\""
-                else
-                    CONFLICTS="$CONFLICTS, $ENTRY_LABEL"
-                    CONFLICTS_JSON="$CONFLICTS_JSON,\"$SAFE_JSON_NAME\""
-                fi
+        FOLDED_ID_NAME="$(printf '%s %s' "$MID" "$MNAME" | tr 'A-Z' 'a-z')"
+        FOLDED_ALL="$(printf '%s %s %s' "$MID" "$MNAME" "$MDESC" | tr 'A-Z' 'a-z')"
+        IS_CONFLICT=0
+        # 1. Known competing performance/thermal/scheduler optimizer module IDs & names
+        case "$FOLDED_ID_NAME" in
+            *encore*|*uperf*|*fas-rs*|*fas_rs*|*fasrs*|*ktweak*|*magnetar*|*godspeed*|*celestial*|*strp*|*fkm*|*magisk-perf*|*kakarot*|*vortex*|*feast*|*nfs-injector*|*fde.ai*|*fde_ai*|*asopt*|*yc_sched*|*lyb*|*no-thermal*|*nothermal*|*stop-thermal*|*thermal-mod*|*thermal_mod*|*thermal-kill*|*disable-thermal*|*cpu-governor*|*uclamp*|*fpsgo*)
+                IS_CONFLICT=1
                 ;;
         esac
+        # 2. Explicit kernel/thermal/CPU-tuner phrases in full metadata (avoids false positives on
+        #    harmless audio "bass boost", UI "font tweaks", or "perfect integrity" modules)
+        if [ "$IS_CONFLICT" -eq 0 ]; then
+            case "$FOLDED_ALL" in
+                *"encore tweaks"*|*"fas-rs"*|*"fas_rs"*|*"franco kernel"*|*"uclamp"*|*"cpu governor"*|*"sched_boost"*|*"disable thermal"*|*"thermal throttling"*|*"thermal mod"*|*"thermal engine"*|*"kernel tweak"*|*"performance module"*|*"game optimizer"*|*"fpsgo"*|*"walt governor"*)
+                    IS_CONFLICT=1
+                    ;;
+            esac
+        fi
+        if [ "$IS_CONFLICT" -eq 1 ]; then
+            CONFLICT_COUNT=$((CONFLICT_COUNT + 1))
+            if [ -n "$MNAME" ] && [ "$MNAME" != "$MID" ]; then
+                ENTRY_LABEL="$MNAME ($MID)"
+            else
+                ENTRY_LABEL="$MID"
+            fi
+            SAFE_JSON_NAME="$(printf '%s' "$ENTRY_LABEL" | sed 's/["\\]/ /g')"
+            if [ -z "$CONFLICTS" ]; then
+                CONFLICTS="$ENTRY_LABEL"
+                CONFLICTS_JSON="\"$SAFE_JSON_NAME\""
+            else
+                CONFLICTS="$CONFLICTS, $ENTRY_LABEL"
+                CONFLICTS_JSON="$CONFLICTS_JSON,\"$SAFE_JSON_NAME\""
+            fi
+        fi
     done
 }
 

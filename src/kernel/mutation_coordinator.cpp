@@ -524,6 +524,8 @@ TamperGuardAction CentralMutationCoordinator::evaluate_tamper_reclaim(
         // Circuit breaker trips at 3 attempts within 5s: hold 0444 lock & enter 30s quarantine
         // to eliminate battery-draining tug-of-war write loops.
         tracker.quarantine_until_ms = now_ms + kTamperQuarantineMs;
+        tracker.breaker_trips += 1U;
+        ts.clear();
         return TamperGuardAction::CircuitOpenQuarantine;
     }
     return TamperGuardAction::ReclaimAndLock;
@@ -591,6 +593,12 @@ size_t CentralMutationCoordinator::quarantined_node_count(uint64_t now_ms) const
         if (now_ms < tr.quarantine_until_ms) ++count;
     }
     return count;
+}
+
+uint32_t CentralMutationCoordinator::breaker_trip_count(const std::string& node_path) const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = tamper_trackers_.find(node_path);
+    return it == tamper_trackers_.end() ? 0U : it->second.breaker_trips;
 }
 
 void CentralMutationCoordinator::reset() noexcept {

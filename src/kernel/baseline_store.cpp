@@ -789,7 +789,14 @@ bool BaselineStore::rollback_path_locked(const std::string& path) {
     auto it = store_.find(path);
     if (it == store_.end()) return true;
     auto& snap = it->second;
-    if (snap.permission_locked) {
+    bool needs_unlock = snap.permission_locked;
+    if (!needs_unlock && snap.is_modified) {
+        struct stat st{};
+        if (::lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & S_IWUSR) == 0) {
+            needs_unlock = true;
+        }
+    }
+    if (needs_unlock) {
         const mode_t restore_mode = snap.original_mode != 0U
             ? static_cast<mode_t>(snap.original_mode & 0777U)
             : static_cast<mode_t>(0644);
@@ -827,9 +834,17 @@ bool BaselineStore::rollback_path_locked(const std::string& path) {
 
 size_t BaselineStore::rollback_locked() {
     size_t restored = 0;
-    // Restore any read-only 0444 locks first so rollback writes always succeed cleanly.
+    // Restore any read-only 0444 locks first (including after SIGKILL/CFJ4 crash recovery
+    // where in-memory permission_locked was reset) so rollback writes and OEM HALs never hit EACCES.
     for (auto& [path, snap] : store_) {
-        if (snap.permission_locked) {
+        bool needs_unlock = snap.permission_locked;
+        if (!needs_unlock && snap.is_modified) {
+            struct stat st{};
+            if (::lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & S_IWUSR) == 0) {
+                needs_unlock = true;
+            }
+        }
+        if (needs_unlock) {
             const mode_t restore_mode = snap.original_mode != 0U
                 ? static_cast<mode_t>(snap.original_mode & 0777U)
                 : static_cast<mode_t>(0644);
@@ -970,6 +985,13 @@ bool BaselineStore::lock_node_readonly(const std::string& path) noexcept {
 
     struct stat st{};
     if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    // Cross-device Dual-Boundary safety: on Android, init.*.rc chowns OEM HAL-shared nodes
+    // (perf-hal, thermal-hal, sdhms) to system:system (non-zero uid/gid). Never chmod 0444
+    // on non-root-owned /sys or /proc/sys nodes so stock OEM thermal/perf HALs never hit EACCES.
+    const bool is_kernel_fs = path.rfind("/sys/", 0) == 0 || path.rfind("/proc/sys/", 0) == 0;
+    if (is_kernel_fs && ::geteuid() == 0 && (st.st_uid != 0U || st.st_gid != 0U)) {
+        return false;
+    }
     if (it->second.original_mode == 0U) {
         it->second.original_mode = static_cast<uint32_t>(st.st_mode & 0777U);
     }
