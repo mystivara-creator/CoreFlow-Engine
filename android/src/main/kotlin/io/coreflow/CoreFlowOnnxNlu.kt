@@ -305,7 +305,7 @@ object CoreFlowOnnxNlu {
 
     fun openFromBytes(nluBytes: ByteArray?, anomalyBytes: ByteArray?): Boolean {
         val startGen = synchronized(lock) { lifecycleGeneration }
-        return openFromBytesInternal(nluBytes, anomBytes, expectedGeneration = startGen)
+        return openFromBytesInternal(nluBytes, anomalyBytes, expectedGeneration = startGen)
     }
 
     private fun openFromBytesInternal(
