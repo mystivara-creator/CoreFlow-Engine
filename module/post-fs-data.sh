@@ -57,23 +57,56 @@ write_atomic "$ATTEMPTS" "$N"
 
 if [ "$N" -ge 5 ]; then
   [ ! -L "$STATE/SAFE_MODE" ] && : > "$STATE/SAFE_MODE"
-  [ ! -L "$LOGS/boot_guard.log" ] && printf '%s Safe mode after %s unconfirmed boots\n' "$(date)" "$N" >> "$LOGS/boot_guard.log"
+  [ ! -L "$LOGS/boot_guard.log" ] && printf '%s Safe mode after %s unconfirmed boots (recover: sh %s/action.sh clear-safety)\n' "$(date)" "$N" "$MODDIR" >> "$LOGS/boot_guard.log"
 fi
 if [ "$N" -ge 8 ]; then
   [ ! -L "$MODDIR/disable" ] && : > "$MODDIR/disable"
-  [ ! -L "$LOGS/boot_guard.log" ] && printf '%s Module disabled after %s unconfirmed boots\n' "$(date)" "$N" >> "$LOGS/boot_guard.log"
+  [ ! -L "$LOGS/boot_guard.log" ] && printf '%s Module disabled after %s unconfirmed boots (recover: sh %s/action.sh clear-safety)\n' "$(date)" "$N" "$MODDIR" >> "$LOGS/boot_guard.log"
 fi
 
 # Persistent config is kept outside the module directory, surviving upgrades.
+# On upgrades, append any new default keys without overwriting user-configured keys (T11).
 DEFAULT_CONF="$MODDIR/system/etc/coreflow/default.conf"
 [ -f "$DEFAULT_CONF" ] || DEFAULT_CONF="/system/etc/coreflow/default.conf"
-if [ ! -e "$STATE/coreflow.conf" ] && [ ! -L "$STATE/coreflow.conf" ] && [ -f "$DEFAULT_CONF" ]; then
-  TMP_CONF="$STATE/coreflow.conf.tmp.$$"
-  rm -f "$TMP_CONF"
-  if cp "$DEFAULT_CONF" "$TMP_CONF" && chmod 600 "$TMP_CONF"; then
-    mv -f "$TMP_CONF" "$STATE/coreflow.conf"
-  else
+if [ -f "$DEFAULT_CONF" ] && [ ! -L "$STATE/coreflow.conf" ]; then
+  if [ ! -e "$STATE/coreflow.conf" ]; then
+    TMP_CONF="$STATE/coreflow.conf.tmp.$$"
     rm -f "$TMP_CONF"
+    if cp "$DEFAULT_CONF" "$TMP_CONF" && chmod 600 "$TMP_CONF"; then
+      mv -f "$TMP_CONF" "$STATE/coreflow.conf"
+    else
+      rm -f "$TMP_CONF"
+    fi
+  elif [ -f "$STATE/coreflow.conf" ]; then
+    TMP_CONF="$STATE/coreflow.conf.tmp.$$"
+    rm -f "$TMP_CONF"
+    if cp "$STATE/coreflow.conf" "$TMP_CONF" && chmod 600 "$TMP_CONF"; then
+      ADDED_KEYS=0
+      while IFS= read -r RAW_LINE || [ -n "$RAW_LINE" ]; do
+        TRIM_LINE="$(printf '%s' "$RAW_LINE" | sed 's/^[[:space:]]*//')"
+        case "$TRIM_LINE" in
+          ''|'#'*) continue ;;
+          *'='*) ;;
+          *) continue ;;
+        esac
+        KEY="$(printf '%s' "$TRIM_LINE" | awk -F= '{gsub(/[[:space:]]/, "", $1); print $1}')"
+        case "$KEY" in
+          ''|*[!A-Za-z0-9_.-]*) continue ;;
+        esac
+        if ! grep -Eq "^[[:space:]]*${KEY}[[:space:]]*=" "$TMP_CONF"; then
+          printf '%s\n' "$RAW_LINE" >> "$TMP_CONF"
+          ADDED_KEYS=$((ADDED_KEYS + 1))
+        fi
+      done < "$DEFAULT_CONF"
+      if [ "$ADDED_KEYS" -gt 0 ]; then
+        mv -f "$TMP_CONF" "$STATE/coreflow.conf"
+      else
+        rm -f "$TMP_CONF"
+      fi
+    else
+      rm -f "$TMP_CONF"
+    fi
   fi
 fi
+
 

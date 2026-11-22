@@ -131,22 +131,70 @@ bool parse_u64_strict(std::string_view text, uint64_t& out) noexcept {
     return true;
 }
 
-bool is_thread_cgroup_snapshot_path(std::string_view path) noexcept {
-    constexpr std::string_view prefix{"/proc/"};
-    constexpr std::string_view task{"/task/"};
-    constexpr std::string_view suffix{"/cgroup"};
-    if (path.rfind(prefix, 0) != 0) return false;
-    size_t pos = prefix.size();
-    const size_t tgid_begin = pos;
-    while (pos < path.size() && path[pos] >= '0' && path[pos] <= '9') ++pos;
-    if (pos == tgid_begin || path.substr(pos, task.size()) != task) return false;
-    pos += task.size();
-    const size_t tid_begin = pos;
-    while (pos < path.size() && path[pos] >= '0' && path[pos] <= '9') ++pos;
-    return pos > tid_begin && path.substr(pos) == suffix;
+bool is_managed_cgroup_leaf(const std::string& path) noexcept {
+    const auto slash = path.find_last_of('/');
+    if (slash == std::string::npos || slash + 1U >= path.size()) return false;
+    const std::string_view leaf(path.data() + slash + 1U, path.size() - slash - 1U);
+    return leaf == "cpu.uclamp.min" || leaf == "cpu.uclamp.max" || leaf == "io.weight";
 }
 
-bool path_safe(const std::string& path) {
+bool is_allowed_sysfs_write_path(const std::string& path) noexcept {
+    // Explicit allowlist of managed kernel actuator subtrees across Qualcomm,
+    // MediaTek, Exynos, Tensor, and mainline Linux. Never permit writes to
+    // /sys/firmware/, /sys/power/, /sys/kernel/debug/, /sys/fs/selinux/, or
+    // arbitrary /sys/module/ paths.
+    static constexpr std::string_view kAllowedSysPrefixes[] = {
+        "/sys/devices/system/cpu/",
+        "/sys/class/kgsl/",
+        "/sys/class/devfreq/",
+        "/sys/class/block/",
+        "/sys/block/",
+        "/sys/class/power_supply/",
+        "/sys/class/thermal/",
+        "/sys/kernel/mm/lru_gen/",
+        "/sys/kernel/gpu/",
+        "/sys/kernel/ged/hal/",
+        "/sys/kernel/fpsgo/fbt/",
+        "/sys/module/ged/parameters/",
+        "/sys/module/mtk_fpsgo/parameters/",
+    };
+    for (const auto prefix : kAllowedSysPrefixes) {
+        if (path.rfind(prefix, 0) == 0) return true;
+    }
+    if (path.rfind("/sys/fs/cgroup/", 0) == 0) {
+        // Never allow cgroup task migration (cgroup.procs / tasks / cgroup.threads).
+        return is_managed_cgroup_leaf(path);
+    }
+    if (path.rfind("/sys/devices/", 0) == 0) {
+        // Canonicalized /sys/class/* targets (power_supply, devfreq, kgsl, block, thermal, cpufreq).
+        static constexpr std::string_view kAllowedDeviceSegments[] = {
+            "/power_supply/",
+            "/devfreq/",
+            "/kgsl/",
+            "/block/",
+            "/cpufreq/",
+            "/system/cpu/",
+            "/thermal/",
+        };
+        for (const auto seg : kAllowedDeviceSegments) {
+            if (path.find(seg) != std::string::npos) return true;
+        }
+    }
+    return false;
+}
+
+bool is_allowed_proc_sysctl_write_path(const std::string& path) noexcept {
+    // Allow only VM, WALT, and scheduler sysctl knobs. Explicitly excludes
+    // /proc/sys/kernel/{sysrq,core_pattern,modprobe,hotplug,panic}, /proc/sys/net/,
+    // and /proc/<pid>/task/<tid>/cgroup (task migration is disabled).
+    if (path.rfind("/proc/sys/vm/", 0) == 0) return true;
+    if (path.rfind("/proc/sys/walt/", 0) == 0) return true;
+    if (path.rfind("/proc/sys/kernel/sched_", 0) == 0) return true;
+    if (path == "/proc/sys/kernel/context_burst_count") return true;
+    return false;
+}
+
+bool path_writable(const std::string& path) {
     if (path.empty() || path.size() > 512 || path.front() != '/' || path.back() == '/') return false;
     if (path.find('\0') != std::string::npos ||
         path.find_first_of("\r\n\t") != std::string::npos ||
@@ -154,8 +202,9 @@ bool path_safe(const std::string& path) {
         path.find("//") != std::string::npos) {
         return false;
     }
-    if (path.rfind("/sys/", 0) == 0 || path.rfind("/proc/sys/", 0) == 0 ||
-        is_thread_cgroup_snapshot_path(path)) return true;
+    if (is_allowed_sysfs_write_path(path) || is_allowed_proc_sysctl_write_path(path)) {
+        return true;
+    }
 
     // A cgroup controller mounted below /dev is authorized by its discovered
     // ABI contract, never by a hierarchy/group basename. Require the matching
@@ -185,9 +234,13 @@ bool path_safe(const std::string& path) {
         }
     }
 
-    // Unit tests can use private mock files only when non-root or explicitly isolated in /tmp.
+#ifdef COREFLOW_ENABLE_TEST_HOOKS
+    // Unit tests can use private mock files only in test builds when isolated in /tmp.
     const char* test_dir = std::getenv("COREFLOW_TEST_STATE_DIR");
     return test_dir != nullptr && *test_dir != '\0' && path.rfind("/tmp/", 0) == 0;
+#else
+    return false;
+#endif
 }
 
 std::string hex_encode(std::string_view input) {
@@ -296,15 +349,19 @@ BaselineStore::BaselineStore() {
 }
 
 void BaselineStore::init_paths_and_boot_id_locked() {
+#ifdef COREFLOW_ENABLE_TEST_HOOKS
     const char* test = std::getenv("COREFLOW_TEST_STATE_DIR");
     state_dir_ = (test && *test) ? std::string(test) : "/data/adb/coreflow";
-    journal_path_ = state_dir_ + "/baseline.journal";
-
     const char* test_boot_id_path = std::getenv("COREFLOW_TEST_BOOT_ID_PATH");
     const std::string kernel_boot_path =
         (test_boot_id_path && *test_boot_id_path)
             ? std::string(test_boot_id_path)
             : "/proc/sys/kernel/random/boot_id";
+#else
+    state_dir_ = "/data/adb/coreflow";
+    const std::string kernel_boot_path = "/proc/sys/kernel/random/boot_id";
+#endif
+    journal_path_ = state_dir_ + "/baseline.journal";
 
     std::string candidate = read_line_with_stat(kernel_boot_path);
     if (!valid_boot_token(candidate)) {
@@ -363,7 +420,7 @@ bool BaselineStore::write_raw_node(
     const std::string& value,
     uint64_t expected_dev,
     uint64_t expected_ino) {
-    if (!path_safe(path) || value.empty() || value.size() > 4096) return false;
+    if (!path_writable(path) || value.empty() || value.size() > 4096) return false;
     const bool virtual_node = path.rfind("/sys/", 0) == 0 ||
                               path.rfind("/proc/", 0) == 0 ||
                               path.rfind("/dev/", 0) == 0;
@@ -538,7 +595,7 @@ bool BaselineStore::persist_locked() {
     std::string payload = "CFJ4\t" + boot_id_ + "\n";
     for (const auto& [path, snap] : store_) {
         if (snap.is_modified) {
-            if (!path_safe(path) || snap.factory_value.empty()) return false;
+            if (!path_writable(path) || snap.factory_value.empty()) return false;
             if (snap.active_value.empty() || snap.prior_value.empty()) return false;
             payload += path + "\t" + hex_encode(snap.factory_value) +
                        "\t" + hex_encode(snap.prior_value) +
@@ -658,13 +715,13 @@ bool BaselineStore::recover_pending() {
         if (v1) {
             if (parts.size() != 2) return false;
             path_str = std::string(parts[0]);
-            if (!path_safe(path_str) || !hex_decode(parts[1], value)) return false;
+            if (!path_writable(path_str) || !hex_decode(parts[1], value)) return false;
             applied = read_raw_node(path_str, &dev, &ino);
             prior = applied;
         } else if (v2) {
             if (parts.size() != 3) return false;
             path_str = std::string(parts[0]);
-            if (!path_safe(path_str) ||
+            if (!path_writable(path_str) ||
                 !hex_decode(parts[1], value) ||
                 !hex_decode(parts[2], applied)) {
                 return false;
@@ -673,7 +730,7 @@ bool BaselineStore::recover_pending() {
         } else if (v3) {
             if (parts.size() != 4) return false;
             path_str = std::string(parts[0]);
-            if (!path_safe(path_str) ||
+            if (!path_writable(path_str) ||
                 !hex_decode(parts[1], value) ||
                 !hex_decode(parts[2], prior) ||
                 !hex_decode(parts[3], applied)) {
@@ -683,7 +740,7 @@ bool BaselineStore::recover_pending() {
             // CFJ4: path \t factory_hex \t prior_hex \t active_hex \t dev \t ino
             if (parts.size() != 6) return false;
             path_str = std::string(parts[0]);
-            if (!path_safe(path_str) ||
+            if (!path_writable(path_str) ||
                 !hex_decode(parts[1], value) ||
                 !hex_decode(parts[2], prior) ||
                 !hex_decode(parts[3], applied) ||
@@ -720,7 +777,7 @@ bool BaselineStore::recover_pending() {
 
 bool BaselineStore::capture(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!recovery_checked_ || identity_unavailable_ || !path_safe(path)) return false;
+    if (!recovery_checked_ || identity_unavailable_ || !path_writable(path)) return false;
     auto it = store_.find(path);
     if (it != store_.end()) {
         // Verify existing un-modified snapshot still points to the same underlying object
@@ -748,7 +805,7 @@ bool BaselineStore::capture(const std::string& path) {
 
 bool BaselineStore::capture_durable(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!recovery_checked_ || identity_unavailable_ || !path_safe(path)) return false;
+    if (!recovery_checked_ || identity_unavailable_ || !path_writable(path)) return false;
 
     auto it = store_.find(path);
     if (it == store_.end()) {
@@ -897,7 +954,7 @@ size_t BaselineStore::rollback_locked() {
 bool BaselineStore::apply_mutation(const std::string& path, const std::string& new_value) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!recovery_checked_ || identity_unavailable_) return false;
-    if (!path_safe(path) || new_value.empty()) return false;
+    if (!path_writable(path) || new_value.empty()) return false;
     auto it = store_.find(path);
     if (it == store_.end()) {
         uint64_t dev = 0;
@@ -978,7 +1035,7 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
 
 bool BaselineStore::lock_node_readonly(const std::string& path) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!path_safe(path)) return false;
+    if (!path_writable(path)) return false;
     auto it = store_.find(path);
     if (it == store_.end()) return false;
     if (it->second.permission_locked) return true;
@@ -1002,7 +1059,7 @@ bool BaselineStore::lock_node_readonly(const std::string& path) noexcept {
 
 bool BaselineStore::unlock_node_permission(const std::string& path) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!path_safe(path)) return false;
+    if (!path_writable(path)) return false;
     auto it = store_.find(path);
     if (it == store_.end() || !it->second.permission_locked) return true;
 
@@ -1016,7 +1073,7 @@ bool BaselineStore::unlock_node_permission(const std::string& path) noexcept {
 
 bool BaselineStore::reclaim_mutation(const std::string& path, const std::string& expected_value) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!recovery_checked_ || identity_unavailable_ || !path_safe(path) || expected_value.empty()) {
+    if (!recovery_checked_ || identity_unavailable_ || !path_writable(path) || expected_value.empty()) {
         return false;
     }
     auto it = store_.find(path);
@@ -1106,7 +1163,7 @@ bool BaselineStore::reassert_mutation_from_oem_baseline(
     const std::string& path,
     const std::string& expected_value) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!recovery_checked_ || identity_unavailable_ || !path_safe(path) ||
+    if (!recovery_checked_ || identity_unavailable_ || !path_writable(path) ||
         expected_value.empty()) return false;
     const auto it = store_.find(path);
     if (it == store_.end() || !it->second.is_modified ||

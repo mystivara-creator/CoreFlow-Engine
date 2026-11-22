@@ -278,7 +278,27 @@ int main(int argc, char* argv[]) {
     assert(store.verify_and_persist_clear_state());
     assert(std::filesystem::file_size(safe_state + "/baseline.journal") > 0);
 
+    // T2: Strict write allowlist must reject thread cgroup snapshots, cgroup task migration,
+    // raw block devices, and sensitive sysfs/procfs paths.
+    const char* const kDisallowedPaths[] = {
+        "/proc/1234/task/5678/cgroup",
+        "/sys/firmware/acpi/tables/DSDT",
+        "/sys/power/state",
+        "/sys/kernel/debug/tracing/trace",
+        "/sys/fs/selinux/enforce",
+        "/sys/fs/cgroup/cgroup.procs",
+        "/sys/fs/cgroup/top-app/tasks",
+        "/proc/sys/kernel/sysrq",
+        "/proc/sys/kernel/core_pattern",
+        "/proc/sys/net/ipv4/ip_forward",
+        "/dev/block/sda1",
+    };
+    for (const char* bad_path : kDisallowedPaths) {
+        assert(!store.capture(bad_path));
+        assert(!store.apply_mutation(bad_path, "1"));
+    }
+
     std::filesystem::remove_all(state_dir);
-    std::cout << "[CoreFlow] Baseline + crash-recovery + boot_epoch + inode + state-path symlink invariants PASS\n";
+    std::cout << "[CoreFlow] Baseline + crash-recovery + boot_epoch + inode + allowlist + state-path symlink invariants PASS\n";
     return 0;
 }

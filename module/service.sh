@@ -7,7 +7,7 @@ umask 077
 MODDIR="${0%/*}"
 STATE="${COREFLOW_STATE_DIR:-/data/adb/coreflow}"
 LOGS="$STATE/logs"
-BIN="${COREFLOW_BIN_OVERRIDE:-$MODDIR/system/bin/coreflowd}"
+BIN="$MODDIR/system/bin/coreflowd"
 [ -f "$BIN" ] || BIN="$MODDIR/coreflowd"
 [ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"
 [ -f "$BIN" ] || BIN="/system/bin/coreflowd"
@@ -100,8 +100,12 @@ if [ ! -f "$BOOT_EPOCH" ] && [ ! -L "$BOOT_EPOCH" ]; then
 fi
 
 # Operator stop and boot-loop recovery are authoritative.
-if [ -e "$STATE/SAFE_MODE" ] || [ -e "$STATE/DISABLE" ] || [ -e "$MODDIR/disable" ] || [ -e "/data/adb/modules/coreflow_engine/disable" ]; then
-  [ ! -L "$LOGS/service.log" ] && printf '%s CFAE disabled by safety marker\n' "$(date)" >> "$LOGS/service.log"
+# Always replay any pending same-boot CFJ4 journal before exiting (T4).
+if [ -e "$STATE/SAFE_MODE" ] || [ -e "$STATE/DISABLE" ] || [ -e "$MODDIR/disable" ] ||
+   [ -e "/data/adb/modules/cfae_framework/disable" ] || [ -e "/data/adb/modules/coreflow_engine/disable" ]; then
+  chmod 755 "$BIN" 2>/dev/null
+  "$BIN" --recover-only >/dev/null 2>&1 || true
+  [ ! -L "$LOGS/service.log" ] && printf '%s CFAE disabled by safety marker (CFJ4 recovery checked)\n' "$(date)" >> "$LOGS/service.log"
   exit 0
 fi
 

@@ -44,7 +44,7 @@ if(NOT COREFLOW_BUILD_COMMIT MATCHES "^[a-f0-9]+$")
     set(COREFLOW_BUILD_COMMIT "unknown")
 endif()
 
-# CoreFlow v6.2 Closed-Loop Intelligence & Autonomous Co-Pilot Sources
+# CFAE System Framework / CoreFlow Engine v6.0.0-R Sovereign Rebuild Sources
 set(COREFLOW_V5_SOURCES
     src/v5/hardware_probe.cpp
     src/v5/context_engine.cpp
@@ -85,7 +85,7 @@ if(CORE_FLOW_BUILD_TESTS)
     enable_testing()
     add_compile_options(-UNDEBUG)
 
-    # CoreFlow v5/v6.2 Unit Tests
+    # CFAE / CoreFlow v6.0.0-R Unit Tests
     add_executable(test_v5_hardware_probe
         tests/test_v5_hardware_probe.cpp
         src/v5/hardware_probe.cpp
@@ -112,6 +112,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/v6/oem_collaboration_map.cpp
         src/kernel/baseline_store.cpp
     )
+    target_compile_definitions(test_v5_storage_memory_actuator PRIVATE COREFLOW_ENABLE_TEST_HOOKS=1)
     if(NOT ANDROID)
         target_link_libraries(test_v5_storage_memory_actuator PRIVATE pthread)
     endif()
@@ -123,6 +124,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/v6/oem_collaboration_map.cpp
         src/kernel/baseline_store.cpp
     )
+    target_compile_definitions(test_v5_thermal_envelope PRIVATE COREFLOW_ENABLE_TEST_HOOKS=1)
     if(NOT ANDROID)
         target_link_libraries(test_v5_thermal_envelope PRIVATE pthread)
     endif()
@@ -145,6 +147,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
     )
+    target_compile_definitions(test_v6_semantic_copilot PRIVATE COREFLOW_ENABLE_TEST_HOOKS=1)
     if(NOT ANDROID)
         target_link_libraries(test_v6_semantic_copilot PRIVATE pthread)
     endif()
@@ -185,6 +188,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
     )
+    target_compile_definitions(test_longevity PRIVATE COREFLOW_ENABLE_TEST_HOOKS=1)
     if(NOT ANDROID)
         target_link_libraries(test_longevity PRIVATE pthread)
     endif()
@@ -198,6 +202,7 @@ if(CORE_FLOW_BUILD_TESTS)
         tests/test_baseline_rollback.cpp
         src/kernel/baseline_store.cpp
     )
+    target_compile_definitions(test_baseline_rollback PRIVATE COREFLOW_ENABLE_TEST_HOOKS=1)
     if(NOT ANDROID)
         target_link_libraries(test_baseline_rollback PRIVATE pthread)
     endif()

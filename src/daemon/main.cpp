@@ -1483,17 +1483,21 @@ int main(int argc, char* argv[]) {
             print_diag();
             return 0;
         }
+        if (cmd == "--recover-only") {
+            if (daemon_pid() > 0) return 0;
+            return BaselineStore::instance().recover_pending() ? 0 : 1;
+        }
         if (cmd == "--stop" || cmd == "--rollback-baseline") {
             return stop_daemon();
         }
         if (cmd == "--daemon" || cmd == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--atlas|--episodes|--journal|--diag|--stop|--rollback-baseline|--set-config key=value ...|--resolve-tamper <node> <RESYNC|ENFORCE>]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--atlas|--episodes|--journal|--diag|--recover-only|--stop|--rollback-baseline|--set-config key=value ...|--resolve-tamper <node> <RESYNC|ENFORCE>]\n";
             return 2;
         }
     } else if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--atlas|--episodes|--journal|--diag|--stop|--rollback-baseline|--set-config key=value ...|--resolve-tamper <node> <RESYNC|ENFORCE>]\n";
+        std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--atlas|--episodes|--journal|--diag|--recover-only|--stop|--rollback-baseline|--set-config key=value ...|--resolve-tamper <node> <RESYNC|ENFORCE>]\n";
         return 2;
     }
 

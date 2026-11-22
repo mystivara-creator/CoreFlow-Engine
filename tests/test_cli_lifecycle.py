@@ -144,6 +144,9 @@ if len(sys.argv) >= 2:
             assert isinstance(payload.get("status"), dict)
             assert isinstance(payload.get("journal"), dict)
 
+    # Verify --recover-only is supported cleanly in CLI contract (T4)
+    assert '"--recover-only"' in source
+
     # Verify --resolve-tamper strictly rejects YIELD/bypass compromise actions!
     bad_tamper = subprocess.run(
         [str(binary), "--resolve-tamper", "/sys/test/node", "YIELD"],

@@ -1,7 +1,12 @@
-# CoreFlow Engine v5.0.0 — Scoped SELinux live policy rules (KernelSU / APatch / Magisk).
+# CFAE System Framework / CoreFlow Engine v6.0.0-R — Scoped SELinux live policy rules (KernelSU / APatch / Magisk).
 # One target domain/type per rule so kernels missing vendor-specific types (e.g. sysfs_kgsl
 # on non-Qualcomm SoCs or legacy untrusted_app_25 on newer AOSP) skip only that line cleanly.
-# No permissive mode and no wildcard (*) rules are used.
+# Notes on Android SELinux semantics:
+# - No permissive mode, no wildcard (*) rules, and NO raw block_device (/dev/block/*) access.
+# - Linux procfs labels /proc/<pid>/* with the target process domain (e.g. untrusted_app,
+#   surfaceflinger), so read-only dir/file rules on those domains are required for TID discovery.
+# - Generic `sysfs` read/write (without setattr) is retained only as a vendor-kernel fallback
+#   for managed sysfs nodes lacking dedicated labels (e.g. lru_gen/enabled on some OEM builds).
 
 # ---------------------------------------------------------------------------
 # 1. Per-TID UClamp Scheduling (SYS_sched_setattr / sched_getattr)
@@ -102,10 +107,7 @@ allow magisk cgroup file { read write open getattr }
 allow magisk cgroup_v2 dir { read open search getattr }
 allow magisk cgroup_v2 file { read write open getattr }
 
-# Block devices & sysfs storage queue (dynamic UFS/eMMC read_ahead_kb & ZRAM/MGLRU)
-allow su block_device dir { read open search getattr }
-allow su block_device blk_file { read write open getattr }
-allow su block_device file { read write open getattr }
+# Sysfs storage queue (dynamic UFS/eMMC read_ahead_kb & ZRAM/MGLRU; never touches raw /dev/block/*)
 allow su sysfs_block dir { read open search getattr }
 allow su sysfs_block file { read write open getattr setattr }
 allow su sysfs_devices_block dir { read open search getattr }
@@ -117,11 +119,8 @@ allow su sysfs_dm file { read write open getattr setattr }
 allow su sysfs_zram dir { read open search getattr }
 allow su sysfs_zram file { read write open getattr }
 allow su sysfs dir { read open search getattr }
-allow su sysfs file { read write open getattr setattr }
+allow su sysfs file { read write open getattr }
 
-allow magisk block_device dir { read open search getattr }
-allow magisk block_device blk_file { read write open getattr }
-allow magisk block_device file { read write open getattr }
 allow magisk sysfs_block dir { read open search getattr }
 allow magisk sysfs_block file { read write open getattr setattr }
 allow magisk sysfs_devices_block dir { read open search getattr }
@@ -133,7 +132,7 @@ allow magisk sysfs_dm file { read write open getattr setattr }
 allow magisk sysfs_zram dir { read open search getattr }
 allow magisk sysfs_zram file { read write open getattr }
 allow magisk sysfs dir { read open search getattr }
-allow magisk sysfs file { read write open getattr setattr }
+allow magisk sysfs file { read write open getattr }
 
 # Anti-stutter VM sysctl (swappiness, compaction) & native touch input detection
 allow su proc_vmstat file { read open getattr }
