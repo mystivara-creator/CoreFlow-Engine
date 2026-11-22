@@ -1,6 +1,7 @@
 package io.coreflow.ui
 
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -60,6 +61,7 @@ import io.coreflow.AppCatalog
 import io.coreflow.AppPreferences
 import io.coreflow.BuildConfig
 import io.coreflow.CoreFlowManager
+import io.coreflow.CoreFlowUpdateChecker
 import io.coreflow.InstalledAppEntry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -123,6 +125,8 @@ fun CoreFlowApp(
     var journalText by remember { mutableStateOf<String?>(null) }
     var selfAuditReport by remember { mutableStateOf<CoreFlowManager.SelfAuditReport?>(null) }
     var auditBusy by remember { mutableStateOf(false) }
+    var updateReport by remember { mutableStateOf<CoreFlowUpdateChecker.UpdateCheckReport?>(null) }
+    var updateBusy by remember { mutableStateOf(false) }
 
     LaunchedEffect(pendingTab, pendingDialoguePrompt) {
         if (pendingTab != null || pendingDialoguePrompt != null) {
@@ -133,6 +137,61 @@ fun CoreFlowApp(
             showAboutScreen = false
             onConsumeDeepLink()
         }
+    }
+
+    suspend fun runUpdateCheck(forceRefresh: Boolean, notifyUser: Boolean) {
+        if (updateBusy) return
+        updateBusy = true
+        runCatching {
+            val modMeta = CoreFlowManager.getInstalledModuleMeta(status?.version)
+            val installed = CoreFlowUpdateChecker.InstalledSnapshot(
+                appVersion = BuildConfig.VERSION_NAME,
+                appVersionCode = BuildConfig.VERSION_CODE,
+                moduleVersion = modMeta.version,
+                moduleVersionCode = modMeta.versionCode,
+                moduleInstalled = modMeta.installed,
+            )
+            CoreFlowUpdateChecker.checkForUpdates(context, installed, forceRefresh = forceRefresh)
+        }.onSuccess { report ->
+            updateReport = report
+            if (notifyUser) {
+                val msg = when (report.state) {
+                    CoreFlowUpdateChecker.UpdateState.UP_TO_DATE -> strings.updateUpToDate
+                    CoreFlowUpdateChecker.UpdateState.UPDATE_AVAILABLE ->
+                        "${strings.updateAvailable}: v${report.latestVersion}"
+                    CoreFlowUpdateChecker.UpdateState.PENDING_PUBLIC_RELEASE ->
+                        "${strings.updatePendingRelease} (v${report.latestVersion})"
+                    CoreFlowUpdateChecker.UpdateState.ERROR ->
+                        report.errorMessage ?: strings.updateError
+                }
+                snackbarHostState.showSnackbar(msg)
+            }
+        }.onFailure { err ->
+            if (notifyUser) {
+                snackbarHostState.showSnackbar(err.message ?: strings.updateError)
+            }
+        }
+        updateBusy = false
+    }
+
+    fun openTrustedUrl(rawUrl: String) {
+        if (!CoreFlowUpdateChecker.isTrustedUrl(rawUrl)) {
+            scope.launch { snackbarHostState.showSnackbar("Blocked untrusted URL") }
+            return
+        }
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(rawUrl)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        }.onFailure { err ->
+            scope.launch { snackbarHostState.showSnackbar(err.message ?: "Unable to open browser") }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        delay(1200L)
+        runUpdateCheck(forceRefresh = false, notifyUser = false)
     }
 
     suspend fun refreshStatus() {
@@ -281,7 +340,18 @@ fun CoreFlowApp(
                 strings.tabApps,
                 badgeCount = if (navBadgesEnabled) (status?.apps?.totalConfigured ?: 0) else 0,
             ),
-            NavTabSpec(4, MiuixIcons.Settings, strings.tabSettings),
+            NavTabSpec(
+                4,
+                MiuixIcons.Settings,
+                strings.tabSettings,
+                badgeCount = if (navBadgesEnabled && (updateReport?.state == CoreFlowUpdateChecker.UpdateState.UPDATE_AVAILABLE ||
+                        updateReport?.state == CoreFlowUpdateChecker.UpdateState.PENDING_PUBLIC_RELEASE)
+                ) {
+                    1
+                } else {
+                    0
+                },
+            ),
         )
 
         Scaffold(
@@ -405,6 +475,8 @@ fun CoreFlowApp(
                             }
                             selectedTab = 2
                         },
+                        updateReport = updateReport,
+                        onOpenUpdateCenter = { selectedTab = 4 },
                     )
 
                     1 -> ControlHubTab(
@@ -523,6 +595,8 @@ fun CoreFlowApp(
                     4 -> SystemTab(
                         strings = strings,
                         status = status,
+                        updateReport = updateReport,
+                        updateBusy = updateBusy,
                         journalText = journalText,
                         selfAuditReport = selfAuditReport,
                         auditBusy = auditBusy,
@@ -536,6 +610,10 @@ fun CoreFlowApp(
                         contentPadding = innerPadding,
                         scrollBehavior = scrollBehavior,
                         onRefresh = { triggerPullRefresh() },
+                        onCheckUpdates = {
+                            scope.launch { runUpdateCheck(forceRefresh = true, notifyUser = true) }
+                        },
+                        onOpenTrustedUrl = { url -> openTrustedUrl(url) },
                         onThemeModeChange = { newIdx ->
                             onThemeModeChange(newIdx)
                             scope.launch {

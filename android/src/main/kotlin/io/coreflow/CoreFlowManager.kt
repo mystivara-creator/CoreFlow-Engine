@@ -1117,6 +1117,47 @@ object CoreFlowManager {
         }
     }
 
+    data class InstalledModuleMeta(
+        val version: String,
+        val versionCode: Int,
+        val installed: Boolean,
+    )
+
+    suspend fun getInstalledModuleMeta(fallbackDaemonVersion: String? = null): InstalledModuleMeta =
+        withContext(Dispatchers.IO) {
+            val cmd =
+                "P=\"/data/adb/modules_update/cfae_framework/module.prop\"; " +
+                    "[ -f \"\$P\" ] || P=\"/data/adb/modules/cfae_framework/module.prop\"; " +
+                    "[ -f \"\$P\" ] || P=\"/data/adb/modules/coreflow_engine/module.prop\"; " +
+                    "[ -f \"\$P\" ] && cat \"\$P\""
+            val res = Shell.cmd(cmd).exec()
+            if (res.isSuccess && res.out.isNotEmpty()) {
+                var ver = ""
+                var code = 0
+                for (raw in res.out) {
+                    val line = raw.trim()
+                    if (line.startsWith("version=")) {
+                        ver = line.substringAfter("version=").trim()
+                    } else if (line.startsWith("versionCode=")) {
+                        code = line.substringAfter("versionCode=").trim().toIntOrNull() ?: 0
+                    }
+                }
+                if (ver.isNotEmpty() || code > 0) {
+                    return@withContext InstalledModuleMeta(
+                        version = ver.ifEmpty { fallbackDaemonVersion.orEmpty() },
+                        versionCode = code,
+                        installed = true,
+                    )
+                }
+            }
+            val fb = fallbackDaemonVersion?.trim().orEmpty()
+            InstalledModuleMeta(
+                version = fb,
+                versionCode = if (fb.isNotEmpty()) CoreFlowUpdateChecker.deriveCanonicalVersionCode(fb, 0) else 0,
+                installed = fb.isNotEmpty(),
+            )
+        }
+
     private fun execRootCommand(command: String): String {
         val result = Shell.cmd(command).exec()
         val combined = result.out.joinToString("\n")

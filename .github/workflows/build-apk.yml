@@ -2,7 +2,8 @@ name: CoreFlow Companion APK Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
+    tags: ['v*']
     paths:
       - "android/**"
       - ".github/workflows/build-apk.yml"

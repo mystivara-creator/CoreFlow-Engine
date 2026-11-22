@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.sp
 import io.coreflow.AppPreferences
 import io.coreflow.BuildConfig
 import io.coreflow.CoreFlowManager
+import io.coreflow.CoreFlowUpdateChecker
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
@@ -59,11 +60,14 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
+import java.util.Locale
 
 @Composable
 fun SystemTab(
     strings: AppStrings,
     status: CoreFlowManager.DaemonStatus?,
+    updateReport: CoreFlowUpdateChecker.UpdateCheckReport?,
+    updateBusy: Boolean,
     journalText: String?,
     selfAuditReport: CoreFlowManager.SelfAuditReport?,
     auditBusy: Boolean,
@@ -77,6 +81,8 @@ fun SystemTab(
     contentPadding: PaddingValues,
     scrollBehavior: ScrollBehavior,
     onRefresh: () -> Unit,
+    onCheckUpdates: () -> Unit,
+    onOpenTrustedUrl: (String) -> Unit,
     onThemeModeChange: (Int) -> Unit,
     onPollIntervalChange: (Int) -> Unit,
     onLanguageChange: (Int) -> Unit,
@@ -118,6 +124,19 @@ fun SystemTab(
             ),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // Dual-Source CFAE Update Center (Module + Companion APK + Pending Public Release Guard)
+            item { SmallTitle(text = strings.sectionUpdateCenter) }
+            item {
+                UpdateCenterCard(
+                    strings = strings,
+                    status = status,
+                    report = updateReport,
+                    checking = updateBusy,
+                    onCheckNow = onCheckUpdates,
+                    onOpenTrustedUrl = onOpenTrustedUrl,
+                )
+            }
+
             // App Preferences & HyperOS 4 Visual Style
             item { SmallTitle(text = strings.sectionAppSettings) }
             item {
@@ -446,6 +465,249 @@ fun SystemTab(
 
             item { Spacer(Modifier.height(12.dp)) }
         }
+    }
+}
+
+@Composable
+private fun UpdateCenterCard(
+    strings: AppStrings,
+    status: CoreFlowManager.DaemonStatus?,
+    report: CoreFlowUpdateChecker.UpdateCheckReport?,
+    checking: Boolean,
+    onCheckNow: () -> Unit,
+    onOpenTrustedUrl: (String) -> Unit,
+) {
+    val badgeColor = when (report?.state) {
+        CoreFlowUpdateChecker.UpdateState.UP_TO_DATE -> Color(0xFF22C55E)
+        CoreFlowUpdateChecker.UpdateState.UPDATE_AVAILABLE -> Color(0xFF38BDF8)
+        CoreFlowUpdateChecker.UpdateState.PENDING_PUBLIC_RELEASE -> Color(0xFFF59E0B)
+        CoreFlowUpdateChecker.UpdateState.ERROR -> Color(0xFFEF4444)
+        null -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+    }
+    val headline = when {
+        checking -> strings.updateChecking
+        report == null -> if (strings.isIndonesian) {
+            "Periksa pembaruan Modul & Companion App dari GitHub resmi"
+        } else {
+            "Check Module & Companion App updates from official GitHub releases"
+        }
+        report.state == CoreFlowUpdateChecker.UpdateState.UP_TO_DATE -> strings.updateUpToDate
+        report.state == CoreFlowUpdateChecker.UpdateState.UPDATE_AVAILABLE ->
+            "${strings.updateAvailable} · v${report.latestVersion}"
+        report.state == CoreFlowUpdateChecker.UpdateState.PENDING_PUBLIC_RELEASE ->
+            "${strings.updatePendingRelease} (v${report.latestVersion})"
+        else -> strings.updateError
+    }
+
+    val installedModVer = report?.installedModuleVersion?.takeIf { it.isNotEmpty() }
+        ?: status?.version?.takeIf { it.isNotEmpty() }
+        ?: "—"
+    val installedAppVer = report?.installedAppVersion?.takeIf { it.isNotEmpty() }
+        ?: CoreFlowUpdateChecker.normalizeVersion(BuildConfig.VERSION_NAME)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        insideMargin = PaddingValues(16.dp),
+        pressFeedbackType = PressFeedbackType.Tilt,
+        onClick = {},
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(9.dp)
+                    .clip(CircleShape)
+                    .background(badgeColor),
+            )
+            Text(
+                text = headline,
+                style = MiuixTheme.textStyles.headline2,
+                color = if (report != null) badgeColor else MiuixTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        UpdateComponentRow(
+            label = strings.updateModuleLabel,
+            installed = if (installedModVer == "—") "—" else "v$installedModVer",
+            latest = report?.latestVersion?.takeIf { it.isNotEmpty() }?.let { "v$it" },
+            updateNeeded = report?.moduleUpdateAvailable == true,
+            pendingRelease = report?.pendingPublicRelease == true,
+            isIndonesian = strings.isIndonesian,
+        )
+        Spacer(Modifier.height(6.dp))
+        UpdateComponentRow(
+            label = strings.updateAppLabel,
+            installed = "v$installedAppVer",
+            latest = report?.latestAppVersion?.takeIf { it.isNotEmpty() }?.let { "v$it" },
+            updateNeeded = report?.appUpdateAvailable == true,
+            pendingRelease = report?.pendingPublicRelease == true,
+            isIndonesian = strings.isIndonesian,
+        )
+
+        if (report?.versionSkewDetected == true) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = strings.updateSkewWarning,
+                style = MiuixTheme.textStyles.footnote1,
+                color = Color(0xFFF59E0B),
+            )
+        }
+
+        if (report?.pendingPublicRelease == true) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = strings.updatePendingHint,
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+
+        val changelog = report?.changelogSummary?.takeIf {
+            it.isNotBlank() && report.state == CoreFlowUpdateChecker.UpdateState.UPDATE_AVAILABLE
+        }
+        if (changelog != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = changelog,
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+            )
+        }
+
+        val errMsg = report?.errorMessage?.takeIf {
+            it.isNotBlank() && report.state == CoreFlowUpdateChecker.UpdateState.ERROR
+        }
+        if (errMsg != null) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = errMsg,
+                style = MiuixTheme.textStyles.footnote1,
+                color = Color(0xFFEF4444),
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // Direct verified download buttons (only when real public Release assets exist)
+        val zipUrl = report?.zipDownloadUrl?.takeIf { report.moduleUpdateAvailable && it.isNotBlank() }
+        val apkUrl = report?.apkDownloadUrl?.takeIf { report.appUpdateAvailable && it.isNotBlank() }
+        val hasDirectDownload = zipUrl != null || apkUrl != null
+        if (hasDirectDownload) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (zipUrl != null) {
+                    val sizeTag = formatBytesShort(report?.zipSizeBytes ?: 0L)
+                    TextButton(
+                        text = if (sizeTag.isNotEmpty()) "${strings.updateDownloadModule} ($sizeTag)" else strings.updateDownloadModule,
+                        onClick = { onOpenTrustedUrl(zipUrl) },
+                        colors = ButtonDefaults.textButtonColorsPrimary(),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (apkUrl != null) {
+                    val sizeTag = formatBytesShort(report?.apkSizeBytes ?: 0L)
+                    TextButton(
+                        text = if (sizeTag.isNotEmpty()) "${strings.updateDownloadApk} ($sizeTag)" else strings.updateDownloadApk,
+                        onClick = { onOpenTrustedUrl(apkUrl) },
+                        colors = ButtonDefaults.textButtonColorsPrimary(),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(
+                text = if (checking) strings.updateChecking else strings.updateCheckNow,
+                onClick = onCheckNow,
+                enabled = !checking,
+                colors = if (hasDirectDownload) {
+                    ButtonDefaults.textButtonColors()
+                } else {
+                    ButtonDefaults.textButtonColorsPrimary()
+                },
+                modifier = Modifier.weight(1f),
+            )
+            if (report != null && (report.pendingPublicRelease || report.state == CoreFlowUpdateChecker.UpdateState.UPDATE_AVAILABLE)) {
+                TextButton(
+                    text = strings.updateOpenReleases,
+                    onClick = { onOpenTrustedUrl(report.releasePageUrl) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateComponentRow(
+    label: String,
+    installed: String,
+    latest: String?,
+    updateNeeded: Boolean,
+    pendingRelease: Boolean,
+    isIndonesian: Boolean,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MiuixTheme.textStyles.body2,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = if (latest != null && updateNeeded) "$installed → $latest" else installed,
+                style = MiuixTheme.textStyles.footnote1,
+                fontFamily = FontFamily.Monospace,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+        val statusText = when {
+            latest == null -> if (isIndonesian) "Belum dicek" else "Not checked"
+            updateNeeded && pendingRelease -> if (isIndonesian) "Menunggu Rilis" else "Pending"
+            updateNeeded -> if (isIndonesian) "Update Ada" else "Update"
+            else -> if (isIndonesian) "Mutakhir" else "Latest"
+        }
+        val statusColor = when {
+            latest == null -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+            updateNeeded && pendingRelease -> Color(0xFFF59E0B)
+            updateNeeded -> Color(0xFF38BDF8)
+            else -> Color(0xFF22C55E)
+        }
+        Text(
+            text = statusText,
+            style = MiuixTheme.textStyles.footnote1,
+            fontWeight = FontWeight.SemiBold,
+            color = statusColor,
+        )
+    }
+}
+
+private fun formatBytesShort(bytes: Long): String {
+    if (bytes <= 0L) return ""
+    val mb = bytes.toDouble() / (1024.0 * 1024.0)
+    return if (mb >= 1.0) {
+        String.format(Locale.US, "%.1f MB", mb)
+    } else {
+        "${(bytes / 1024L).coerceAtLeast(1L)} KB"
     }
 }
 
