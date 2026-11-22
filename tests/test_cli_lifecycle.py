@@ -28,6 +28,7 @@ assert "compute_symbiotic_plan" in source
 assert "feedforward_freeze_until_ms" in source
 assert "vblank_irq_token" in source
 assert "to_dna_signature" in source
+assert "BootCalmSanctuary" in source
 assert "O_EXCL" in source and "renameat" in source
 assert "baseline.recover_pending()" in source
 assert "baseline.rollback_all()" in source
@@ -60,6 +61,13 @@ if len(sys.argv) >= 2:
             assert "profile" in payload
             assert "effectiveProfile" in payload
             assert "mode" in payload
+            for bs_key in (
+                "bootSettleActive",
+                "bootSettleDurationSec",
+                "bootSettleExitReason",
+                "bootRampProgress",
+            ):
+                assert bs_key in payload, f"Missing {bs_key}"
             assert "features" in payload and isinstance(payload["features"], dict)
             assert "hyperFluid" in payload and isinstance(payload["hyperFluid"], dict)
             for hf_key in (

@@ -263,6 +263,13 @@ int main() {
     assert(ue4_fg.pid == 44500);
     assert(ue4_fg.engine_class == AppEngineClass::HeavyGame3D);
 
+    // 15. System Launcher detection excludes launchers from LaunchBurst preread & BOOT_SETTLE soft bypass
+    assert(ContextEngine::is_system_launcher_package("com.miui.home"));
+    assert(ContextEngine::is_system_launcher_package("com.android.launcher3"));
+    assert(ContextEngine::is_system_launcher_package("com.google.android.apps.nexuslauncher"));
+    assert(!ContextEngine::is_system_launcher_package("com.whatsapp"));
+    assert(!ContextEngine::is_system_launcher_package("com.miHoYo.GenshinImpact"));
+
     fs::remove_all(root);
     std::cout << "v5 ContextEngine tests passed\n";
     return 0;

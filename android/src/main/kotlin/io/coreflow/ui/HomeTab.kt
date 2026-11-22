@@ -126,16 +126,21 @@ fun HomeTab(
                 val isRunning = status?.isRunning == true
                 val isPaused = status?.inspectionMode == true
                 val isThermalGuard = status?.thermalGuardActive == true
+                val isBootSettle = status?.bootSettleActive == true ||
+                    status?.mode.equals("BOOT_SETTLE", ignoreCase = true)
+                val isSoftRamp = isRunning && !isBootSettle && (status?.bootRampProgress ?: 1f) < 0.99f
                 val dotColor = when {
                     !isRunning -> Color(0xFFEF4444)
                     isPaused -> Color(0xFFF59E0B)
                     isThermalGuard -> Color(0xFFF97316)
+                    isBootSettle -> Color(0xFF38BDF8)
                     else -> Color(0xFF22C55E)
                 }
                 val heroBgColor = when {
                     !isRunning -> if (dark) Color(0xFF331B1E) else Color(0xFFFDECEC)
                     isPaused -> if (dark) Color(0xFF332917) else Color(0xFFFEF6E4)
                     isThermalGuard -> if (dark) Color(0xFF382316) else Color(0xFFFFF1E6)
+                    isBootSettle -> if (dark) Color(0xFF152A38) else Color(0xFFE6F4FE)
                     else -> if (dark) Color(0xFF1E3628) else Color(0xFFE7F6ED)
                 }
                 val headline = when {
@@ -143,6 +148,14 @@ fun HomeTab(
                     !isRunning -> if (strings.isIndonesian) "Engine Berhenti" else "Engine Stopped"
                     isPaused -> if (strings.isIndonesian) "Dijeda · Mode OEM" else "Paused · OEM Mode"
                     isThermalGuard -> strings.humanizeMode("THERMAL_GUARD")
+                    isBootSettle -> {
+                        val sec = status.bootSettleDurationSec.toInt().coerceAtLeast(0)
+                        "${strings.humanizeMode("BOOT_SETTLE")} · ${sec}s"
+                    }
+                    isSoftRamp -> {
+                        val pct = ((status.bootRampProgress * 100f).toInt()).coerceIn(0, 100)
+                        "${status.effectiveProfile.label} · Ramp ${pct}%"
+                    }
                     else -> "${status.effectiveProfile.label} · ${strings.humanizeMode(status.mode)}"
                 }
 

@@ -224,13 +224,13 @@ void ThermalEnvelopeActuator::apply(
     stats_.last_capacity_scale = scale;
 
     // Release-on-Calm & Passive Video Playback:
-    // When disabled, excluded, calm (Efficiency/ScreenOff), or hands-off hardware video playback
-    // without active thermal pacing, restore OEM CPU/GPU governor baselines cleanly (per-TID UClamp
-    // already protects MediaCodec/SurfaceFlinger pacing with zero wasted Big-core frequency burn).
+    // When disabled, excluded, calm (Efficiency/ScreenOff without active thermal_guard), or hands-off
+    // hardware video playback, unconditionally restore OEM CPU/GPU governor baselines (hispeed_freq,
+    // hispeed_load, up_rate_limit_us, kgsl/min_pwrlevel) so cooling idle silicon never holds elevated nodes.
     const bool calm_cool =
+        !thermal_guard &&
         (mode == ContextMode::Efficiency || mode == ContextMode::ScreenOff ||
-         (mode == ContextMode::Interactive && telemetry.passive_media_only)) &&
-        !thermal_guard && scale >= 0.95;
+         (mode == ContextMode::Interactive && telemetry.passive_media_only && scale >= 0.95));
     if (!enabled || mode == ContextMode::Excluded || calm_cool) {
         if (!last_written_.empty()) rollback_all_managed();
         return;

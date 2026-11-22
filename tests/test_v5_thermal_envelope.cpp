@@ -97,6 +97,16 @@ int main() {
     assert(read_file(kgsl_max) == "0");
     assert(read_file(kgsl_min) == "5");
 
+    // 1c. Unconditional Release-on-Calm in EFFICIENCY even while cooling (scale = 0.91 < 0.95, !thermal_guard)
+    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, {20.0, 70.0});
+    assert(std::stoull(read_file(hispeed)) >= 2200000U);
+    act.apply(topo, ContextMode::Efficiency, PerformanceProfile::Balanced, 0.91, false, true, {8.0, 0.0});
+    assert(act.stats().managed_nodes == 0U);
+    assert(read_file(hispeed) == "1800000");
+    assert(read_file(hispeed_load) == "90");
+    assert(read_file(up_rate) == "0");
+    assert(read_file(kgsl_min) == "5");
+
     // 2. PID capacity_scale drop + thermal_guard smoothly lowers hispeed, raises hispeed_load, and raises KGSL ceiling index (slower/cooler)
     act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 0.55, true, true, {10.0, 50.0});
     const uint64_t hot_hispeed = std::stoull(read_file(hispeed));

@@ -6,6 +6,7 @@ export type PerformanceProfile = 'balanced' | 'smoothness' | 'battery' | 'gaming
 export type AppRuleCategory = 'default' | 'gaming' | 'smoothness' | 'battery' | 'excluded';
 
 export type ContextModeName =
+  | 'BOOT_SETTLE'
   | 'LAUNCH_BURST'
   | 'INTERACTIVE'
   | 'GAMING'
@@ -166,6 +167,10 @@ export interface CoreFlowV5Status {
   effectiveProfile: PerformanceProfile;
   inspectionMode: boolean;
   mode: ContextModeName;
+  bootSettleActive: boolean;
+  bootSettleDurationSec: number;
+  bootSettleExitReason: string;
+  bootRampProgress: number;
   foregroundPackage: string;
   foregroundPid: number;
   capacityScale: number;
@@ -245,6 +250,7 @@ export const MODE_LABELS: Record<
   string,
   { label: string; labelId: string; tone: 'success' | 'warning' | 'error' | 'neutral' }
 > = {
+  BOOT_SETTLE: { label: 'Boot Settle', labelId: 'Tenang Pasca-Boot', tone: 'neutral' },
   LAUNCH_BURST: { label: 'Launch Burst', labelId: 'Lonjakan Buka', tone: 'success' },
   INTERACTIVE: { label: 'Interactive', labelId: 'Interaktif', tone: 'success' },
   GAMING: { label: 'Gaming', labelId: 'Gaming', tone: 'success' },
@@ -469,6 +475,13 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
     effectiveProfile,
     inspectionMode: raw.inspectionMode === true,
     mode: (raw.mode as ContextModeName) ?? 'EFFICIENCY',
+    bootSettleActive: raw.bootSettleActive === true,
+    bootSettleDurationSec: isFiniteNum(raw.bootSettleDurationSec) ? raw.bootSettleDurationSec : 0,
+    bootSettleExitReason:
+      typeof raw.bootSettleExitReason === 'string' ? raw.bootSettleExitReason : 'warm_daemon_restart',
+    bootRampProgress: isFiniteNum(raw.bootRampProgress)
+      ? Math.max(0, Math.min(1, raw.bootRampProgress))
+      : 1,
     foregroundPackage: typeof raw.foregroundPackage === 'string' ? raw.foregroundPackage : '',
     foregroundPid: isFiniteNum(raw.foregroundPid) ? raw.foregroundPid : 0,
     capacityScale: isFiniteNum(raw.capacityScale) ? Math.max(0.2, Math.min(1, raw.capacityScale)) : 1,
@@ -667,6 +680,10 @@ export function createPreviewStatus(): CoreFlowV5Status {
     effectiveProfile: 'balanced',
     inspectionMode: false,
     mode: 'INTERACTIVE',
+    bootSettleActive: false,
+    bootSettleDurationSec: 0,
+    bootSettleExitReason: 'warm_daemon_restart',
+    bootRampProgress: 1.0,
     foregroundPackage: 'com.android.chrome',
     foregroundPid: 8421,
     capacityScale: 0.96,

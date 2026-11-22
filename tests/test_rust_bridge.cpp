@@ -95,6 +95,11 @@ int main() {
     assert(sym_cpu.cpu_uclamp_scale > 1.0);
     assert(sym_cpu.helper_uclamp_ratio >= 0.72);
 
+    // Background 92% CPU (dex2oat/post-boot storm) with 0% GPU must NEVER trigger CpuDrawBound
+    auto sym_bg_storm = compute_symbiotic_plan({0.55, 0.65, 0.72, 92.0, 0.22, 0.0, 24.0, 2.0, 2.0, 0.50, 1.0, false});
+    assert(sym_bg_storm.regime == 0U);
+    assert(sym_bg_storm.cpu_uclamp_scale == 1.0);
+
     auto sym_hot_guard = compute_symbiotic_plan({0.30, 0.40, 0.95, 65.0, 0.85, 88.0, 22.0, 5.0, 14.0, 0.45, 0.75, true});
     assert(!sym_hot_guard.boost_gpu_memory_supply && !sym_hot_guard.io_supply_boost);
     assert(sym_hot_guard.cpu_uclamp_scale <= 1.0);

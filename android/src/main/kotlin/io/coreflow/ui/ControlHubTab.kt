@@ -128,6 +128,10 @@ fun ControlHubTab(
                 val yielded = status?.oemYieldedNodes ?: 0
                 val leaves = status?.semanticKnobLeaves.orEmpty()
                 val hf = status?.hyperFluid ?: CoreFlowManager.HyperFluidStats()
+                val isBootSettle = status?.bootSettleActive == true ||
+                    status?.mode.equals("BOOT_SETTLE", ignoreCase = true)
+                val rampPct = (((status?.bootRampProgress ?: 1f) * 100f).toInt()).coerceIn(0, 100)
+                val isSoftRamp = !isBootSettle && status?.isRunning == true && rampPct < 100
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -135,6 +139,40 @@ fun ControlHubTab(
                     pressFeedbackType = PressFeedbackType.Tilt,
                     onClick = {},
                 ) {
+                    if (isBootSettle || isSoftRamp) {
+                        val badgeColor = Color(0xFF38BDF8)
+                        val badgeText = if (isBootSettle) {
+                            val sec = (status?.bootSettleDurationSec ?: 0f).toInt().coerceAtLeast(0)
+                            if (strings.isIndonesian) {
+                                "BOOT_SETTLE · Menenangkan termal pasca-boot (${sec}s · 0 tulis sysfs)"
+                            } else {
+                                "BOOT_SETTLE · Post-boot thermal calm sanctuary (${sec}s · 0 sysfs writes)"
+                            }
+                        } else {
+                            if (strings.isIndonesian) {
+                                "Soft-Start Aktif · Otoritas aktuasi ${rampPct}%"
+                            } else {
+                                "Soft-Start Active · Actuation authority ${rampPct}%"
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(badgeColor.copy(alpha = 0.14f))
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                text = badgeText,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = badgeColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -149,8 +187,20 @@ fun ControlHubTab(
                         )
                         MetricPill(
                             label = "Co-Pilot",
-                            value = if (active > 0) "$active ${strings.copilotActive}" else strings.copilotStandby,
-                            accent = if (active > 0) Color(0xFF22C55E) else Color(0xFFA78BFA),
+                            value = if (isBootSettle) {
+                                "Sanctuary"
+                            } else if (active > 0) {
+                                "$active ${strings.copilotActive}"
+                            } else {
+                                strings.copilotStandby
+                            },
+                            accent = if (isBootSettle) {
+                                Color(0xFF38BDF8)
+                            } else if (active > 0) {
+                                Color(0xFF22C55E)
+                            } else {
+                                Color(0xFFA78BFA)
+                            },
                             modifier = Modifier.weight(1.25f).fillMaxHeight(),
                         )
                         MetricPill(

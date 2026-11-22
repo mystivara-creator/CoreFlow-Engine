@@ -1,6 +1,7 @@
 #include "coreflow/frame_bridge.hpp"
 #include "coreflow/v5/hardware_probe.hpp"
 #include "coreflow/v6/app_dna_store.hpp"
+#include "coreflow/v6/boot_calm_sanctuary.hpp"
 #include "coreflow/v6/frame_pacing_sensor.hpp"
 
 #include <cassert>
@@ -192,7 +193,89 @@ int main() {
         assert(reloaded_lru.learned_count() == AppDnaStore::kMaxEntries);
     }
 
+    // 4. BootCalmSanctuary: 3-phase kernel quiescence gate, Screen-On Gate, Touch Soft Bypass & alpha(t) ramp
+    {
+        write_file(proc / "uptime", "28.45 190.12\n");
+        const double parsed_uptime = BootCalmSanctuary::read_kernel_uptime_sec(proc.string());
+        assert(std::abs(parsed_uptime - 28.45) < 1e-3);
+
+        // 4a. Warm daemon restart (uptime >= 120s) skips BOOT_SETTLE immediately
+        BootCalmSanctuary warm;
+        warm.initialize(320.0, 10000ULL);
+        assert(!warm.is_settling());
+        assert(warm.exit_reason() == "warm_daemon_restart");
+        const auto warm_dec = warm.evaluate({321.0, 11000ULL, false, false, 15.0, 1.0, 38.0, 0.0, false, true});
+        assert(!warm_dec.boot_settle_active && warm_dec.allow_learning && warm_dec.allow_storage_and_symbiotic);
+        assert(std::abs(warm_dec.ramp_alpha - 1.0) < 1e-9);
+        assert(warm_dec.exit_reason == "warm_daemon_restart");
+
+        // 4b. Cold boot: Phase 1 sanctuary, Touch-Aware Soft Bypass, Screen-On Gate, Quiescence Gate, Phase 3 Ramp
+        BootCalmSanctuary cold;
+        cold.initialize(12.0, 1000ULL);
+        assert(cold.is_settling());
+
+        // At uptime=20s (below 35s min): stays in BOOT_SETTLE, learning frozen; real-app touch allows soft UClamp ONLY
+        const auto d_launcher_touch = cold.evaluate({20.0, 9000ULL, false, false, 18.0, 2.0, 42.0, 0.1, true, false});
+        assert(d_launcher_touch.boot_settle_active && !d_launcher_touch.allow_learning);
+        assert(!d_launcher_touch.allow_touch_soft_uclamp);
+        assert(!d_launcher_touch.allow_envelope_and_semantic && !d_launcher_touch.allow_storage_and_symbiotic);
+
+        const auto d_real_touch = cold.evaluate({21.0, 10000ULL, false, false, 18.0, 2.0, 42.0, 0.1, true, true});
+        assert(d_real_touch.boot_settle_active && !d_real_touch.allow_learning);
+        assert(d_real_touch.allow_touch_soft_uclamp);
+
+        // Post-boot CPU storm (75%) resets quiescence streak; hot SoC (56C) or rising slope (+2.5C/m) blocks exit
+        assert(cold.evaluate({36.0, 25000ULL, false, false, 75.0, 2.0, 44.0, 0.0, false, false}).boot_settle_active);
+        assert(cold.evaluate({37.0, 26000ULL, false, false, 20.0, 2.0, 56.0, 0.0, false, false}).boot_settle_active);
+        assert(cold.evaluate({42.0, 31000ULL, false, false, 20.0, 2.0, 46.0, 2.2, false, false}).boot_settle_active);
+
+        // Screen-On Gate: even when uptime >= 35s + calm >= 5s + temp < 52C + slope <= 1.0, ScreenOff MUST defer exit!
+        const auto d_screen_off = cold.evaluate({44.0, 33000ULL, true, false, 15.0, 1.0, 42.0, 0.2, false, false});
+        assert(d_screen_off.boot_settle_active && !d_screen_off.needs_late_baseline_snapshot);
+
+        // Screen turns ON with quiescence satisfied -> exits with quiescence_met + one-shot Late-Baseline Snapshot!
+        const auto d_exit = cold.evaluate({45.0, 34000ULL, false, false, 15.0, 1.0, 42.0, 0.2, false, false});
+        assert(!d_exit.boot_settle_active);
+        assert(d_exit.needs_late_baseline_snapshot);
+        assert(d_exit.allow_learning);
+        assert(d_exit.exit_reason == "quiescence_met");
+        assert(d_exit.allow_uclamp && !d_exit.allow_envelope_and_semantic && !d_exit.allow_storage_and_symbiotic);
+        assert(std::abs(d_exit.settle_duration_sec - 33.0) < 0.05);
+
+        // Phase 3 Exponential Soft-Start Ramp: alpha(t) = 1 - exp(-t / 15s)
+        // t = 5s: UClamp only
+        const auto r5 = cold.evaluate({50.0, 39000ULL, false, false, 20.0, 1.0, 42.0, 0.0, false, true});
+        assert(!r5.needs_late_baseline_snapshot);
+        assert(r5.allow_uclamp && !r5.allow_envelope_and_semantic && !r5.allow_storage_and_symbiotic);
+        assert(std::abs(r5.ramp_alpha - (1.0 - std::exp(-5.0 / 15.0))) < 1e-3);
+
+        // t = 15s: +ThermalEnvelope & SemanticKnobs
+        const auto r15 = cold.evaluate({60.0, 49000ULL, false, false, 20.0, 1.0, 42.0, 0.0, false, true});
+        assert(r15.allow_uclamp && r15.allow_envelope_and_semantic && !r15.allow_storage_and_symbiotic);
+        assert(std::abs(r15.ramp_alpha - (1.0 - std::exp(-1.0))) < 1e-3);
+
+        // t = 25s: +StorageMemory & SymbioticOrchestrator
+        const auto r25 = cold.evaluate({70.0, 59000ULL, false, false, 20.0, 1.0, 42.0, 0.0, false, true});
+        assert(r25.allow_uclamp && r25.allow_envelope_and_semantic && r25.allow_storage_and_symbiotic);
+        assert(r25.ramp_alpha > r15.ramp_alpha && r25.ramp_alpha < 1.0);
+
+        // t = 30s: ramp complete -> alpha = 1.0, full 1.0x authority
+        const auto r30 = cold.evaluate({75.0, 64000ULL, false, false, 20.0, 1.0, 42.0, 0.0, false, true});
+        assert(std::abs(r30.ramp_alpha - 1.0) < 1e-9);
+        assert(std::abs(r30.ramp_uclamp_scale - 1.0) < 1e-9);
+        assert(std::abs(cold.last_ramp_alpha() - 1.0) < 1e-9);
+        assert(cold.settle_duration_sec() > 30.0);
+
+        // 4c. Max uptime timeout (120s) exits cleanly once screen is ON even under persistent storm
+        BootCalmSanctuary stormy;
+        stormy.initialize(10.0, 1000ULL);
+        assert(stormy.evaluate({125.0, 116000ULL, true, false, 92.0, 20.0, 60.0, 3.0, false, false}).boot_settle_active);
+        const auto d_timeout = stormy.evaluate({126.0, 117000ULL, false, false, 92.0, 20.0, 60.0, 3.0, false, false});
+        assert(!d_timeout.boot_settle_active && d_timeout.needs_late_baseline_snapshot);
+        assert(d_timeout.exit_reason == "max_uptime_timeout");
+    }
+
     fs::remove_all(root);
-    std::cout << "v6.2 Closed-Loop Frame Pacing, VBlank IRQ Fallback & Bayesian App DNA tests passed\n";
+    std::cout << "v6.2 Closed-Loop Frame Pacing, VBlank IRQ Fallback, Bayesian App DNA & Boot-Calm Sanctuary tests passed\n";
     return 0;
 }
