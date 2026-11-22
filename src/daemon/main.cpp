@@ -1547,8 +1547,7 @@ int main(int argc, char* argv[]) {
     HardwareProbe probe;
     HardwareTopology topo = probe.discover();
     ThermalMonitor thermal_mon;
-    NeuralPredictor neural;
-    neural.initialize("/data/adb/coreflow/models");
+    NeuralPredictor neural("/data/adb/coreflow/models");
     CentralMutationCoordinator coordinator;
     HardwareLongevityManager longevity(coordinator);
 
@@ -1615,6 +1614,7 @@ int main(int argc, char* argv[]) {
     live_status.frame_pacing_available = frame_pacing.supported();
     live_status.app_dna_learned = app_dna.learned_count();
     live_status.app_dna_flush_count = app_dna.flush_count();
+    live_status.ai_backend = std::string(neural.last_prediction().backend);
     live_status.conflicting_modules_json = read_conflicting_modules_json();
     live_status.session.started_steady_ms = steady_now_ms();
 
@@ -2744,7 +2744,8 @@ int main(int argc, char* argv[]) {
              ", memBusNodes=" + std::to_string(topo.memory_bus_nodes.size()) +
              ", oemYielded=" + std::to_string(oem_map.yielded_count()) +
              ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") +
-             ", bypassSupported=" + (longevity.is_bypass_supported() ? "yes" : "no") + ").");
+             ", bypassSupported=" + (longevity.is_bypass_supported() ? "yes" : "no") +
+             ", aiBackend=" + live_status.ai_backend + ").");
 
     reactor.run();
 

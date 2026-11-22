@@ -95,6 +95,7 @@ private:
     bool legacy_cfw1_loaded_{false};
     uint32_t cfw2_crc32_{0};
     uint16_t cfw2_flags_{0};
+    uint32_t ort_consecutive_failures_{0};
 
     // Online Recursive Least Squares (RLS) 4-parameter thermal state-space filter:
     // Predicts delta_pressure over a 1-second normalized horizon:
@@ -104,8 +105,10 @@ private:
     std::array<double, 4> prev_features_{0.0, 0.0, 0.0, 0.0};
     std::array<double, kCfw2H2Dim> prev_h2_{};
     std::array<double, 8> prev_legacy_hidden_{};
+    bool prev_used_mlp_{false};
     double prev_out0_{0.0};
     double prev_pressure_{-1.0};
+    double prev_thermal_for_vel_{-1.0};
     double ema_abs_error_{1.5};
     uint64_t samples_{0};
 
@@ -116,16 +119,22 @@ private:
     std::array<float, kCfw2H2Dim> cfw2_b2_{};
     std::array<float, kCfw2OutDim * kCfw2H2Dim> cfw2_w3_{};
     std::array<float, kCfw2OutDim> cfw2_b3_{};
+    // Immutable snapshot of output-0 head for O(1) lossless reset() without corrupting loaded model
+    std::array<float, kCfw2H2Dim> base_cfw2_w3_out0_{};
+    float base_cfw2_b3_out0_{0.05f};
 
     // Legacy 6 -> 8 -> 2 Micro-MLP weights (used only when equilibrium.cfw CFW1 is loaded)
     std::array<double, 48> legacy_w1_{};
     std::array<double, 8> legacy_b1_{};
     std::array<double, 16> legacy_w2_{};
     std::array<double, 2> legacy_b2_{};
+    std::array<double, 8> base_legacy_w2_out0_{};
+    double base_legacy_b2_out0_{0.05};
 
     NeuralPrediction last_{};
 
     void init_default_network() noexcept;
+    void reset_online_state() noexcept;
     bool try_load_cfw2(const std::string& path) noexcept;
     bool try_load_legacy_cfw1(const std::string& path) noexcept;
     bool try_load_onnx_runtime(const std::string& onnx_path) noexcept;

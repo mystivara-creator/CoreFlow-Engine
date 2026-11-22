@@ -49,6 +49,16 @@ def clamp(x: float, lo: float, hi: float) -> float:
     return lo if x < lo else (hi if x > hi else x)
 
 
+def safe_float(val: object, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        out = float(val)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
 def logit(p: float) -> float:
     p_safe = clamp(p, 0.02, 0.98)
     return math.log(p_safe / (1.0 - p_safe))
@@ -114,20 +124,20 @@ def extract_samples_from_diag(path: Path) -> List[Sample]:
     if not isinstance(history, list) or len(history) < 12:
         return []
 
-    base_mem_psi = float(status.get("memPsi", 0.0) or 0.0)
-    base_io_psi = float(status.get("ioPsi", 0.0) or 0.0)
-    base_gpu = float(status.get("gpuBusyPct", 0.0) or 0.0)
-    base_render = float(status.get("renderPressure", 0.0) or 0.0)
+    base_mem_psi = max(0.0, safe_float(status.get("memPsi"), 0.0))
+    base_io_psi = max(0.0, safe_float(status.get("ioPsi"), 0.0))
+    base_gpu = clamp(safe_float(status.get("gpuBusyPct"), 0.0), 0.0, 100.0)
+    base_render = clamp(safe_float(status.get("renderPressure"), 0.0), 0.0, 1.0)
     hyper = status.get("hyperFluid", {})
-    base_jank = float(hyper.get("jankRatio", 0.0) or 0.0) if isinstance(hyper, dict) else 0.0
+    base_jank = clamp(safe_float(hyper.get("jankRatio"), 0.0), 0.0, 1.0) if isinstance(hyper, dict) else 0.0
     battery = status.get("batteryPower", {})
     charge_mw = 0.0
     if isinstance(battery, dict):
         # Support either explicit power mW or voltage/current estimate
         if "powerMw" in battery and battery["powerMw"] is not None:
-            charge_mw = max(0.0, float(battery["powerMw"]))
+            charge_mw = max(0.0, safe_float(battery["powerMw"], 0.0))
         elif "chargingPowerMw" in battery and battery["chargingPowerMw"] is not None:
-            charge_mw = max(0.0, float(battery["chargingPowerMw"]))
+            charge_mw = max(0.0, safe_float(battery["chargingPowerMw"], 0.0))
 
     samples: List[Sample] = []
     n = len(history)
@@ -136,9 +146,10 @@ def extract_samples_from_diag(path: Path) -> List[Sample]:
         prev = history[i - 1]
         if not isinstance(cur, dict) or not isinstance(prev, dict):
             continue
-        ts_cur = float(cur.get("ts", i * 1000))
-        ts_prev = float(prev.get("ts", (i - 1) * 1000))
-        dt = clamp((ts_cur - ts_prev) / 1000.0, 0.2, 30.0)
+        ts_cur = safe_float(cur.get("ts"), float(i * 1000))
+        ts_prev = safe_float(prev.get("ts"), float((i - 1) * 1000))
+        raw_dt_sec = (ts_cur - ts_prev) / 1000.0
+        dt = clamp(raw_dt_sec, 0.2, 30.0) if raw_dt_sec > 0.0 else 1.0
 
         # Find future point ~10s ahead (between 7s and 15s)
         future = None
@@ -146,7 +157,7 @@ def extract_samples_from_diag(path: Path) -> List[Sample]:
             cand = history[j]
             if not isinstance(cand, dict):
                 continue
-            ts_j = float(cand.get("ts", j * 1000))
+            ts_j = safe_float(cand.get("ts"), float(j * 1000))
             horizon = (ts_j - ts_cur) / 1000.0
             if horizon >= 7.0:
                 if horizon <= 15.0:
@@ -157,11 +168,11 @@ def extract_samples_from_diag(path: Path) -> List[Sample]:
         if future is None:
             continue
 
-        p_cur = clamp(float(cur.get("pressure", 45.0)), 0.0, 130.0)
-        p_prev = clamp(float(prev.get("pressure", p_cur)), 0.0, 130.0)
-        p_fut = clamp(float(future.get("pressure", p_cur)), 0.0, 130.0)
-        cpu_pct = clamp(float(cur.get("cpu", 10.0)), 0.0, 100.0)
-        scale = clamp(float(cur.get("scale", 1.0)), 0.4, 1.0)
+        p_cur = clamp(safe_float(cur.get("pressure"), 45.0), 0.0, 130.0)
+        p_prev = clamp(safe_float(prev.get("pressure"), p_cur), 0.0, 130.0)
+        p_fut = clamp(safe_float(future.get("pressure"), p_cur), 0.0, 130.0)
+        cpu_pct = clamp(safe_float(cur.get("cpu"), 10.0), 0.0, 100.0)
+        scale = clamp(safe_float(cur.get("scale"), 1.0), 0.4, 1.0)
 
         velocity = clamp((p_cur - p_prev) / dt, -10.0, 10.0)
         # Approximate CPU PSI from CPU load burst when per-sample PSI isn't stored in ring buffer
@@ -199,6 +210,9 @@ def extract_samples_from_diag(path: Path) -> List[Sample]:
 class MicroMlp:
     def __init__(self, flat_weights: Sequence[float], use_silu: bool = False) -> None:
         self.use_silu = use_silu
+        self.load_flat(flat_weights)
+
+    def load_flat(self, flat_weights: Sequence[float]) -> None:
         idx = 0
         n_w1 = CFW2_H1_DIM * CFW2_IN_DIM
         self.w1 = list(flat_weights[idx : idx + n_w1])
@@ -269,6 +283,8 @@ class MicroMlp:
     ) -> Tuple[float, float]:
         rng = random.Random(seed)
         before_mse = self.evaluate_mse(dataset)
+        best_mse = before_mse
+        best_weights = self.flatten()
         order = list(range(len(dataset)))
 
         for epoch in range(epochs):
@@ -321,8 +337,14 @@ class MicroMlp:
                         )
                     self.b1[i] = clamp(self.b1[i] - step_lr * g, -CFW2_MAX_ABS_WEIGHT, CFW2_MAX_ABS_WEIGHT)
 
-        after_mse = self.evaluate_mse(dataset)
-        return before_mse, after_mse
+            epoch_mse = self.evaluate_mse(dataset)
+            if math.isfinite(epoch_mse) and epoch_mse < best_mse:
+                best_mse = epoch_mse
+                best_weights = self.flatten()
+
+        # Always retain the lowest-MSE finite checkpoint (prevents divergence on aggressive --lr)
+        self.load_flat(best_weights)
+        return before_mse, best_mse
 
 
 def export_onnx_graph(mlp: MicroMlp, out_path: Path) -> None:
@@ -392,9 +414,17 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--export-onnx", metavar="OUT_ONNX", help="Optionally export matching ONNX opset-13 graph")
     args = parser.parse_args(argv)
 
+    if args.epochs < 1 or args.epochs > 5000:
+        parser.error("--epochs must be within [1, 5000]")
+    if not math.isfinite(args.lr) or args.lr <= 0.0 or args.lr > 1.0:
+        parser.error("--lr must be finite and within (0, 1.0]")
+
     diag_samples: List[Sample] = []
     for diag_file in args.diag:
-        diag_samples.extend(extract_samples_from_diag(Path(diag_file)))
+        p = Path(diag_file)
+        if not p.is_file():
+            parser.error(f"Diagnostic file not found: {diag_file}")
+        diag_samples.extend(extract_samples_from_diag(p))
 
     anchors = physics_boundary_samples()
     # Keep safety boundary anchors balanced against real-device telemetry captures

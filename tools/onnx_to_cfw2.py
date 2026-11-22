@@ -54,6 +54,8 @@ def pack_cfw2(
     out_dim: int = CFW2_OUT_DIM,
     flags: int = 0,
 ) -> bytes:
+    if (flags & ~0x0001) != 0:
+        raise ValueError(f"Unsupported CFW2 flags bitmask: 0x{flags:04x}")
     validate_weights(weights, in_dim, h1, h2, out_dim)
     payload = struct.pack(f"<{len(weights)}f", *weights)
     crc = zlib.crc32(payload) & 0xFFFFFFFF
@@ -85,6 +87,8 @@ def unpack_cfw2(blob: bytes) -> Tuple[dict, List[float]]:
         raise ValueError(f"Invalid magic: {magic!r}")
     if ver != CFW2_VERSION:
         raise ValueError(f"Unsupported CFW2 version: {ver}")
+    if (flags & ~0x0001) != 0:
+        raise ValueError(f"Unsupported CFW2 flags: 0x{flags:04x}")
     if reserved != 0:
         raise ValueError(f"Non-zero reserved field: {reserved}")
 
@@ -101,6 +105,7 @@ def unpack_cfw2(blob: bytes) -> Tuple[dict, List[float]]:
     meta = {
         "version": ver,
         "flags": flags,
+        "activation": "silu" if (flags & 1) else "tanh",
         "dims": (in_dim, h1, h2, out_dim),
         "crc32": f"0x{crc_actual:08x}",
         "bytes": len(blob),
@@ -164,8 +169,8 @@ def build_physics_baseline_weights() -> List[float]:
     return w1 + b1 + w2 + b2 + w3 + b3
 
 
-def extract_from_onnx(onnx_path: Path) -> Tuple[List[float], Tuple[int, int, int, int]]:
-    """Extract weights from a standard ONNX 3-layer MLP (`Gemm` or `MatMul`+`Add`)."""
+def extract_from_onnx(onnx_path: Path) -> Tuple[List[float], Tuple[int, int, int, int], int]:
+    """Extract weights and activation flag from a standard ONNX 3-layer MLP (`Gemm` or `MatMul`+`Add`)."""
     try:
         import onnx  # type: ignore
         from onnx import numpy_helper  # type: ignore
@@ -181,20 +186,40 @@ def extract_from_onnx(onnx_path: Path) -> Tuple[List[float], Tuple[int, int, int
 
     mats = []
     biases = []
+    saw_tanh = False
+    saw_sigmoid = False
+    saw_mul = False
     for node in model.graph.node:
-        if node.op_type == "Gemm" and len(node.input) >= 2:
+        if node.op_type == "Tanh":
+            saw_tanh = True
+        elif node.op_type == "Sigmoid":
+            saw_sigmoid = True
+        elif node.op_type == "Mul":
+            saw_mul = True
+        elif node.op_type == "Gemm" and len(node.input) >= 2:
             w = init_map.get(node.input[1])
             b = init_map.get(node.input[2]) if len(node.input) >= 3 else None
             if w is None:
                 continue
+            trans_a = 0
             trans_b = 0
+            alpha = 1.0
+            beta = 1.0
             for attr in node.attribute:
-                if attr.name == "transB":
+                if attr.name == "transA":
+                    trans_a = int(attr.i)
+                elif attr.name == "transB":
                     trans_b = int(attr.i)
-            w_arr = w if trans_b == 1 else w.T
-            mats.append(w_arr.astype("float32"))
+                elif attr.name == "alpha":
+                    alpha = float(attr.f)
+                elif attr.name == "beta":
+                    beta = float(attr.f)
+            if trans_a != 0:
+                raise ValueError("Unsupported Gemm transA != 0 in CFW2 compiler")
+            w_arr = (w if trans_b == 1 else w.T).astype("float32") * alpha
+            mats.append(w_arr)
             biases.append(
-                b.astype("float32").reshape(-1)
+                (b.astype("float32").reshape(-1) * beta)
                 if b is not None
                 else [0.0] * int(w_arr.shape[0])
             )
@@ -218,11 +243,13 @@ def extract_from_onnx(onnx_path: Path) -> Tuple[List[float], Tuple[int, int, int
     if h1 != h1_check or h2 != h2_check:
         raise ValueError("Layer dimension chain mismatch in ONNX graph")
 
+    flags = 1 if (saw_sigmoid and saw_mul and not saw_tanh) else 0
+
     flat: List[float] = []
     for mat, bias in zip(mats, biases):
         flat.extend(float(x) for x in mat.reshape(-1))
         flat.extend(float(x) for x in bias)
-    return flat, (in_dim, h1, h2, out_dim)
+    return flat, (in_dim, h1, h2, out_dim), flags
 
 
 def main(argv: List[str]) -> int:
@@ -246,20 +273,23 @@ def main(argv: List[str]) -> int:
     if args.from_onnx:
         if not args.output:
             parser.error("--output is required with --from-onnx")
-        weights, (in_dim, h1, h2, out_dim) = extract_from_onnx(Path(args.from_onnx))
-        blob = pack_cfw2(weights, in_dim=in_dim, h1=h1, h2=h2, out_dim=out_dim)
+        weights, (in_dim, h1, h2, out_dim), flags = extract_from_onnx(Path(args.from_onnx))
+        blob = pack_cfw2(weights, in_dim=in_dim, h1=h1, h2=h2, out_dim=out_dim, flags=flags)
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(blob)
         meta, _ = unpack_cfw2(blob)
-        print(f"Compiled ONNX -> {out_path} ({meta['bytes']} B, dims={meta['dims']}, crc32={meta['crc32']})")
+        print(
+            f"Compiled ONNX -> {out_path} ({meta['bytes']} B, act={meta['activation']}, "
+            f"dims={meta['dims']}, crc32={meta['crc32']})"
+        )
         return 0
 
     if args.inspect:
         blob = Path(args.inspect).read_bytes()
         meta, weights = unpack_cfw2(blob)
         print(
-            f"CFW2 VALID: version={meta['version']} dims={meta['dims']} "
+            f"CFW2 VALID: version={meta['version']} act={meta['activation']} dims={meta['dims']} "
             f"params={meta['params']} size={meta['bytes']}B crc32={meta['crc32']} "
             f"range=[{min(weights):.3f}, {max(weights):.3f}]"
         )

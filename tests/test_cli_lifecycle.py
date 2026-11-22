@@ -195,4 +195,29 @@ with tempfile.TemporaryDirectory(prefix="coreflow-cfw2-cli-") as tmpdir:
     )
     assert insp2.returncode == 0 and "CFW2 VALID" in insp2.stdout
 
+    # Verify trainer safely survives null/corrupt fields and aggressive learning rate via best-checkpoint rollback
+    corrupt_diag = Path(tmpdir) / "corrupt_diag.json"
+    corrupt_diag.write_text(json.dumps({
+        "status": {
+            "memPsi": None,
+            "ioPsi": "bad",
+            "gpuBusyPct": None,
+            "history": [
+                {"ts": 1000 * i, "pressure": None if i == 3 else 45.0 + 0.5 * i, "cpu": None if i == 5 else 20.0, "scale": 1.0}
+                for i in range(16)
+            ],
+        }
+    }), encoding="utf-8")
+    trained_corrupt = Path(tmpdir) / "trained_corrupt.cfw2"
+    trn2 = subprocess.run(
+        [
+            sys.executable, str(repo / "tools/train_cfw2_from_diag.py"),
+            "--diag", str(corrupt_diag), "--epochs", "6", "--lr", "0.5",
+            "-o", str(trained_corrupt),
+        ],
+        capture_output=True, text=True, timeout=20, check=False,
+    )
+    assert trn2.returncode == 0, f"train_cfw2_from_diag failed on corrupt diag: {trn2.stderr}"
+    assert trained_corrupt.stat().st_size == 1700
+
 print("CoreFlow v6.0.0-R Sovereign Rebuild CLI lifecycle contract PASS")

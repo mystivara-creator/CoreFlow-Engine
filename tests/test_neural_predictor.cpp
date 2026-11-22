@@ -131,6 +131,45 @@ int main() {
         });
         assert(!bad.valid);
 
+        // Empty or relative model_dir must safely fall back to embedded Tier 3
+        {
+            coreflow::NeuralPredictor empty_dir_pred("");
+            assert(empty_dir_pred.last_prediction().backend == "embedded-rls-mlp");
+            empty_dir_pred.initialize("relative/models");
+            assert(empty_dir_pred.last_prediction().backend == "embedded-rls-mlp");
+        }
+
+        // Missing PSI must remain explicit and must not train RLS with synthetic zeros,
+        // yet pure thermal velocity should still detect rapid heating!
+        {
+            coreflow::NeuralPredictor no_psi_pred(dir.string());
+            const auto p1 = no_psi_pred.infer_and_learn({
+                .thermal_pressure = 56.0,
+                .cpu_psi = 0.0,
+                .memory_psi = 0.0,
+                .io_psi = 0.0,
+                .cpu_psi_valid = false,
+                .memory_psi_valid = false,
+                .io_psi_valid = false,
+                .current_scale = 1.0,
+                .elapsed_seconds = 1.0,
+            });
+            assert(p1.valid && p1.confidence <= 0.35);
+            const auto p2 = no_psi_pred.infer_and_learn({
+                .thermal_pressure = 60.0,
+                .cpu_psi = 0.0,
+                .memory_psi = 0.0,
+                .io_psi = 0.0,
+                .cpu_psi_valid = false,
+                .memory_psi_valid = false,
+                .io_psi_valid = false,
+                .current_scale = 1.0,
+                .elapsed_seconds = 1.0,
+            });
+            assert(p2.valid && p2.confidence <= 0.35);
+            assert(p2.workload_class == "thermal_surge");
+        }
+
         const auto partial = predictor.infer_and_learn({
             .thermal_pressure = 43.0,
             .cpu_psi = 0.0,
@@ -228,34 +267,47 @@ int main() {
         std::vector<float> valid_weights(kCfw2ParamCount, 0.08f);
         const fs::path cfw2_path = dir / "equilibrium.cfw2";
 
-        // 2a. Valid CFW2 (tanh, flags = 0)
+        // 2a. Valid CFW2 (tanh, flags = 0) + lossless O(1) reset() preservation
         write_bytes(cfw2_path, build_cfw2_blob(0U, 10U, valid_weights));
         coreflow::NeuralPredictor predictor(dir.string());
-        const auto pred_tanh = predictor.infer_and_learn({
+        const coreflow::NeuralInput cfw2_probe{
             .thermal_pressure = 50.0,
             .cpu_psi = 8.0,
             .memory_psi = 1.0,
             .io_psi = 1.0,
             .current_scale = 0.95,
             .elapsed_seconds = 1.0,
-        });
+        };
+        const auto pred_tanh = predictor.infer_and_learn(cfw2_probe);
         assert(pred_tanh.valid);
         assert(pred_tanh.cfw2_active);
         assert(!pred_tanh.onnx_active);
         assert(pred_tanh.cfw2_crc32 != 0U);
         assert(pred_tanh.backend == "cfw2-micro-mlp");
 
+        // Train online for a few ticks, then reset(): must preserve CFW2 weights & exact fresh output!
+        for (int i = 0; i < 4; ++i) {
+            (void)predictor.infer_and_learn({
+                .thermal_pressure = 75.0 + i * 3.0,
+                .cpu_psi = 40.0,
+                .memory_psi = 10.0,
+                .io_psi = 8.0,
+                .current_scale = 0.80,
+                .elapsed_seconds = 1.0,
+            });
+        }
+        predictor.reset();
+        assert(predictor.last_prediction().cfw2_active);
+        assert(predictor.last_prediction().backend == "cfw2-micro-mlp");
+        const auto pred_after_reset = predictor.infer_and_learn(cfw2_probe);
+        assert(pred_after_reset.cfw2_active);
+        assert(pred_after_reset.backend == "cfw2-micro-mlp");
+        assert(std::abs(pred_after_reset.predicted_pressure_10s - pred_tanh.predicted_pressure_10s) < 1e-6);
+
         // 2b. Valid CFW2 (SiLU, flags = 1)
         write_bytes(cfw2_path, build_cfw2_blob(1U, 10U, valid_weights));
         predictor.initialize(dir.string());
-        const auto pred_silu = predictor.infer_and_learn({
-            .thermal_pressure = 50.0,
-            .cpu_psi = 8.0,
-            .memory_psi = 1.0,
-            .io_psi = 1.0,
-            .current_scale = 0.95,
-            .elapsed_seconds = 1.0,
-        });
+        const auto pred_silu = predictor.infer_and_learn(cfw2_probe);
         assert(pred_silu.valid);
         assert(pred_silu.cfw2_active);
         assert(pred_silu.backend == "cfw2-micro-mlp");
@@ -281,7 +333,16 @@ int main() {
         assert(predictor.last_prediction().backend == "embedded-rls-mlp");
         assert(!predictor.last_prediction().cfw2_active);
 
-        // 2f. Symlink equilibrium.cfw2 must be rejected via O_NOFOLLOW
+        // 2f. World-writable CFW2 must be rejected cleanly
+        write_bytes(cfw2_path, build_cfw2_blob(0U, 10U, valid_weights));
+        fs::permissions(cfw2_path, fs::perms::owner_read | fs::perms::owner_write |
+                                   fs::perms::group_read | fs::perms::others_read | fs::perms::others_write,
+                        fs::perm_options::replace);
+        predictor.initialize(dir.string());
+        assert(predictor.last_prediction().backend == "embedded-rls-mlp");
+        assert(!predictor.last_prediction().cfw2_active);
+
+        // 2g. Symlink equilibrium.cfw2 must be rejected via O_NOFOLLOW
         const fs::path real_target = dir / "real_target.cfw2";
         write_bytes(real_target, build_cfw2_blob(0U, 10U, valid_weights));
         fs::remove(cfw2_path);
@@ -341,13 +402,15 @@ int main() {
         std::vector<float> fallback_weights(kCfw2ParamCount, 0.05f);
         write_bytes(cfw2_path, build_cfw2_blob(0U, 10U, fallback_weights));
 
-        // 4a. Live ONNX session + single-threaded/arena-free options + tensor inference + 0 leaks
+        // 4a. Live ONNX session + startup dry-run + single-threaded/arena-free options + 0 leaks
         reset_stats();
         write_text(onnx_path, "MOCK_VALID_ONNX_V1");
         {
             coreflow::NeuralPredictor predictor(dir.string());
             assert(options_mask() == 0x1F);
+            assert(run_count() == 1); // Startup dry-run self-test succeeded
             assert(predictor.last_prediction().onnx_active);
+            assert(!predictor.last_prediction().cfw2_active);
             assert(predictor.last_prediction().backend == "onnx-runtime-live");
 
             const auto low_jank = predictor.infer_and_learn({
@@ -383,7 +446,7 @@ int main() {
             assert(high_jank.onnx_active);
             assert(high_jank.jank_risk > low_jank.jank_risk + 0.30);
             assert(high_jank.recommended_scale < low_jank.recommended_scale);
-            assert(run_count() == 2);
+            assert(run_count() == 3); // 1 dry-run + 2 live ticks
         }
         assert(live_handles() == 0);
 
@@ -398,27 +461,83 @@ int main() {
         }
         assert(live_handles() == 0);
 
-        // 4c. NaN output from ONNX Run must cleanly release output tensor and fall back to CFW2
+        // 4c. Always-NaN ONNX model must be rejected immediately during startup dry-run self-test
         reset_stats();
         write_text(onnx_path, "NAN_OUTPUT");
         {
             coreflow::NeuralPredictor predictor(dir.string());
-            const auto fb = predictor.infer_and_learn({
-                .thermal_pressure = 55.0,
-                .cpu_psi = 12.0,
-                .memory_psi = 2.0,
-                .io_psi = 2.0,
-                .current_scale = 0.90,
-                .elapsed_seconds = 1.0,
-            });
-            assert(fb.valid);
-            assert(!fb.onnx_active);
-            assert(fb.cfw2_active);
-            assert(fb.backend == "cfw2-micro-mlp");
-            assert(std::isfinite(fb.predicted_pressure_10s));
             assert(run_count() == 1);
+            assert(!predictor.last_prediction().onnx_active);
+            assert(predictor.last_prediction().cfw2_active);
+            assert(predictor.last_prediction().backend == "cfw2-micro-mlp");
+            assert(live_handles() == 0);
         }
         assert(live_handles() == 0);
+
+        // 4d. Runtime NaN on hot input triggers per-tick fallback, and 3 strikes trip circuit breaker
+        reset_stats();
+        write_text(onnx_path, "NAN_ON_HOT");
+        {
+            coreflow::NeuralPredictor predictor(dir.string());
+            assert(predictor.last_prediction().onnx_active);
+            assert(run_count() == 1); // dry-run passed
+
+            // Cool tick runs normally on ORT
+            const auto cool_ok = predictor.infer_and_learn({
+                .thermal_pressure = 48.0,
+                .cpu_psi = 6.0,
+                .memory_psi = 1.0,
+                .io_psi = 1.0,
+                .current_scale = 0.95,
+                .elapsed_seconds = 1.0,
+            });
+            assert(cool_ok.valid && cool_ok.onnx_active && cool_ok.backend == "onnx-runtime-live");
+            assert(run_count() == 2);
+
+            // 3 consecutive hot ticks produce NaN -> per-tick CFW2 fallback -> 3rd strike closes ORT!
+            for (int strike = 0; strike < 3; ++strike) {
+                const auto fb = predictor.infer_and_learn({
+                    .thermal_pressure = 84.0,
+                    .cpu_psi = 25.0,
+                    .memory_psi = 4.0,
+                    .io_psi = 3.0,
+                    .current_scale = 0.85,
+                    .elapsed_seconds = 1.0,
+                });
+                assert(fb.valid && !fb.onnx_active && fb.cfw2_active);
+                assert(fb.backend == "cfw2-micro-mlp");
+                assert(std::isfinite(fb.predicted_pressure_10s));
+            }
+            assert(run_count() == 5);
+            // Circuit breaker must have already closed ORT cleanly (0 live handles BEFORE destructor!)
+            assert(live_handles() == 0);
+
+            // Subsequent cool tick stays on CFW2 without invoking broken ORT again
+            const auto after_trip = predictor.infer_and_learn({
+                .thermal_pressure = 48.0,
+                .cpu_psi = 6.0,
+                .memory_psi = 1.0,
+                .io_psi = 1.0,
+                .current_scale = 0.95,
+                .elapsed_seconds = 1.0,
+            });
+            assert(after_trip.valid && !after_trip.onnx_active && after_trip.cfw2_active);
+            assert(run_count() == 5);
+        }
+        assert(live_handles() == 0);
+
+        // 4e. Symlinked ORT shared library must be rejected via O_NOFOLLOW
+        const fs::path sym_ort = dir / "symlink_ort.so";
+        fs::create_symlink(COREFLOW_MOCK_ORT_PATH, sym_ort);
+        assert(::setenv("COREFLOW_TEST_ONNX_LIB", sym_ort.c_str(), 1) == 0);
+        write_text(onnx_path, "MOCK_VALID_ONNX_V1");
+        {
+            coreflow::NeuralPredictor predictor(dir.string());
+            assert(!predictor.last_prediction().onnx_active);
+            assert(predictor.last_prediction().cfw2_active);
+            assert(predictor.last_prediction().backend == "cfw2-micro-mlp");
+        }
+        fs::remove(sym_ort);
 
         ::unsetenv("COREFLOW_TEST_ONNX_LIB");
         (void)::dlclose(inspect_handle);

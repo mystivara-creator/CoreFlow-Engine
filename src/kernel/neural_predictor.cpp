@@ -187,11 +187,24 @@ float read_le_f32(const uint8_t* p) noexcept {
     return out;
 }
 
-bool regular_file_exists(const std::string& path) noexcept {
+constexpr size_t kOnnxModelMaxBytes = 16U * 1024U * 1024U; // 16 MiB advisory model cap
+constexpr size_t kOrtLibMaxBytes = 64U * 1024U * 1024U;    // 64 MiB shared library cap
+constexpr uint32_t kMaxOrtConsecutiveFailures = 3U;
+
+bool validate_trusted_file(const std::string& path, size_t max_bytes, bool enforce_root_owner) noexcept {
+    if (path.empty() || path[0] != '/') return false;
     UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return false;
     struct stat st{};
-    return ::fstat(fd.get(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0;
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    if (st.st_size <= 0 || static_cast<uint64_t>(st.st_size) > static_cast<uint64_t>(max_bytes)) {
+        return false;
+    }
+    if ((st.st_mode & S_IWOTH) != 0) return false;
+    if (enforce_root_owner && ::geteuid() == 0) {
+        if (st.st_uid != 0 || (st.st_mode & S_IWGRP) != 0) return false;
+    }
+    return true;
 }
 
 double activate(double x, bool use_silu) noexcept {
@@ -291,27 +304,51 @@ void NeuralPredictor::init_default_network() noexcept {
     };
     cfw2_b3_ = {0.05f, -0.65f, 0.70f};
     cfw2_flags_ = 0U;
+    for (size_t h = 0; h < kCfw2H2Dim; ++h) {
+        base_cfw2_w3_out0_[h] = cfw2_w3_[h];
+    }
+    base_cfw2_b3_out0_ = cfw2_b3_[0];
 
     // Legacy 6 -> 8 -> 2 defaults (used only if CFW1 text weights are loaded)
     legacy_w1_.fill(0.0);
     legacy_b1_.fill(0.0);
     legacy_w2_.fill(0.0);
     legacy_b2_ = {0.05, 0.65};
+    base_legacy_w2_out0_.fill(0.0);
+    base_legacy_b2_out0_ = legacy_b2_[0];
 }
 
-void NeuralPredictor::reset() noexcept {
-    init_default_network();
+void NeuralPredictor::reset_online_state() noexcept {
+    // Reinitialize 4x4 RLS covariance matrix P = 10 * I and default linear slope prior
+    rls_cov_.fill(0.0);
+    for (size_t i = 0; i < 4; ++i) {
+        rls_cov_[i * 4 + i] = 10.0;
+    }
+    rls_weights_ = {0.0, 0.02, 0.14, -0.02};
+
+    // Restore output-0 head to immutable snapshot of active model (CFW2, CFW1, or embedded)
+    for (size_t h = 0; h < kCfw2H2Dim; ++h) {
+        cfw2_w3_[h] = base_cfw2_w3_out0_[h];
+    }
+    cfw2_b3_[0] = base_cfw2_b3_out0_;
+    for (size_t h = 0; h < 8U; ++h) {
+        legacy_w2_[h] = base_legacy_w2_out0_[h];
+    }
+    legacy_b2_[0] = base_legacy_b2_out0_;
+
     prev_features_.fill(0.0);
     prev_h2_.fill(0.0);
     prev_legacy_hidden_.fill(0.0);
+    prev_used_mlp_ = false;
     prev_out0_ = 0.0;
     prev_pressure_ = -1.0;
+    prev_thermal_for_vel_ = -1.0;
     ema_abs_error_ = 1.5;
     samples_ = 0;
     last_ = NeuralPrediction{
         .valid = true,
         .onnx_active = onnx_loaded_,
-        .cfw2_active = cfw2_loaded_,
+        .cfw2_active = cfw2_loaded_ && !onnx_loaded_,
         .cfw2_crc32 = cfw2_crc32_,
         .predicted_pressure_10s = 45.0,
         .jank_risk = 0.0,
@@ -323,6 +360,10 @@ void NeuralPredictor::reset() noexcept {
         .workload_class = "balanced",
         .backend = active_backend_name(),
     };
+}
+
+void NeuralPredictor::reset() noexcept {
+    reset_online_state();
 }
 
 void NeuralPredictor::close_onnx_runtime() noexcept {
@@ -349,9 +390,11 @@ void NeuralPredictor::close_onnx_runtime() noexcept {
         ort_state_ = nullptr;
     }
     onnx_loaded_ = false;
+    ort_consecutive_failures_ = 0U;
 }
 
 bool NeuralPredictor::try_load_cfw2(const std::string& path) noexcept {
+    if (path.empty() || path[0] != '/') return false;
     UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return false;
     struct stat st{};
@@ -360,12 +403,15 @@ bool NeuralPredictor::try_load_cfw2(const std::string& path) noexcept {
         st.st_size > static_cast<off_t>(kCfw2MaxFileBytes)) {
         return false;
     }
+    if ((st.st_mode & S_IWOTH) != 0) return false;
+    if (::geteuid() == 0 && (st.st_uid != 0 || (st.st_mode & S_IWGRP) != 0)) return false;
 
     std::vector<uint8_t> raw;
     raw.reserve(static_cast<size_t>(st.st_size));
     uint8_t buf[4096];
     while (raw.size() <= kCfw2MaxFileBytes) {
-        const ssize_t n = ::read(fd.get(), buf, sizeof(buf));
+        const size_t remaining = (kCfw2MaxFileBytes + 1U) - raw.size();
+        const ssize_t n = ::read(fd.get(), buf, std::min(sizeof(buf), remaining));
         if (n > 0) {
             raw.insert(raw.end(), buf, buf + n);
             continue;
@@ -432,18 +478,25 @@ bool NeuralPredictor::try_load_cfw2(const std::string& path) noexcept {
     cfw2_b2_ = cand_b2;
     cfw2_w3_ = cand_w3;
     cfw2_b3_ = cand_b3;
+    for (size_t h = 0; h < kCfw2H2Dim; ++h) {
+        base_cfw2_w3_out0_[h] = cand_w3[h];
+    }
+    base_cfw2_b3_out0_ = cand_b3[0];
     cfw2_flags_ = flags;
     cfw2_crc32_ = actual_crc;
     return true;
 }
 
 bool NeuralPredictor::try_load_legacy_cfw1(const std::string& path) noexcept {
+    if (path.empty() || path[0] != '/') return false;
     UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return false;
     struct stat st{};
     if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 16384) {
         return false;
     }
+    if ((st.st_mode & S_IWOTH) != 0) return false;
+    if (::geteuid() == 0 && (st.st_uid != 0 || (st.st_mode & S_IWGRP) != 0)) return false;
 
     std::string content;
     content.reserve(static_cast<size_t>(st.st_size));
@@ -487,26 +540,39 @@ bool NeuralPredictor::try_load_legacy_cfw1(const std::string& path) noexcept {
     legacy_b1_ = cand_b1;
     legacy_w2_ = cand_w2;
     legacy_b2_ = cand_b2;
+    for (size_t h = 0; h < 8U; ++h) {
+        base_legacy_w2_out0_[h] = cand_w2[h];
+    }
+    base_legacy_b2_out0_ = cand_b2[0];
     return true;
 }
 
 bool NeuralPredictor::try_load_onnx_runtime(const std::string& onnx_path) noexcept {
-    if (!regular_file_exists(onnx_path)) return false;
+    if (!validate_trusted_file(onnx_path, kOnnxModelMaxBytes, /*enforce_root_owner=*/true)) {
+        return false;
+    }
 
-    std::vector<const char*> candidates;
+    struct Candidate {
+        const char* path;
+        bool enforce_root_owner;
+    };
+    std::vector<Candidate> candidates;
 #ifdef COREFLOW_ENABLE_TEST_HOOKS
     const char* test_ort_lib = std::getenv("COREFLOW_TEST_ONNX_LIB");
     if (test_ort_lib != nullptr && test_ort_lib[0] != '\0') {
-        candidates.push_back(test_ort_lib);
+        candidates.push_back({test_ort_lib, false});
     }
 #endif
-    candidates.push_back("/data/adb/coreflow/lib/libonnxruntime.so");
-    candidates.push_back("/system/lib64/libonnxruntime.so");
-    candidates.push_back("/vendor/lib64/libonnxruntime.so");
-    candidates.push_back("libonnxruntime.so");
+    // Strict absolute trusted paths only (never relative dlopen under root daemon)
+    candidates.push_back({"/data/adb/coreflow/lib/libonnxruntime.so", true});
+    candidates.push_back({"/system/lib64/libonnxruntime.so", true});
+    candidates.push_back({"/vendor/lib64/libonnxruntime.so", true});
 
-    for (const char* candidate : candidates) {
-        void* handle = ::dlopen(candidate, RTLD_NOW | RTLD_LOCAL);
+    for (const auto& candidate : candidates) {
+        if (!validate_trusted_file(candidate.path, kOrtLibMaxBytes, candidate.enforce_root_owner)) {
+            continue;
+        }
+        void* handle = ::dlopen(candidate.path, RTLD_NOW | RTLD_LOCAL);
         if (handle == nullptr) continue;
 
         auto* sym = ::dlsym(handle, "OrtGetApiBase");
@@ -604,7 +670,15 @@ bool NeuralPredictor::try_load_onnx_runtime(const std::string& onnx_path) noexce
         if (ok) {
             ort_state_ = state;
             onnx_loaded_ = true;
-            return true;
+            ort_consecutive_failures_ = 0U;
+            // Startup dry-run self-test: reject mismatched shapes, non-float32, or always-NaN models immediately
+            const std::array<float, kCfw2InDim> probe_in{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+            std::array<double, kCfw2OutDim> probe_out{};
+            if (run_onnx_inference(probe_in, probe_out)) {
+                return true;
+            }
+            close_onnx_runtime();
+            continue;
         }
 
         ort_state_ = state;
@@ -633,6 +707,7 @@ bool NeuralPredictor::run_onnx_inference(
             2U,
             kOnnxTensorFloat,
             &in_tensor)) || in_tensor == nullptr) {
+        if (in_tensor != nullptr) api->ReleaseValue(in_tensor);
         return false;
     }
 
@@ -649,7 +724,10 @@ bool NeuralPredictor::run_onnx_inference(
         1U,
         &out_tensor));
     api->ReleaseValue(in_tensor);
-    if (!ran || out_tensor == nullptr) return false;
+    if (!ran || out_tensor == nullptr) {
+        if (out_tensor != nullptr) api->ReleaseValue(out_tensor);
+        return false;
+    }
 
     bool valid = false;
     int is_tensor = 0;
@@ -679,21 +757,24 @@ bool NeuralPredictor::run_onnx_inference(
 
 void NeuralPredictor::initialize(std::string_view model_dir) noexcept {
     model_dir_ = std::string(model_dir);
+    while (model_dir_.size() > 1U && model_dir_.back() == '/') {
+        model_dir_.pop_back();
+    }
     close_onnx_runtime();
     cfw2_loaded_ = false;
     legacy_cfw1_loaded_ = false;
     cfw2_crc32_ = 0U;
+    cfw2_flags_ = 0U;
 
-    reset();
-    (void)try_load_onnx_runtime(model_dir_ + "/equilibrium.onnx");
-    cfw2_loaded_ = try_load_cfw2(model_dir_ + "/equilibrium.cfw2");
-    if (!cfw2_loaded_) {
-        legacy_cfw1_loaded_ = try_load_legacy_cfw1(model_dir_ + "/equilibrium.cfw");
+    init_default_network();
+    if (!model_dir_.empty() && model_dir_[0] == '/') {
+        (void)try_load_onnx_runtime(model_dir_ + "/equilibrium.onnx");
+        cfw2_loaded_ = try_load_cfw2(model_dir_ + "/equilibrium.cfw2");
+        if (!cfw2_loaded_) {
+            legacy_cfw1_loaded_ = try_load_legacy_cfw1(model_dir_ + "/equilibrium.cfw");
+        }
     }
-    last_.onnx_active = onnx_loaded_;
-    last_.cfw2_active = cfw2_loaded_;
-    last_.cfw2_crc32 = cfw2_crc32_;
-    last_.backend = active_backend_name();
+    reset_online_state();
 }
 
 NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noexcept {
@@ -728,11 +809,15 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
     const double norm_charge = std::clamp(input.charging_power_mw / 15000.0, 0.0, 1.5);
 
     double velocity = 0.0;
+    if (prev_thermal_for_vel_ >= 0.0) {
+        velocity = std::clamp((input.thermal_pressure - prev_thermal_for_vel_) / dt, -10.0, 10.0);
+    }
+    prev_thermal_for_vel_ = input.thermal_pressure;
 
     // Step 1: Online Recursive Least Squares (RLS) + NLMS residual adaptation
+    // Only train RLS when all PSI domains are genuinely valid (never on synthetic zeros).
     if (pressure_inputs_valid && prev_pressure_ >= 0.0) {
         const double actual_rate = (input.thermal_pressure - prev_pressure_) / dt;
-        velocity = std::clamp(actual_rate, -10.0, 10.0);
 
         double predicted_rate = 0.0;
         for (size_t i = 0; i < 4; ++i) {
@@ -771,27 +856,29 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
             rls_cov_ = next_cov;
         }
 
-        // Online NLMS adaptation on output-0 thermal residual head
-        const double tanh_out0 = std::tanh(prev_out0_);
-        const double grad_scale = (1.0 - tanh_out0 * tanh_out0);
-        const double residual_err = std::clamp(innovation / 8.0 - tanh_out0, -1.0, 1.0);
-        constexpr double kMlpStep = 0.015;
-        if (legacy_cfw1_loaded_) {
-            for (size_t h = 0; h < 8U; ++h) {
-                legacy_w2_[h] = std::clamp(
-                    legacy_w2_[h] + kMlpStep * residual_err * grad_scale * prev_legacy_hidden_[h],
-                    -3.0, 3.0);
+        // Online NLMS adaptation on output-0 thermal residual head (only when previous tick used MLP)
+        if (prev_used_mlp_) {
+            const double tanh_out0 = std::tanh(prev_out0_);
+            const double grad_scale = (1.0 - tanh_out0 * tanh_out0);
+            const double residual_err = std::clamp(innovation / 8.0 - tanh_out0, -1.0, 1.0);
+            constexpr double kMlpStep = 0.015;
+            if (legacy_cfw1_loaded_) {
+                for (size_t h = 0; h < 8U; ++h) {
+                    legacy_w2_[h] = std::clamp(
+                        legacy_w2_[h] + kMlpStep * residual_err * grad_scale * prev_legacy_hidden_[h],
+                        -3.0, 3.0);
+                }
+                legacy_b2_[0] = std::clamp(legacy_b2_[0] + kMlpStep * residual_err * grad_scale, -1.5, 1.5);
+            } else {
+                for (size_t h = 0; h < kCfw2H2Dim; ++h) {
+                    const double w = static_cast<double>(cfw2_w3_[h]) +
+                                     kMlpStep * residual_err * grad_scale * prev_h2_[h];
+                    cfw2_w3_[h] = static_cast<float>(std::clamp(w, -3.0, 3.0));
+                }
+                cfw2_b3_[0] = static_cast<float>(
+                    std::clamp(static_cast<double>(cfw2_b3_[0]) + kMlpStep * residual_err * grad_scale,
+                               -1.5, 1.5));
             }
-            legacy_b2_[0] = std::clamp(legacy_b2_[0] + kMlpStep * residual_err * grad_scale, -1.5, 1.5);
-        } else {
-            for (size_t h = 0; h < kCfw2H2Dim; ++h) {
-                const double w = static_cast<double>(cfw2_w3_[h]) +
-                                 kMlpStep * residual_err * grad_scale * prev_h2_[h];
-                cfw2_w3_[h] = static_cast<float>(std::clamp(w, -3.0, 3.0));
-            }
-            cfw2_b3_[0] = static_cast<float>(
-                std::clamp(static_cast<double>(cfw2_b3_[0]) + kMlpStep * residual_err * grad_scale,
-                           -1.5, 1.5));
         }
     }
 
@@ -835,6 +922,14 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
 
     if (onnx_loaded_) {
         used_onnx = run_onnx_inference(features10, out);
+        if (used_onnx) {
+            ort_consecutive_failures_ = 0U;
+        } else {
+            ++ort_consecutive_failures_;
+            if (ort_consecutive_failures_ >= kMaxOrtConsecutiveFailures) {
+                close_onnx_runtime();
+            }
+        }
     }
 
     if (!used_onnx) {
@@ -900,6 +995,7 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
         }
     }
 
+    prev_used_mlp_ = !used_onnx;
     prev_out0_ = out[0];
 
     const double nonlinear_pressure_delta = std::tanh(std::clamp(out[0], -6.0, 6.0)) * 10.0;

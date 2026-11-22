@@ -47,6 +47,7 @@ struct OrtSessionOptions {
 
 struct OrtSession {
     bool emit_nan{false};
+    bool emit_nan_on_hot{false};
 };
 
 struct OrtMemoryInfo {
@@ -160,6 +161,7 @@ OrtStatus* api_create_session(const OrtEnv* env, const char* model_path,
     auto* sess = new (std::nothrow) OrtSession{};
     if (sess == nullptr) return make_status(2, "oom");
     sess->emit_nan = (content.find("NAN_OUTPUT") != std::string::npos);
+    sess->emit_nan_on_hot = (content.find("NAN_ON_HOT") != std::string::npos);
     g_live_handles.fetch_add(1, std::memory_order_relaxed);
     *out = sess;
     return nullptr;
@@ -269,7 +271,7 @@ OrtStatus* api_run(OrtSession* sess, const OrtRunOptions* /*run_opts*/,
     out->shape = {1, 3};
     out->elem_type = kOnnxTensorFloat;
     const auto& x = inputs[0]->data;
-    if (sess->emit_nan) {
+    if (sess->emit_nan || (sess->emit_nan_on_hot && x[0] > 0.30f)) {
         out->data = {std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f};
     } else {
         const float out0 = 0.85f * x[0] + 0.50f * x[1] + 0.25f * x[9];
