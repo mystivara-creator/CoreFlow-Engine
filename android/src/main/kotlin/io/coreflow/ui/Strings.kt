@@ -100,6 +100,7 @@ data class AppStrings(
         "INTERACTIVE" -> if (isIndonesian) "Interaktif" else "Interactive"
         "GAMING" -> "Gaming"
         "EFFICIENCY" -> if (isIndonesian) "Efisiensi" else "Efficiency"
+        "BOOT_SETTLE" -> if (isIndonesian) "Tenang Pasca-Boot" else "Boot Settle"
         "SCREEN_OFF" -> if (isIndonesian) "Layar Mati" else "Screen Off"
         "EXCLUDED" -> if (isIndonesian) "OEM Standar" else "OEM Stock"
         "THERMAL_GUARD" -> if (isIndonesian) "Jaga Suhu" else "Thermal Guard"

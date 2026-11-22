@@ -261,6 +261,25 @@ bool ContextEngine::is_camera_package(std::string_view pkg) noexcept {
            lower.find("gcam") != std::string::npos;
 }
 
+bool ContextEngine::is_system_launcher_package(std::string_view pkg) noexcept {
+    if (pkg.empty()) return false;
+    const std::string lower = to_lower_copy(pkg);
+    auto starts_with = [&](std::string_view prefix) {
+        return lower.size() >= prefix.size() && lower.compare(0, prefix.size(), prefix) == 0;
+    };
+    return lower == "com.miui.home" ||
+           lower == "com.mi.android.globallauncher" ||
+           starts_with("com.android.launcher") ||
+           lower == "com.google.android.apps.nexuslauncher" ||
+           lower == "com.sec.android.app.launcher" ||
+           lower == "com.oppo.launcher" ||
+           lower == "com.oneplus.launcher" ||
+           lower == "com.coloros.launcher" ||
+           lower == "com.bbk.launcher2" ||
+           lower == "com.huawei.android.launcher" ||
+           lower == "com.transsion.hilauncher";
+}
+
 bool ContextEngine::is_background_system_service(std::string_view pkg) noexcept {
     if (pkg.empty()) return true;
     const std::string lower = to_lower_copy(pkg);

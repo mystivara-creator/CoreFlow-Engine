@@ -34,6 +34,7 @@
 #include "coreflow/v5/thermal_envelope_actuator.hpp"
 #include "coreflow/v5/thread_scheduler.hpp"
 #include "coreflow/v6/app_dna_store.hpp"
+#include "coreflow/v6/boot_calm_sanctuary.hpp"
 #include "coreflow/v6/decision_journal.hpp"
 #include "coreflow/v6/frame_pacing_sensor.hpp"
 #include "coreflow/v6/oem_collaboration_map.hpp"
@@ -675,6 +676,10 @@ struct RuntimeStatusData {
     size_t app_dna_learned{0};
     double active_app_bias{1.0};
     bool charging_damped{false};
+    bool boot_settle_active{false};
+    double boot_settle_duration_sec{0.0};
+    std::string boot_settle_exit_reason{"warm_daemon_restart"};
+    double boot_ramp_progress{1.0};
     std::vector<HistoryPoint> history{};
 };
 
@@ -755,7 +760,12 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"inspectionMode\":" << (s.config.inspection_mode ? "true" : "false")
         << ",\"mode\":" << json_str(s.thermal_emergency ? "THERMAL_EMERGENCY"
                                     : s.thermal_guard ? "THERMAL_GUARD"
+                                    : s.boot_settle_active ? "BOOT_SETTLE"
                                     : ContextEngine::mode_name(s.ctx.mode))
+        << ",\"bootSettleActive\":" << (s.boot_settle_active ? "true" : "false")
+        << ",\"bootSettleDurationSec\":" << safe_num(s.boot_settle_duration_sec)
+        << ",\"bootSettleExitReason\":" << json_str(s.boot_settle_exit_reason)
+        << ",\"bootRampProgress\":" << safe_num(s.boot_ramp_progress, 1.0)
         << ",\"foregroundPackage\":" << json_str(s.ctx.foreground_package)
         << ",\"foregroundPid\":" << s.ctx.foreground_pid
         << ",\"capacityScale\":" << safe_num(s.capacity_scale, 1.0)
@@ -1416,7 +1426,26 @@ int main(int argc, char* argv[]) {
     live_status.frame_pacing_available = frame_pacing.supported();
     live_status.app_dna_learned = app_dna.learned_count();
     live_status.session.started_steady_ms = steady_now_ms();
-    bool last_screen_off = false;
+    v6::BootCalmSanctuary boot_calm;
+    const double init_uptime_sec = v6::BootCalmSanctuary::read_kernel_uptime_sec("/proc");
+    boot_calm.initialize(init_uptime_sec, live_status.session.started_steady_ms);
+    bool last_screen_off = probe.is_screen_off(topo);
+    v6::BootCalmDecision boot_dec = boot_calm.evaluate({
+        .kernel_uptime_sec = init_uptime_sec,
+        .now_ms = live_status.session.started_steady_ms,
+        .screen_off = last_screen_off,
+        .thermal_guard = false,
+        .cpu_util_pct = 0.0,
+        .io_psi_pct = 0.0,
+        .soc_temp_c = -1.0,
+        .thermal_velocity_cpm = 0.0,
+        .touch_active = false,
+        .real_foreground_app = false,
+    });
+    live_status.boot_settle_active = boot_dec.boot_settle_active;
+    live_status.boot_settle_duration_sec = boot_dec.settle_duration_sec;
+    live_status.boot_settle_exit_reason = boot_dec.exit_reason;
+    live_status.boot_ramp_progress = boot_dec.ramp_alpha;
     bool prev_bypass_active = false;
     size_t prev_contended_count = 0U;
     ForegroundAppInfo last_fg{};
@@ -1424,7 +1453,9 @@ int main(int argc, char* argv[]) {
     live_status.memory = last_mem_snap;
     decision_journal.record(
         epoch_now_ms(), "context", "Boot",
-        "CoreFlow v6.2.0 initialized (profile=" + config.profile + ")",
+        boot_dec.boot_settle_active
+            ? ("CoreFlow v6.2.0 initialized in BOOT_SETTLE sanctuary (profile=" + config.profile + ")")
+            : ("CoreFlow v6.2.0 initialized (profile=" + config.profile + ")"),
         "verified", -1.0, 0.0, 1.0);
     live_status.episodes = decision_journal.recent(16U);
     uint64_t last_sysfs_active_ms = 0U;
@@ -1452,8 +1483,8 @@ int main(int argc, char* argv[]) {
 
     const auto build_sysfs_ctx = [&](const ContextDecision& raw, uint64_t now_ms, const ForegroundAppInfo& fg) noexcept {
         ContextDecision out = raw;
-        // Only prefetch assets for real visible UI apps that own a render thread.
-        if (fg.critical_tids.size() <= 1U) {
+        // Only prefetch assets for real visible UI apps (never system launchers already resident in RAM).
+        if (fg.critical_tids.size() <= 1U || ContextEngine::is_system_launcher_package(fg.package_name)) {
             out.newly_launched_app = false;
         }
         // Anti-flap hysteresis for disk-journaled sysfs actuators: hold Interactive for 3s
@@ -1530,7 +1561,7 @@ int main(int argc, char* argv[]) {
         d.app_uclamp_bias = live_status.active_app_bias;
         d.feedforward_freeze = (now_ms <= feedforward_freeze_until_ms) ||
                                (live_status.ctx.touch_hold_remaining_ms > 0U);
-        d.symbiotic_cpu_scale = symbiotic_plan.cpu_uclamp_scale;
+        d.symbiotic_cpu_scale = std::clamp(symbiotic_plan.cpu_uclamp_scale * boot_dec.ramp_uclamp_scale, 0.88, 1.10);
         d.helper_uclamp_ratio = symbiotic_plan.helper_uclamp_ratio;
         return d;
     };
@@ -1595,6 +1626,24 @@ int main(int argc, char* argv[]) {
             const uint64_t now_ms = steady_now_ms();
             feedforward_freeze_until_ms = std::max<uint64_t>(feedforward_freeze_until_ms, now_ms + uint64_t{700});
             context_engine.notify_touch(now_ms);
+            if (boot_dec.boot_settle_active) {
+                // Touch-Aware Soft Bypass during BOOT_SETTLE: light per-TID UI/SF UClamp ONLY for real apps
+                // (never system launchers), keeping 0 sysfs writes and 0 storage preread.
+                const bool real_app = !last_fg.package_name.empty() &&
+                                      !ContextEngine::is_system_launcher_package(last_fg.package_name);
+                if (real_app && !live_status.thermal_guard && !live_status.ctx.app_excluded) {
+                    const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
+                    ThreadDemandContext soft_demand = build_thread_demand(now_ms);
+                    soft_demand.symbiotic_cpu_scale = 0.88;
+                    thread_scheduler.apply(
+                        ContextMode::Interactive, live_status.ctx.effective_profile,
+                        live_status.capacity_scale, live_status.thermal_guard,
+                        config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
+                        soft_demand, {});
+                    live_status.thread_stats = thread_scheduler.stats();
+                }
+                return;
+            }
             if (live_status.ctx.mode == ContextMode::Efficiency && !live_status.ctx.app_excluded) {
                 ContextSignalInput sig{};
                 sig.now_ms = now_ms;
@@ -1699,6 +1748,12 @@ int main(int argc, char* argv[]) {
             return;
         }
         last_fg = fg;
+        if (boot_dec.boot_settle_active) {
+            // Phase 1 (BOOT_SETTLE): observe foreground package only; 0 sysfs writes, 0 preread, 0 learning.
+            live_status.ctx.foreground_pid = fg.pid;
+            live_status.ctx.foreground_package = fg.package_name;
+            return;
+        }
         const uint64_t now_ms = steady_now_ms();
         ContextSignalInput sig{};
         sig.now_ms = now_ms;
@@ -1713,7 +1768,9 @@ int main(int argc, char* argv[]) {
         sig.has_media_thread = fg.has_media_thread;
         const ContextMode prev_mode = live_status.ctx.mode;
         live_status.ctx = context_engine.evaluate(sig);
-        if (live_status.ctx.newly_launched_app && (fg.has_render_thread || live_status.ctx.app_forced_gaming)) {
+        const bool is_launcher = ContextEngine::is_system_launcher_package(fg.package_name);
+        if (boot_dec.allow_learning && !is_launcher && live_status.ctx.newly_launched_app &&
+            (fg.has_render_thread || live_status.ctx.app_forced_gaming)) {
             ++live_status.session.launch_bursts;
             if (config.enable_predictive_preload) {
                 record_preloader_launch(fg.package_name);
@@ -1733,31 +1790,37 @@ int main(int argc, char* argv[]) {
             live_status.active_app_bias = app_dna.uclamp_bias_for(fg.package_name);
         }
         if (changed || live_status.ctx.mode != prev_mode) {
-            const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
-            const auto chain_tids = build_fg_chain_tids(fg, live_status.ctx.camera_boost_active);
-            thread_scheduler.apply(
-                live_status.ctx.mode, live_status.ctx.effective_profile,
-                live_status.capacity_scale, live_status.thermal_guard,
-                config.enable_frame_smoothness, sf_tids, chain_tids,
-                build_thread_demand(now_ms), fg.helper_tids);
+            if (boot_dec.allow_uclamp) {
+                const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
+                const auto chain_tids = build_fg_chain_tids(fg, live_status.ctx.camera_boost_active);
+                thread_scheduler.apply(
+                    live_status.ctx.mode, live_status.ctx.effective_profile,
+                    live_status.capacity_scale, live_status.thermal_guard,
+                    config.enable_frame_smoothness, sf_tids, chain_tids,
+                    build_thread_demand(now_ms), fg.helper_tids);
+            }
             const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, fg);
-            storage_memory.apply(
-                topo, sysfs_ctx, live_status.ctx.effective_profile,
-                config.enable_storage_burst, config.enable_memory_guard, now_ms,
-                build_storage_telemetry(last_mem_snap));
-            thermal_envelope.apply(
-                topo, sysfs_ctx.mode, live_status.ctx.effective_profile,
-                live_status.capacity_scale, live_status.thermal_guard,
-                config.enable_thermal_pacing,
-                build_envelope_telemetry(), now_ms);
-            semantic_knobs.apply(
-                sysfs_ctx.mode, live_status.ctx.effective_profile,
-                live_status.capacity_scale, live_status.thermal_guard,
-                config.enable_thermal_pacing || config.enable_storage_burst,
-                last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
-                live_status.mem_psi.value_or(0.0), now_ms,
-                is_passive_media_only(live_status.ctx),
-                build_symbiotic_hints());
+            if (boot_dec.allow_storage_and_symbiotic) {
+                storage_memory.apply(
+                    topo, sysfs_ctx, live_status.ctx.effective_profile,
+                    config.enable_storage_burst, config.enable_memory_guard, now_ms,
+                    build_storage_telemetry(last_mem_snap));
+            }
+            if (boot_dec.allow_envelope_and_semantic) {
+                thermal_envelope.apply(
+                    topo, sysfs_ctx.mode, live_status.ctx.effective_profile,
+                    live_status.capacity_scale, live_status.thermal_guard,
+                    config.enable_thermal_pacing,
+                    build_envelope_telemetry(), now_ms);
+                semantic_knobs.apply(
+                    sysfs_ctx.mode, live_status.ctx.effective_profile,
+                    live_status.capacity_scale, live_status.thermal_guard,
+                    config.enable_thermal_pacing || config.enable_storage_burst,
+                    last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
+                    live_status.mem_psi.value_or(0.0), now_ms,
+                    is_passive_media_only(live_status.ctx),
+                    build_symbiotic_hints());
+            }
             if (config.bypass_on_gaming) {
                 (void)longevity.apply_power_control(
                     config.bypass_charging,
@@ -1942,6 +2005,7 @@ int main(int argc, char* argv[]) {
                 .capacity_scale = live_status.capacity_scale,
                 .mode = live_status.thermal_emergency ? "THERMAL_EMERGENCY"
                         : live_status.thermal_guard ? "THERMAL_GUARD"
+                        : live_status.boot_settle_active ? "BOOT_SETTLE"
                         : ContextEngine::mode_name(live_status.ctx.mode),
             });
             if (live_status.history.size() > 60U) {
@@ -2074,8 +2138,48 @@ int main(int argc, char* argv[]) {
             live_status.render_pressure = render_sampler.sample(0, {}, elapsed);
         }
 
+        // Adaptive Post-Boot Thermal Tranquility Protocol (Boot-Calm Sanctuary)
+        const bool real_fg_app = !screen_off && !last_fg.package_name.empty() &&
+                                 !ContextEngine::is_system_launcher_package(last_fg.package_name);
+        const bool touch_active_now = (now_ms <= feedforward_freeze_until_ms) ||
+                                      (live_status.ctx.touch_hold_remaining_ms > 0U);
+        boot_dec = boot_calm.evaluate({
+            .kernel_uptime_sec = v6::BootCalmSanctuary::read_kernel_uptime_sec("/proc"),
+            .now_ms = now_ms,
+            .screen_off = screen_off,
+            .thermal_guard = effective_thermal_guard,
+            .cpu_util_pct = cpu_util,
+            .io_psi_pct = io_psi.value_or(0.0),
+            .soc_temp_c = static_cast<double>(soc_temp),
+            .thermal_velocity_cpm = live_status.thermal_velocity_cpm,
+            .touch_active = touch_active_now,
+            .real_foreground_app = real_fg_app,
+        });
+        live_status.boot_settle_active = boot_dec.boot_settle_active;
+        live_status.boot_settle_duration_sec = boot_dec.settle_duration_sec;
+        live_status.boot_settle_exit_reason = boot_dec.exit_reason;
+        live_status.boot_ramp_progress = boot_dec.ramp_alpha;
+
+        if (boot_dec.needs_late_baseline_snapshot) {
+            // Phase 3 Entry (Screen-ON): Re-discover & capture true post-boot OEM baselines AFTER
+            // HyperOS perf-hal & mi_thermald finished boot init, preventing false OEM yields.
+            topo = probe.discover();
+            frame_pacing.discover("/sys", "/proc", topo.vblank_irq_token);
+            semantic_knobs.discover(topo);
+            live_status.topo = topo;
+            live_status.frame_pacing_available = frame_pacing.supported();
+            live_status.semantic_stats = semantic_knobs.stats();
+            live_status.semantic_knob_leaves = collect_semantic_leaves();
+            decision_journal.record(
+                epoch_now_ms(), "context", "BootSettleComplete",
+                "Exited BOOT_SETTLE (" + boot_dec.exit_reason + ", " +
+                    std::to_string(static_cast<unsigned>(std::round(boot_dec.settle_duration_sec))) +
+                    "s); captured late OEM baseline & started 30s soft-start ramp",
+                "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+        }
+
         // Orthogonal Symbiotic Orchestrator: cross-cluster saturation & CPU-GPU-Memory Little's Law co-pacing
-        if (!screen_off) {
+        if (!screen_off && boot_dec.allow_storage_and_symbiotic) {
             double little_r = 0.0, mid_r = 0.0, big_r = 0.0;
             for (size_t i = 0; i < topo.cpu_clusters.size() && i < live_status.cluster_cur_khz.size(); ++i) {
                 const auto& c = topo.cpu_clusters[i];
@@ -2134,7 +2238,8 @@ int main(int argc, char* argv[]) {
         sig.has_media_thread = !screen_off && last_fg.has_media_thread;
         const ContextMode prev_mode = live_status.ctx.mode;
         live_status.ctx = context_engine.evaluate(sig);
-        if (live_status.ctx.newly_launched_app &&
+        const bool fg_is_launcher = ContextEngine::is_system_launcher_package(last_fg.package_name);
+        if (boot_dec.allow_learning && !fg_is_launcher && live_status.ctx.newly_launched_app &&
             (last_fg.has_render_thread || live_status.ctx.app_forced_gaming)) {
             ++live_status.session.launch_bursts;
             if (config.enable_predictive_preload) {
@@ -2143,19 +2248,20 @@ int main(int argc, char* argv[]) {
             app_dna.record_launch(last_fg.package_name, now_ms, to_dna_signature(last_fg.engine_class));
         }
 
-        // Closed-loop Display Frame Pacing Sensor + Per-App Behavioral DNA learning
+        // Closed-loop Display Frame Pacing Sensor + Per-App Behavioral DNA learning (frozen during BOOT_SETTLE)
         if (!screen_off) {
             const bool active_workload =
-                live_status.ctx.mode == ContextMode::Interactive ||
-                live_status.ctx.mode == ContextMode::LaunchBurst ||
-                live_status.ctx.mode == ContextMode::Gaming;
+                !boot_dec.boot_settle_active &&
+                (live_status.ctx.mode == ContextMode::Interactive ||
+                 live_status.ctx.mode == ContextMode::LaunchBurst ||
+                 live_status.ctx.mode == ContextMode::Gaming);
             const auto fps_sample = frame_pacing.sample(
                 topo.refresh_hz, now_ms, active_workload, &frame_bridge);
             live_status.frame_pacing_available = fps_sample.available || frame_pacing.supported();
             live_status.measured_fps = fps_sample.measured_fps;
             live_status.jank_ratio = fps_sample.jank_ratio;
             if (!last_fg.package_name.empty()) {
-                if (active_workload) {
+                if (active_workload && boot_dec.allow_learning) {
                     app_dna.observe(last_fg.package_name, live_status.jank_ratio,
                                     live_status.thermal_velocity_cpm, now_ms,
                                     to_dna_signature(last_fg.engine_class));
@@ -2171,7 +2277,8 @@ int main(int argc, char* argv[]) {
             live_status.jank_ratio = -1.0;
             live_status.active_app_bias = 1.0;
             // Lazy cross-reboot persistence during ScreenOff (throttled to <= once per 10 min)
-            if (last_state_persist_ms == 0U || now_ms >= last_state_persist_ms + 600'000ULL) {
+            if (boot_dec.allow_learning &&
+                (last_state_persist_ms == 0U || now_ms >= last_state_persist_ms + 600'000ULL)) {
                 last_state_persist_ms = now_ms;
                 (void)app_dna.flush_if_dirty();
                 if (preloader_dirty && save_preloader_state(*preloader, preloader_pkg_map)) {
@@ -2180,7 +2287,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (live_status.ctx.mode != prev_mode) {
+        if (!boot_dec.boot_settle_active && live_status.ctx.mode != prev_mode) {
             decision_journal.record(
                 epoch_now_ms(), "context", "ModeShift",
                 std::string(ContextEngine::mode_name(prev_mode)) + " -> " +
@@ -2190,88 +2297,125 @@ int main(int argc, char* argv[]) {
         }
 
         if (!config.inspection_mode) {
-            const auto sf_tids = screen_off ? std::vector<int32_t>{} : context_engine.resolve_surfaceflinger_tids();
-            const auto chain_tids = screen_off
-                ? std::vector<int32_t>{}
-                : build_fg_chain_tids(last_fg, live_status.ctx.camera_boost_active);
-            const auto helper_tids = screen_off ? std::vector<int32_t>{} : last_fg.helper_tids;
-            thread_scheduler.apply(
-                live_status.ctx.mode, live_status.ctx.effective_profile,
-                live_status.capacity_scale, effective_thermal_guard,
-                config.enable_frame_smoothness, sf_tids, chain_tids,
-                build_thread_demand(now_ms), helper_tids);
-            const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, last_fg);
-            const auto storage_tel = build_storage_telemetry(last_mem_snap);
-            storage_memory.apply(
-                topo, sysfs_ctx, live_status.ctx.effective_profile,
-                config.enable_storage_burst, config.enable_memory_guard, now_ms,
-                storage_tel);
-
-            // HyperFluid 9-Hour Anti-Aging Guard: proactive idle memory compaction during cool ScreenOff
-            if (screen_off && config.enable_memory_guard && config.enable_idle_compaction) {
-                if (storage_memory.maybe_run_idle_compaction(topo, storage_tel, soc_temp, now_ms)) {
-                    decision_journal.record(
-                        epoch_now_ms(), "memory", "IdleCompaction",
-                        "Defragmented RAM during cool ScreenOff idle (anti-aging guard)",
-                        "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+            if (boot_dec.boot_settle_active) {
+                // Phase 1 (BOOT_SETTLE — Zero-Write Passive Sanctuary):
+                // 0 sysfs mutations, 0 LaunchBurst/preread I/O, 0 boost UClamp.
+                // Exception 1: Touch-Aware Soft Bypass on real non-launcher apps (light per-TID UClamp only).
+                // Exception 2: Emergency thermal guard cooling path remains active if boot overheats.
+                if (boot_dec.allow_touch_soft_uclamp && !live_status.ctx.app_excluded) {
+                    const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
+                    ThreadDemandContext soft_demand = build_thread_demand(now_ms);
+                    soft_demand.symbiotic_cpu_scale = 0.88;
+                    thread_scheduler.apply(
+                        ContextMode::Interactive, live_status.ctx.effective_profile,
+                        live_status.capacity_scale, effective_thermal_guard,
+                        config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
+                        soft_demand, {});
+                } else {
+                    thread_scheduler.reset_all();
                 }
-            }
+                if (effective_thermal_guard) {
+                    thermal_envelope.apply(
+                        topo, ContextMode::Efficiency, live_status.ctx.effective_profile,
+                        live_status.capacity_scale, true,
+                        config.enable_thermal_pacing,
+                        build_envelope_telemetry(), now_ms);
+                    longevity.monitor_battery_thermals(soc_temp);
+                }
+            } else {
+                // Phase 3 (Exponential Soft-Start Ramp) & Steady Active Operation:
+                // 0-10s: UClamp only -> 10-20s: +ThermalEnvelope & SemanticKnobs -> 20-30s+: +Storage & Symbiotic
+                const auto sf_tids = screen_off ? std::vector<int32_t>{} : context_engine.resolve_surfaceflinger_tids();
+                const auto chain_tids = screen_off
+                    ? std::vector<int32_t>{}
+                    : build_fg_chain_tids(last_fg, live_status.ctx.camera_boost_active);
+                const auto helper_tids = screen_off ? std::vector<int32_t>{} : last_fg.helper_tids;
+                if (boot_dec.allow_uclamp) {
+                    thread_scheduler.apply(
+                        live_status.ctx.mode, live_status.ctx.effective_profile,
+                        live_status.capacity_scale, effective_thermal_guard,
+                        config.enable_frame_smoothness, sf_tids, chain_tids,
+                        build_thread_demand(now_ms), helper_tids);
+                }
+                const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, last_fg);
+                const auto storage_tel = build_storage_telemetry(last_mem_snap);
+                if (boot_dec.allow_storage_and_symbiotic) {
+                    storage_memory.apply(
+                        topo, sysfs_ctx, live_status.ctx.effective_profile,
+                        config.enable_storage_burst, config.enable_memory_guard, now_ms,
+                        storage_tel);
 
-            // HyperFluid Rust Predictive Preloader: warm top predicted next app during calm cool Efficiency
-            if (!screen_off && config.enable_memory_guard && config.enable_predictive_preload &&
-                live_status.ctx.mode == ContextMode::Efficiency &&
-                !last_fg.package_name.empty() &&
-                (!std::isfinite(soc_temp) || soc_temp < 42.0f) &&
-                storage_tel.mem_psi < 8.0 &&
-                (!last_mem_snap.valid || last_mem_snap.available_ratio() >= 0.25)) {
-                const auto pred = preloader->predict_next(hash_pkg_fnv1a(last_fg.package_name));
-                if (pred.has_prediction) {
-                    const auto pit = preloader_pkg_map.find(pred.target_hash);
-                    if (pit != preloader_pkg_map.end() && pit->second != last_fg.package_name) {
-                        const uint64_t basis = last_mem_snap.valid
-                            ? last_mem_snap.available_bytes
-                            : topo.total_ram_bytes;
-                        const uint64_t warmed = storage_memory.prefetch_cached_package(pit->second, basis, now_ms);
-                        if (warmed > 0U) {
-                            live_status.last_predicted_pkg = pit->second;
+                    // HyperFluid 9-Hour Anti-Aging Guard: proactive idle memory compaction during cool ScreenOff
+                    if (screen_off && config.enable_memory_guard && config.enable_idle_compaction) {
+                        if (storage_memory.maybe_run_idle_compaction(topo, storage_tel, soc_temp, now_ms)) {
                             decision_journal.record(
-                                epoch_now_ms(), "storage", "PredictivePreload",
-                                "Pre-warmed " + pit->second + " (" +
-                                    std::to_string(static_cast<unsigned>(pred.confidence * 100.0)) + "% match)",
+                                epoch_now_ms(), "memory", "IdleCompaction",
+                                "Defragmented RAM during cool ScreenOff idle (anti-aging guard)",
                                 "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
                         }
                     }
-                }
-            }
 
-            thermal_envelope.apply(
-                topo, sysfs_ctx.mode, live_status.ctx.effective_profile,
-                live_status.capacity_scale, effective_thermal_guard,
-                config.enable_thermal_pacing,
-                build_envelope_telemetry(), now_ms);
-            semantic_knobs.apply(
-                sysfs_ctx.mode, live_status.ctx.effective_profile,
-                live_status.capacity_scale, effective_thermal_guard,
-                config.enable_thermal_pacing || config.enable_storage_burst,
-                last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
-                storage_tel.mem_psi, now_ms,
-                is_passive_media_only(live_status.ctx),
-                build_symbiotic_hints());
-            longevity.monitor_battery_thermals(soc_temp);
-            (void)longevity.apply_power_control(
-                config.bypass_charging,
-                live_status.ctx.mode == ContextMode::Gaming,
-                config.bypass_on_gaming,
-                config.charge_limit_pct);
-            const bool now_bypass = longevity.is_bypass_active();
-            if (now_bypass != prev_bypass_active) {
-                const auto btel = longevity.sample_battery_telemetry();
-                decision_journal.record(
-                    epoch_now_ms(), "power",
-                    now_bypass ? "BypassEngaged" : "BypassReleased",
-                    now_bypass ? ("Charging bypassed (" + btel.bypass_reason + ")") : "Restored OEM charging path",
-                    "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
-                prev_bypass_active = now_bypass;
+                    // HyperFluid Rust Predictive Preloader: warm top predicted next app during calm cool Efficiency
+                    if (!screen_off && config.enable_memory_guard && config.enable_predictive_preload &&
+                        live_status.ctx.mode == ContextMode::Efficiency &&
+                        !last_fg.package_name.empty() &&
+                        (!std::isfinite(soc_temp) || soc_temp < 42.0f) &&
+                        storage_tel.mem_psi < 8.0 &&
+                        (!last_mem_snap.valid || last_mem_snap.available_ratio() >= 0.25)) {
+                        const auto pred = preloader->predict_next(hash_pkg_fnv1a(last_fg.package_name));
+                        if (pred.has_prediction) {
+                            const auto pit = preloader_pkg_map.find(pred.target_hash);
+                            if (pit != preloader_pkg_map.end() && pit->second != last_fg.package_name) {
+                                const uint64_t basis = last_mem_snap.valid
+                                    ? last_mem_snap.available_bytes
+                                    : topo.total_ram_bytes;
+                                const uint64_t warmed = storage_memory.prefetch_cached_package(pit->second, basis, now_ms);
+                                if (warmed > 0U) {
+                                    live_status.last_predicted_pkg = pit->second;
+                                    decision_journal.record(
+                                        epoch_now_ms(), "storage", "PredictivePreload",
+                                        "Pre-warmed " + pit->second + " (" +
+                                            std::to_string(static_cast<unsigned>(pred.confidence * 100.0)) + "% match)",
+                                        "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (boot_dec.allow_envelope_and_semantic || effective_thermal_guard) {
+                    thermal_envelope.apply(
+                        topo, sysfs_ctx.mode, live_status.ctx.effective_profile,
+                        live_status.capacity_scale, effective_thermal_guard,
+                        config.enable_thermal_pacing,
+                        build_envelope_telemetry(), now_ms);
+                }
+                if (boot_dec.allow_envelope_and_semantic) {
+                    semantic_knobs.apply(
+                        sysfs_ctx.mode, live_status.ctx.effective_profile,
+                        live_status.capacity_scale, effective_thermal_guard,
+                        config.enable_thermal_pacing || config.enable_storage_burst,
+                        last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
+                        storage_tel.mem_psi, now_ms,
+                        is_passive_media_only(live_status.ctx),
+                        build_symbiotic_hints());
+                }
+                longevity.monitor_battery_thermals(soc_temp);
+                (void)longevity.apply_power_control(
+                    config.bypass_charging,
+                    live_status.ctx.mode == ContextMode::Gaming,
+                    config.bypass_on_gaming,
+                    config.charge_limit_pct);
+                const bool now_bypass = longevity.is_bypass_active();
+                if (now_bypass != prev_bypass_active) {
+                    const auto btel = longevity.sample_battery_telemetry();
+                    decision_journal.record(
+                        epoch_now_ms(), "power",
+                        now_bypass ? "BypassEngaged" : "BypassReleased",
+                        now_bypass ? ("Charging bypassed (" + btel.bypass_reason + ")") : "Restored OEM charging path",
+                        "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+                    prev_bypass_active = now_bypass;
+                }
             }
         } else {
             thread_scheduler.reset_all();

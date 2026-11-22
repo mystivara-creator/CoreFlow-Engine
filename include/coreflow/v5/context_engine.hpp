@@ -106,6 +106,7 @@ public:
     [[nodiscard]] static bool is_media_pipeline_thread_name(std::string_view comm) noexcept;
     [[nodiscard]] static bool is_camera_package(std::string_view pkg) noexcept;
     [[nodiscard]] static bool is_background_system_service(std::string_view pkg) noexcept;
+    [[nodiscard]] static bool is_system_launcher_package(std::string_view pkg) noexcept;
 
 private:
     std::string procfs_root_;

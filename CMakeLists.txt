@@ -53,6 +53,7 @@ set(COREFLOW_V5_SOURCES
     src/v5/thermal_envelope_actuator.cpp
     src/v6/oem_collaboration_map.cpp
     src/v6/semantic_knob_engine.cpp
+    src/v6/boot_calm_sanctuary.cpp
     src/v6/frame_pacing_sensor.cpp
     src/v6/app_dna_store.cpp
     src/kernel/baseline_store.cpp
@@ -151,6 +152,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_v6_closed_loop_intelligence
         tests/test_v6_closed_loop_intelligence.cpp
         src/v5/hardware_probe.cpp
+        src/v6/boot_calm_sanctuary.cpp
         src/v6/frame_pacing_sensor.cpp
         src/v6/app_dna_store.cpp
         src/kernel/mount_topology.cpp

@@ -785,7 +785,9 @@ export const App: React.FC = () => {
                           ? '#ef4444'
                           : status.inspectionMode || status.thermalGuard
                             ? '#f59e0b'
-                            : '#22c55e',
+                            : status.bootSettleActive || status.mode === 'BOOT_SETTLE'
+                              ? '#38bdf8'
+                              : '#22c55e',
                       }}
                     />
                     <h1 className="truncate text-base font-bold tracking-tight">
@@ -803,6 +805,34 @@ export const App: React.FC = () => {
                   {readiness.readyCount}/4 {isId ? 'Pilar' : 'Pillars'}
                 </span>
               </div>
+
+              {(status.bootSettleActive ||
+                status.mode === 'BOOT_SETTLE' ||
+                (status.running && status.bootRampProgress < 0.99)) && (
+                <div
+                  className="flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-[11px] font-semibold"
+                  style={{
+                    background: 'rgba(56, 189, 248, 0.13)',
+                    color: '#38bdf8',
+                    border: '1px solid rgba(56, 189, 248, 0.25)',
+                  }}
+                >
+                  <span className="truncate">
+                    {status.bootSettleActive || status.mode === 'BOOT_SETTLE'
+                      ? isId
+                        ? `BOOT_SETTLE · Menenangkan termal pasca-boot (${Math.round(status.bootSettleDurationSec)}s · 0 tulis sysfs)`
+                        : `BOOT_SETTLE · Post-boot thermal calm sanctuary (${Math.round(status.bootSettleDurationSec)}s · 0 sysfs writes)`
+                      : isId
+                        ? `Soft-Start Aktif · Otoritas aktuasi ${Math.round(status.bootRampProgress * 100)}%`
+                        : `Soft-Start Active · Actuation authority ${Math.round(status.bootRampProgress * 100)}%`}
+                  </span>
+                  <span className="font-mono text-[10px] shrink-0">
+                    {status.bootSettleActive || status.mode === 'BOOT_SETTLE'
+                      ? 'SANCTUARY'
+                      : `${Math.round(status.bootRampProgress * 100)}%`}
+                  </span>
+                </div>
+              )}
 
               {/* 4 Uniform Metric Tiles */}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">

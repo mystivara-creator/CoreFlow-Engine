@@ -79,6 +79,21 @@ test('parseV5Status parses live daemon payload and rejects malformed schema', ()
   assert.deepEqual(parsed.apps.smoothness, ['com.instagram.android']);
   assert.deepEqual(parsed.apps.battery, ['com.whatsapp']);
   assert.equal(parsed.session.launchBursts, 14);
+  assert.equal(parsed.bootSettleActive, false);
+  assert.equal(parsed.bootSettleExitReason, 'warm_daemon_restart');
+  assert.equal(parsed.bootRampProgress, 1.0);
+  const settling = parseV5Status({
+    ...sample,
+    mode: 'BOOT_SETTLE',
+    bootSettleActive: true,
+    bootSettleDurationSec: 22.5,
+    bootSettleExitReason: 'settling',
+    bootRampProgress: 0.0,
+  });
+  assert.equal(settling.mode, 'BOOT_SETTLE');
+  assert.equal(settling.bootSettleActive, true);
+  assert.equal(settling.bootSettleDurationSec, 22.5);
+  assert.equal(settling.bootRampProgress, 0.0);
   assert.throws(() => parseV5Status(null));
   assert.throws(() => parseV5Status({ running: true }));
 });

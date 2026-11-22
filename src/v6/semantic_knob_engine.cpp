@@ -143,6 +143,26 @@ SemanticKnobEngine::SemanticKnobEngine(
     OemCollaborationMap& oem_map) noexcept
     : baseline_(baseline), oem_map_(oem_map) {}
 
+bool is_allowlisted_knob_name(std::string_view lower) noexcept {
+    constexpr std::string_view kAllowed[] = {
+        "boost", "pl", "sched_conservative_pl", "rtg_boost_freq",
+        "sched_upmigrate", "sched_downmigrate",
+        "sched_min_task_util_for_boost", "sched_min_task_util_for_colocation",
+        "context_burst_count",
+        "adrenoboost", "bus_split",
+        "gx_game_mode", "gx_boost_on", "gpu_boost",
+        "ged_boost_enable", "boost_gpu_enable", "boost_extra",
+        "gpu_boost_level", "boost_affinity", "fpsgo_enable",
+        "inflight_low_latency", "iostats", "rq_affinity",
+        "clkgate_enable", "hibern8_on_idle_enable",
+        "vfs_cache_pressure",
+    };
+    for (const auto name : kAllowed) {
+        if (lower == name) return true;
+    }
+    return false;
+}
+
 void SemanticKnobEngine::try_register_node(
     const std::string& path,
     const std::string& leaf,
@@ -150,12 +170,17 @@ void SemanticKnobEngine::try_register_node(
     std::unordered_map<std::string, bool>& seen) noexcept {
     if (path.empty() || leaf.empty() || seen.contains(path)) return;
     if (is_forbidden_knob_name(leaf)) return;
+
+    // Zero-AVC Probe Hygiene (Android 15 / GKI 6.6):
+    // Check the exact allowlisted leaf name BEFORE calling stat/access/open so restricted
+    // sysctl/sysfs nodes in /proc/sys/kernel, kgsl, or ufshc are never touched at all.
+    const std::string lower = to_lower_copy(leaf);
+    if (!is_allowlisted_knob_name(lower)) return;
     if (!is_regular_writable(path)) return;
 
     const std::string base = read_line_trimmed(path);
     if (base.empty()) return;
 
-    const std::string lower = to_lower_copy(leaf);
     DiscoveredKnob knob{};
     knob.path = path;
     knob.leaf = leaf;
@@ -368,9 +393,11 @@ void SemanticKnobEngine::discover(
         size_t scanned = 0U;
         for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end;
              !ec && it != end && scanned++ < 256U; it.increment(ec)) {
+            const std::string leaf = it->path().filename().string();
+            if (!is_allowlisted_knob_name(to_lower_copy(leaf))) continue;
             std::error_code iec;
             if (!it->is_regular_file(iec) || iec) continue;
-            try_register_node(it->path().string(), it->path().filename().string(), opps, seen);
+            try_register_node(it->path().string(), leaf, opps, seen);
         }
     };
 
@@ -384,7 +411,9 @@ void SemanticKnobEngine::discover(
         scan_dir(pdir, cluster.opps_khz);
     }
     scan_dir(fs::path(procfs_root) / "sys/walt", {});
-    scan_dir(fs::path(procfs_root) / "sys/kernel", {});
+    // Probe context_burst_count directly rather than listing /proc/sys/kernel (zero SELinux AVC on Android 15).
+    try_register_node((fs::path(procfs_root) / "sys/kernel/context_burst_count").string(),
+                      "context_burst_count", {}, seen);
     scan_dir(fs::path(sysfs_root) / "module/mtk_fpsgo/parameters", {});
     scan_dir(fs::path(sysfs_root) / "kernel/fpsgo/fbt", {});
 

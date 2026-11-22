@@ -242,6 +242,10 @@ object CoreFlowManager {
         val profile: Profile,
         val effectiveProfile: Profile,
         val mode: String,
+        val bootSettleActive: Boolean = false,
+        val bootSettleDurationSec: Float = 0f,
+        val bootSettleExitReason: String = "warm_daemon_restart",
+        val bootRampProgress: Float = 1.0f,
         val inspectionMode: Boolean,
         val foregroundPackage: String,
         val uclampMin: Int,
@@ -433,6 +437,10 @@ object CoreFlowManager {
                     json.optString("effectiveProfile", json.optString("profile", "balanced")),
                 ),
                 mode = json.optString("mode", "EFFICIENCY"),
+                bootSettleActive = json.optBoolean("bootSettleActive", false),
+                bootSettleDurationSec = json.optFiniteFloat("bootSettleDurationSec", 0f),
+                bootSettleExitReason = json.optString("bootSettleExitReason", "warm_daemon_restart"),
+                bootRampProgress = json.optFiniteFloat("bootRampProgress", 1.0f),
                 inspectionMode = json.optBoolean("inspectionMode", false),
                 foregroundPackage = json.optString("foregroundPackage", ""),
                 uclampMin = actuators?.optInt("threadUclampMin", 0) ?: 0,
@@ -896,7 +904,7 @@ object CoreFlowManager {
             val status = currentStatus ?: getStatus().getOrThrow()
             val avcCount = runCatching {
                 val res = Shell.cmd(
-                    "dmesg 2>/dev/null | grep -iE 'avc:.*denied.*coreflow' | wc -l",
+                    "dmesg 2>/dev/null | grep -iE 'avc:.*denied.*(comm=\"coreflowd\"|scontext=[^ ]*coreflow|path=\"/data/adb/coreflow)' | wc -l",
                 ).exec()
                 res.out.joinToString("").trim().toIntOrNull() ?: 0
             }.getOrDefault(0)
@@ -943,21 +951,22 @@ object CoreFlowManager {
                         level = AuditLevel.PASS,
                     ),
                 )
-                // 4. SELinux Zero AVC Denials
+                // 4. SELinux Zero AVC Denials (coreflowd context only)
                 add(
                     SelfAuditCheck(
                         title = "SELinux AVC",
                         detail = if (avcCount == 0) {
                             if (isIndonesian) "0 penolakan AVC untuk coreflowd" else "0 AVC denials for coreflowd"
                         } else {
-                            if (isIndonesian) "$avcCount penolakan AVC terdeteksi di dmesg" else "$avcCount AVC denials detected in dmesg"
+                            if (isIndonesian) "$avcCount penolakan AVC coreflowd di dmesg" else "$avcCount coreflowd AVC denials in dmesg"
                         },
                         level = if (avcCount == 0) AuditLevel.PASS else AuditLevel.WARN,
                     ),
                 )
                 // 5. CFJ4 Baseline & Release-on-Calm Safety
                 val calmMode = status.mode.equals("EFFICIENCY", ignoreCase = true) ||
-                    status.mode.equals("SCREEN_OFF", ignoreCase = true)
+                    status.mode.equals("SCREEN_OFF", ignoreCase = true) ||
+                    status.mode.equals("BOOT_SETTLE", ignoreCase = true)
                 val cfjOk = !calmMode || status.baselineNodesSnapshotted == 0
                 add(
                     SelfAuditCheck(
@@ -971,11 +980,20 @@ object CoreFlowManager {
                     ),
                 )
                 // 6. OEM Coexistence & Behavioral Intelligence
+                // Permanently yielded OEM nodes represent peaceful coexistence (not active fighting);
+                // only warn if live transient contention is currently cooling down.
+                val settledYields = status.oemYieldedPaths.toSet()
+                val activeTransientContention = status.contendedPaths.filterNot { it in settledYields }
+                val oemDetail = if (activeTransientContention.isEmpty()) {
+                    "${status.semanticKnobsDiscovered} knobs · ${status.oemYieldedNodes} OEM co-op · ${status.hyperFluid.appDnaLearned} App DNA"
+                } else {
+                    "${status.semanticKnobsDiscovered} knobs · ${activeTransientContention.size} active contention · ${status.oemYieldedNodes} OEM yield"
+                }
                 add(
                     SelfAuditCheck(
                         title = if (isIndonesian) "Co-Pilot & App DNA" else "Co-Pilot & App DNA",
-                        detail = "${status.semanticKnobsDiscovered} knobs · ${status.oemYieldedNodes} OEM yield · ${status.hyperFluid.appDnaLearned} App DNA",
-                        level = if (status.contendedPaths.isEmpty()) AuditLevel.PASS else AuditLevel.WARN,
+                        detail = oemDetail,
+                        level = if (activeTransientContention.isEmpty()) AuditLevel.PASS else AuditLevel.WARN,
                     ),
                 )
             }

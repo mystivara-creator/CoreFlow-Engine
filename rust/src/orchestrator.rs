@@ -125,9 +125,9 @@ pub fn compute_symbiotic_plan(input: SymbioticInput) -> SymbioticPlan {
         if regime == REGIME_BALANCED {
             regime = REGIME_GPU_BOUND;
         }
-    } else if l_cpu >= 0.65 && l_gpu <= 0.55 {
-        // CPU draw-call bound: GPU is waiting on CPU -> bolster worker parallelism so render pipeline
-        // stays continuously fed without starving the GPU.
+    } else if l_cpu >= 0.65 && (0.08..=0.55).contains(&l_gpu) && render_q >= 0.35 {
+        // CPU draw-call bound: GPU is actively rendering (>= 8%) and waiting on foreground CPU
+        // draw-calls (render_pressure >= 0.35), NOT a 0%-GPU background dex2oat/sync spike.
         let cpu_excess = ((l_cpu - 0.65) / 0.35).clamp(0.0, 1.0);
         if !encourage_cluster_spread {
             cpu_uclamp_scale = (1.04 + cpu_excess * 0.04).clamp(1.04, 1.08);
@@ -233,5 +233,27 @@ mod tests {
         assert!(!plan.boost_gpu_memory_supply);
         assert!(!plan.io_supply_boost);
         assert!(!plan.encourage_cluster_spread);
+    }
+
+    #[test]
+    fn zero_gpu_background_cpu_spike_never_triggers_cpu_draw_bound() {
+        let mut inp = neutral_input();
+        inp.cpu_util_pct = 92.0;
+        inp.cpu_psi = 24.0;
+        inp.render_pressure = 0.22;
+        inp.gpu_busy_pct = 0.0;
+        let plan = compute_symbiotic_plan(inp);
+        assert_eq!(plan.regime, REGIME_BALANCED);
+        assert_eq!(plan.cpu_uclamp_scale, 1.0);
+        assert!(!plan.encourage_cluster_spread);
+
+        // Even with higher render_pressure, GPU < 8% cannot be draw-call bound
+        let mut inp_low_gpu = neutral_input();
+        inp_low_gpu.cpu_util_pct = 92.0;
+        inp_low_gpu.cpu_psi = 24.0;
+        inp_low_gpu.render_pressure = 0.70;
+        inp_low_gpu.gpu_busy_pct = 4.0;
+        let plan_low_gpu = compute_symbiotic_plan(inp_low_gpu);
+        assert_eq!(plan_low_gpu.regime, REGIME_BALANCED);
     }
 }
