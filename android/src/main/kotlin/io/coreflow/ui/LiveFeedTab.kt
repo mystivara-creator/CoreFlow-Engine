@@ -31,6 +31,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +51,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.coreflow.CoreFlowDialogueEngine
 import io.coreflow.CoreFlowManager
 import io.coreflow.CoreFlowOnnxNlu
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -89,6 +94,7 @@ fun LiveFeedTab(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
     val episodes = status?.episodes.orEmpty()
     val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
     val pullState = rememberPullToRefreshState()
@@ -97,25 +103,38 @@ fun LiveFeedTab(
     var inputQuery by remember { mutableStateOf("") }
     var msgSeq by remember { mutableStateOf(1L) }
     var onnxNluReady by remember { mutableStateOf(false) }
-    var anomalyReport by remember { mutableStateOf<CoreFlowOnnxNlu.SessionAnomalyReport?>(null) }
+    var analyzingSession by remember { mutableStateOf(false) }
+    var anomalyReport by remember(strings.isIndonesian) {
+        mutableStateOf<CoreFlowOnnxNlu.SessionAnomalyReport?>(null)
+    }
 
-    // Phase B Lifecycle Discipline: lazy-load ONNX on Live AI view open, deterministically close on ON_STOP (0 MB background RAM)
+    // Phase B Lifecycle Discipline: lazy-load ONNX off-main-thread on Live AI open,
+    // deterministically close on ON_STOP / dispose so background RAM is strictly 0 MB.
+    // Lifecycle.addObserver() replays ON_START immediately when already STARTED/RESUMED.
     DisposableEffect(lifecycleOwner, context) {
+        var openJob: Job? = null
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> {
-                    onnxNluReady = CoreFlowOnnxNlu.open(context)
+                    openJob?.cancel()
+                    openJob = scope.launch {
+                        val ready = withContext(Dispatchers.IO) { CoreFlowOnnxNlu.open(context) }
+                        onnxNluReady = ready && CoreFlowOnnxNlu.isLoaded
+                    }
                 }
                 Lifecycle.Event.ON_STOP -> {
+                    openJob?.cancel()
+                    openJob = null
                     CoreFlowOnnxNlu.close()
                     onnxNluReady = false
                 }
                 else -> Unit
             }
         }
-        onnxNluReady = CoreFlowOnnxNlu.open(context)
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            openJob?.cancel()
+            openJob = null
             lifecycleOwner.lifecycle.removeObserver(observer)
             CoreFlowOnnxNlu.close()
             onnxNluReady = false
@@ -125,30 +144,36 @@ fun LiveFeedTab(
     fun submitQuery(raw: String) {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return
-        if (!CoreFlowOnnxNlu.isLoaded) {
-            onnxNluReady = CoreFlowOnnxNlu.open(context)
-        }
         messages.add(DialogueMessage(id = msgSeq++, fromUser = true, text = trimmed))
-        val res = CoreFlowDialogueEngine.evaluate(
-            rawQuery = trimmed,
-            status = status,
-            isIndonesian = strings.isIndonesian,
-            journalEntryCount = status?.baselineNodesSnapshotted,
-        )
-        messages.add(
-            DialogueMessage(
-                id = msgSeq++,
-                fromUser = false,
-                text = res.reply,
-                tags = res.telemetryTags,
-            ),
-        )
-        while (messages.size > 16) {
-            messages.removeAt(0)
-        }
-        res.requestedProfile?.let { onSelectProfile(it) }
-        res.requestedTamperResyncNode?.let { onResolveTamper(it) }
         inputQuery = ""
+        val statusSnapshot = status
+        val isId = strings.isIndonesian
+        scope.launch {
+            val (res, loaded) = withContext(Dispatchers.IO) {
+                val nluOpen = if (CoreFlowOnnxNlu.isLoaded) true else CoreFlowOnnxNlu.open(context)
+                val evaluated = CoreFlowDialogueEngine.evaluate(
+                    rawQuery = trimmed,
+                    status = statusSnapshot,
+                    isIndonesian = isId,
+                    journalEntryCount = statusSnapshot?.baselineNodesSnapshotted,
+                )
+                evaluated to nluOpen
+            }
+            onnxNluReady = loaded && CoreFlowOnnxNlu.isLoaded
+            messages.add(
+                DialogueMessage(
+                    id = msgSeq++,
+                    fromUser = false,
+                    text = res.reply,
+                    tags = res.telemetryTags,
+                ),
+            )
+            while (messages.size > 16) {
+                messages.removeAt(0)
+            }
+            res.requestedProfile?.let { onSelectProfile(it) }
+            res.requestedTamperResyncNode?.let { onResolveTamper(it) }
+        }
     }
 
     LaunchedEffect(pendingPrompt, status?.isRunning) {
@@ -519,12 +544,25 @@ fun LiveFeedTab(
                     TextButton(
                         text = strings.runSessionAnalysis,
                         onClick = {
-                            if (!CoreFlowOnnxNlu.isLoaded) {
-                                onnxNluReady = CoreFlowOnnxNlu.open(context)
+                            if (analyzingSession) return@TextButton
+                            val statusSnapshot = status
+                            val isId = strings.isIndonesian
+                            analyzingSession = true
+                            scope.launch {
+                                try {
+                                    val (rep, loaded) = withContext(Dispatchers.IO) {
+                                        val nluOpen = if (CoreFlowOnnxNlu.isLoaded) true else CoreFlowOnnxNlu.open(context)
+                                        val report = CoreFlowOnnxNlu.analyzeSession(statusSnapshot, isId)
+                                        report to nluOpen
+                                    }
+                                    onnxNluReady = loaded && CoreFlowOnnxNlu.isLoaded
+                                    anomalyReport = rep
+                                } finally {
+                                    analyzingSession = false
+                                }
                             }
-                            anomalyReport = CoreFlowOnnxNlu.analyzeSession(status, strings.isIndonesian)
                         },
-                        enabled = status != null,
+                        enabled = status != null && !analyzingSession,
                         colors = ButtonDefaults.textButtonColorsPrimary(),
                         modifier = Modifier.fillMaxWidth(),
                     )

@@ -1175,8 +1175,8 @@ object CoreFlowManager {
         val cmd =
             "CFW=/data/adb/coreflow/models/equilibrium.cfw2; " +
                 "ONX=/data/adb/coreflow/models/equilibrium.onnx; " +
-                "CFW_SZ=0; [ -f \"\$CFW\" ] && CFW_SZ=\$(wc -c < \"\$CFW\" 2>/dev/null || echo 0); " +
-                "ONX_SZ=0; [ -f \"\$ONX\" ] && ONX_SZ=\$(wc -c < \"\$ONX\" 2>/dev/null || echo 0); " +
+                "CFW_SZ=0; [ -f \"\$CFW\" ] && [ ! -L \"\$CFW\" ] && CFW_SZ=\$(wc -c < \"\$CFW\" 2>/dev/null || echo 0); " +
+                "ONX_SZ=0; [ -f \"\$ONX\" ] && [ ! -L \"\$ONX\" ] && ONX_SZ=\$(wc -c < \"\$ONX\" 2>/dev/null || echo 0); " +
                 "printf '%s %s\\n' \"\$CFW_SZ\" \"\$ONX_SZ\""
         val res = Shell.cmd(cmd).exec()
         val line = res.out.lastOrNull()?.trim().orEmpty()
@@ -1191,23 +1191,32 @@ object CoreFlowManager {
         )
     }
 
+    private fun buildGracefulRestartDaemonCmd(): String =
+        "PID=\$(cat /data/adb/coreflow/coreflowd.pid 2>/dev/null || true); " +
+            "if [ -n \"\$PID\" ] && kill -0 \"\$PID\" 2>/dev/null; then " +
+            "kill -TERM \"\$PID\" 2>/dev/null || true; " +
+            "i=0; while [ \"\$i\" -lt 20 ] && kill -0 \"\$PID\" 2>/dev/null; do sleep 0.1; i=\$((i + 1)); done; " +
+            "fi; " +
+            "$RESOLVE_SERVICE_SCRIPT; " +
+            "if [ -f \"\$SVC\" ]; then COREFLOW_SKIP_BOOT_WAIT=1 sh \"\$SVC\"; fi"
+
     suspend fun installCfw2Model(bytes: ByteArray): Result<CoreFlowOnnxNlu.Cfw2ValidationResult> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val check = CoreFlowOnnxNlu.Cfw2ModelValidator.validate(bytes)
                 require(check.valid) { check.error ?: "Invalid CFW2 model binary" }
                 val b64 = java.util.Base64.getEncoder().encodeToString(bytes)
+                val expectedLen = bytes.size
                 val cmd =
-                    "mkdir -p /data/adb/coreflow/models && " +
-                        "chmod 0755 /data/adb/coreflow/models && " +
+                    "[ ! -L /data/adb/coreflow ] && [ ! -L /data/adb/coreflow/models ] && " +
+                        "mkdir -p /data/adb/coreflow/models && " +
+                        "chown 0:0 /data/adb/coreflow/models && chmod 0755 /data/adb/coreflow/models && " +
                         "TMP=/data/adb/coreflow/models/equilibrium.cfw2.tmp.\$\$ && " +
-                        "printf '%s' '$b64' | base64 -d > \"\$TMP\" && " +
+                        "(printf '%s' '$b64' | base64 -d > \"\$TMP\" && " +
+                        "SZ=\$(wc -c < \"\$TMP\" | tr -d '[:space:]') && [ \"\$SZ\" = \"$expectedLen\" ] && " +
                         "chown 0:0 \"\$TMP\" && chmod 0644 \"\$TMP\" && " +
-                        "mv -f \"\$TMP\" /data/adb/coreflow/models/equilibrium.cfw2 && " +
-                        "PID=\$(cat /data/adb/coreflow/coreflowd.pid 2>/dev/null || true); " +
-                        "if [ -n \"\$PID\" ] && kill -0 \"\$PID\" 2>/dev/null; then kill -TERM \"\$PID\" 2>/dev/null || true; sleep 0.4; fi; " +
-                        "$RESOLVE_SERVICE_SCRIPT; " +
-                        "if [ -f \"\$SVC\" ]; then COREFLOW_SKIP_BOOT_WAIT=1 sh \"\$SVC\"; fi"
+                        "mv -f \"\$TMP\" /data/adb/coreflow/models/equilibrium.cfw2) || { rm -f \"\$TMP\"; exit 1; }; " +
+                        buildGracefulRestartDaemonCmd()
                 execRootCommand(cmd)
                 check
             }
@@ -1216,11 +1225,9 @@ object CoreFlowManager {
     suspend fun removeCustomCfw2Model(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val cmd =
-                "rm -f /data/adb/coreflow/models/equilibrium.cfw2 && " +
-                    "PID=\$(cat /data/adb/coreflow/coreflowd.pid 2>/dev/null || true); " +
-                    "if [ -n \"\$PID\" ] && kill -0 \"\$PID\" 2>/dev/null; then kill -TERM \"\$PID\" 2>/dev/null || true; sleep 0.4; fi; " +
-                    "$RESOLVE_SERVICE_SCRIPT; " +
-                    "if [ -f \"\$SVC\" ]; then COREFLOW_SKIP_BOOT_WAIT=1 sh \"\$SVC\"; fi"
+                "[ ! -L /data/adb/coreflow ] && [ ! -L /data/adb/coreflow/models ] && " +
+                    "rm -f /data/adb/coreflow/models/equilibrium.cfw2 && " +
+                    buildGracefulRestartDaemonCmd()
             execRootCommand(cmd)
             Unit
         }

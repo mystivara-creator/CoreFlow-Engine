@@ -252,4 +252,67 @@ class CoreFlowOnnxNluTest {
             ).valid,
         )
     }
+
+    @Test
+    fun malformedAndTruncatedOnnxBytesFailSafelyWithoutCrashing() {
+        val validNlu = readAsset(CoreFlowOnnxNlu.NLU_ASSET)
+        val truncated = validNlu.copyOf(validNlu.size / 3)
+        // Crafted protobuf field 7 (wireType 2) with huge 32-bit-overflow varint length
+        val overflowLength = byteArrayOf(0x3A, 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x07)
+
+        assertFalse(CoreFlowOnnxNlu.openFromBytes(ByteArray(0), ByteArray(0)))
+        assertFalse(CoreFlowOnnxNlu.openFromBytes(truncated, truncated))
+        assertFalse(CoreFlowOnnxNlu.openFromBytes(overflowLength, overflowLength))
+        assertFalse(CoreFlowOnnxNlu.isLoaded)
+    }
+
+    @Test
+    fun concurrentOpenInferenceAndCloseHasZeroRaceOrLeak() {
+        val nluBytes = readAsset(CoreFlowOnnxNlu.NLU_ASSET)
+        val anomBytes = readAsset(CoreFlowOnnxNlu.ANOMALY_ASSET)
+        val snap = statusSnapshot(socTemp = 48f, velCpm = 1.1f, cpuUtil = 70f)
+        val errors = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+
+        val workers = List(4) { idx ->
+            Thread {
+                runCatching {
+                    repeat(40) { step ->
+                        when ((idx + step) % 3) {
+                            0 -> CoreFlowOnnxNlu.openFromBytes(nluBytes, anomBytes)
+                            1 -> {
+                                CoreFlowOnnxNlu.classifyIntent("mau mabar mlbb biar ngebut")
+                                CoreFlowOnnxNlu.analyzeSession(snap, isIndonesian = true)
+                            }
+                            else -> CoreFlowOnnxNlu.close()
+                        }
+                    }
+                }.onFailure { errors.add(it) }
+            }
+        }
+        workers.forEach { it.start() }
+        workers.forEach { it.join(5000L) }
+        CoreFlowOnnxNlu.close()
+
+        assertTrue("Unexpected concurrency error: $errors", errors.isEmpty())
+        assertFalse("Final close() must leave sessions released", CoreFlowOnnxNlu.isLoaded)
+    }
+
+    @Test
+    fun missingBatteryTempFormatsPlaceholderInsteadOfNegativeTemp() {
+        openRealAssets()
+        val report = CoreFlowOnnxNlu.analyzeSession(
+            statusSnapshot(
+                socTemp = 52f,
+                battTemp = -1f,
+                velCpm = 1.8f,
+                cpuUtil = 28f,
+                charging = true,
+                powerMw = 15000f,
+            ),
+            isIndonesian = true,
+        )
+        assertEquals(CoreFlowOnnxNlu.AnomalyCategory.FAST_CHARGE_HEAT, report.category)
+        assertFalse("Summary must never display -1°C: ${report.summary}", report.summary.contains("-1°C"))
+        assertTrue("Summary should show -- placeholder: ${report.summary}", report.summary.contains("--"))
+    }
 }

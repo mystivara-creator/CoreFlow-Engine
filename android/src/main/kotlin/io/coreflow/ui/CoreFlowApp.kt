@@ -63,9 +63,11 @@ import io.coreflow.BuildConfig
 import io.coreflow.CoreFlowManager
 import io.coreflow.CoreFlowUpdateChecker
 import io.coreflow.InstalledAppEntry
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
@@ -279,19 +281,21 @@ fun CoreFlowApp(
         scope.launch {
             busyAction = true
             runCatching {
-                val raw = context.contentResolver.openInputStream(uri)?.use { stream ->
-                    val out = java.io.ByteArrayOutputStream()
-                    val chunk = ByteArray(4096)
-                    var total = 0
-                    while (total <= 16384) {
-                        val n = stream.read(chunk)
-                        if (n <= 0) break
-                        out.write(chunk, 0, n)
-                        total += n
-                    }
-                    if (total > 16384) error("File exceeds 16 KB CFW2 safety cap")
-                    out.toByteArray()
-                } ?: error("Cannot read CFW2 file")
+                val raw = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        val out = java.io.ByteArrayOutputStream()
+                        val chunk = ByteArray(4096)
+                        var total = 0
+                        while (total <= 16384) {
+                            val n = stream.read(chunk)
+                            if (n <= 0) break
+                            out.write(chunk, 0, n)
+                            total += n
+                        }
+                        if (total > 16384) error("File exceeds 16 KB CFW2 safety cap")
+                        out.toByteArray()
+                    } ?: error("Cannot read CFW2 file")
+                }
                 CoreFlowManager.installCfw2Model(raw).getOrThrow()
             }.onSuccess { info ->
                 delay(600L)

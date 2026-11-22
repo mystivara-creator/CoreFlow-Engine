@@ -142,8 +142,19 @@ object CoreFlowOnnxNlu {
                 val hDim = w1Dims[0]
                 val inDim = w1Dims[1]
                 val outDim = w2Dims[0]
-                require(w2Dims[1] == hDim && b1.size == hDim && b2.size == outDim) {
-                    "Layer dimension chain mismatch in ONNX graph"
+                require(
+                    inDim > 0 && hDim > 0 && outDim > 0 &&
+                        w2Dims[1] == hDim &&
+                        hDim.toLong() * inDim.toLong() == w1.size.toLong() &&
+                        b1.size == hDim &&
+                        outDim.toLong() * hDim.toLong() == w2.size.toLong() &&
+                        b2.size == outDim &&
+                        w1.all { it.isFinite() } &&
+                        b1.all { it.isFinite() } &&
+                        w2.all { it.isFinite() } &&
+                        b2.all { it.isFinite() },
+                ) {
+                    "Invalid or non-finite MLP weights in ONNX graph"
                 }
                 return OnnxMlpWeights(inDim, hDim, outDim, w1, b1, w2, b2)
             }
@@ -199,16 +210,22 @@ object CoreFlowOnnxNlu {
                             pos = np
                             onField(fieldNum, 0, v.toInt(), 0)
                         }
-                        1 -> pos += 8
+                        1 -> {
+                            require(end - pos >= 8) { "Truncated protobuf fixed64 field" }
+                            pos += 8
+                        }
                         2 -> {
                             val (size, np) = readVarint(buf, pos, end)
                             pos = np
-                            val sizeInt = size.toInt().coerceAtLeast(0)
-                            require(pos + sizeInt <= end) { "Truncated protobuf field" }
+                            require(size in 0L..(end - pos).toLong()) { "Truncated protobuf field" }
+                            val sizeInt = size.toInt()
                             onField(fieldNum, 2, pos, sizeInt)
                             pos += sizeInt
                         }
-                        5 -> pos += 4
+                        5 -> {
+                            require(end - pos >= 4) { "Truncated protobuf fixed32 field" }
+                            pos += 4
+                        }
                         else -> error("Unsupported protobuf wire type $wireType")
                     }
                 }
@@ -261,9 +278,11 @@ object CoreFlowOnnxNlu {
         }
     }
 
+    private val NON_ALNUM_REGEX = Regex("[^a-z0-9]+")
     private val lock = Any()
     private var nluSession: ManagedModelSession? = null
     private var anomalySession: ManagedModelSession? = null
+    private var lifecycleGeneration: Long = 0L
 
     val isLoaded: Boolean
         get() = synchronized(lock) { nluSession != null || anomalySession != null }
@@ -273,28 +292,56 @@ object CoreFlowOnnxNlu {
             nluSession?.backendName ?: anomalySession?.backendName ?: "Standby (0 MB)"
         }
 
-    fun open(context: Context): Boolean = synchronized(lock) {
-        if (nluSession != null && anomalySession != null) return true
-        val nluBytes = runCatching { context.assets.open(NLU_ASSET).use { it.readBytes() } }.getOrNull()
-        val anomBytes = runCatching { context.assets.open(ANOMALY_ASSET).use { it.readBytes() } }.getOrNull()
-        openFromBytes(nluBytes, anomBytes)
+    fun open(context: Context): Boolean {
+        val startGen = synchronized(lock) {
+            if (nluSession != null && anomalySession != null) return true
+            lifecycleGeneration
+        }
+        val appCtx = context.applicationContext ?: context
+        val nluBytes = runCatching { appCtx.assets.open(NLU_ASSET).use { it.readBytes() } }.getOrNull()
+        val anomBytes = runCatching { appCtx.assets.open(ANOMALY_ASSET).use { it.readBytes() } }.getOrNull()
+        return openFromBytesInternal(nluBytes, anomBytes, expectedGeneration = startGen)
     }
 
-    fun openFromBytes(nluBytes: ByteArray?, anomalyBytes: ByteArray?): Boolean = synchronized(lock) {
-        if (nluSession == null && nluBytes != null) {
-            nluSession = buildManagedSession(nluBytes)
+    fun openFromBytes(nluBytes: ByteArray?, anomalyBytes: ByteArray?): Boolean {
+        val startGen = synchronized(lock) { lifecycleGeneration }
+        return openFromBytesInternal(nluBytes, anomBytes, expectedGeneration = startGen)
+    }
+
+    private fun openFromBytesInternal(
+        nluBytes: ByteArray?,
+        anomalyBytes: ByteArray?,
+        expectedGeneration: Long,
+    ): Boolean {
+        val builtNlu = nluBytes?.let { buildManagedSession(it) }
+        val builtAnom = anomalyBytes?.let { buildManagedSession(it) }
+        synchronized(lock) {
+            // If close() was called while async open() was loading native sessions, release immediately (0 MB leak!)
+            if (lifecycleGeneration != expectedGeneration) {
+                builtNlu?.close()
+                builtAnom?.close()
+                return false
+            }
+            if (nluSession == null && builtNlu != null) {
+                nluSession = builtNlu
+            } else {
+                builtNlu?.close()
+            }
+            if (anomalySession == null && builtAnom != null) {
+                anomalySession = builtAnom
+            } else {
+                builtAnom?.close()
+            }
+            return nluSession != null || anomalySession != null
         }
-        if (anomalySession == null && anomalyBytes != null) {
-            anomalySession = buildManagedSession(anomalyBytes)
-        }
-        nluSession != null || anomalySession != null
     }
 
     /**
      * Deterministically closes all native ONNX Runtime sessions so background RAM returns to 0 MB.
-     * Safe to invoke repeatedly (idempotent).
+     * Safe to invoke repeatedly (idempotent) and cancels any in-flight async open().
      */
     fun close() = synchronized(lock) {
+        lifecycleGeneration++
         nluSession?.close()
         anomalySession?.close()
         nluSession = null
@@ -326,7 +373,7 @@ object CoreFlowOnnxNlu {
      */
     fun featurizeQuery(raw: String): FloatArray {
         val cleaned = raw.trim().lowercase(Locale.US)
-            .replace(Regex("[^a-z0-9]+"), " ")
+            .replace(NON_ALNUM_REGEX, " ")
             .trim()
         val vec = FloatArray(NLU_INPUT_DIM)
         if (cleaned.isEmpty()) return vec
@@ -391,10 +438,14 @@ object CoreFlowOnnxNlu {
     }
 
     fun classifyIntent(rawQuery: String): IntentPrediction? {
-        val sess = synchronized(lock) { nluSession } ?: return null
         val features = featurizeQuery(rawQuery)
         if (features.all { it == 0f }) return null
-        val logits = runCatching { sess.run(features) }.getOrNull() ?: return null
+        // Hold lock across <0.15ms native inference to guarantee zero use-after-close against ON_STOP close()
+        val (logits, backend) = synchronized(lock) {
+            val sess = nluSession ?: return null
+            val out = runCatching { sess.run(features) }.getOrNull() ?: return null
+            out to sess.backendName
+        }
         if (logits.size != INTENT_ORDER.size || logits.any { !it.isFinite() }) return null
         val probs = softmax(logits)
         var bestIdx = 0
@@ -404,7 +455,7 @@ object CoreFlowOnnxNlu {
         return IntentPrediction(
             intent = INTENT_ORDER[bestIdx],
             confidence = probs[bestIdx].coerceIn(0f, 1f),
-            backendName = sess.backendName,
+            backendName = backend,
         )
     }
 
@@ -448,26 +499,34 @@ object CoreFlowOnnxNlu {
         status: CoreFlowManager.DaemonStatus?,
         isIndonesian: Boolean,
     ): SessionAnomalyReport {
-        val sess = synchronized(lock) { anomalySession }
         val features = extractSessionFeatures(status)
-        val (category, conf, backend) = if (sess != null) {
-            val logits = runCatching { sess.run(features) }.getOrNull()
-            if (logits != null && logits.size == AnomalyCategory.entries.size && logits.all { it.isFinite() }) {
-                val probs = softmax(logits)
-                var bestIdx = 0
-                for (i in 1 until probs.size) {
-                    if (probs[i] > probs[bestIdx]) bestIdx = i
-                }
-                Triple(AnomalyCategory.entries[bestIdx], probs[bestIdx].coerceIn(0f, 1f), sess.backendName)
+        val (logits, sessBackend) = synchronized(lock) {
+            val sess = anomalySession
+            if (sess != null) {
+                runCatching { sess.run(features) }.getOrNull() to sess.backendName
             } else {
-                Triple(AnomalyCategory.HEALTHY, 0.5f, "Telemetry")
+                null to "Telemetry"
             }
+        }
+        val (category, conf, backend) = if (
+            logits != null &&
+            logits.size == AnomalyCategory.entries.size &&
+            logits.all { it.isFinite() }
+        ) {
+            val probs = softmax(logits)
+            var bestIdx = 0
+            for (i in 1 until probs.size) {
+                if (probs[i] > probs[bestIdx]) bestIdx = i
+            }
+            Triple(AnomalyCategory.entries[bestIdx], probs[bestIdx].coerceIn(0f, 1f), sessBackend)
         } else {
             Triple(AnomalyCategory.HEALTHY, 0.5f, "Telemetry")
         }
 
         val tempStr = status?.socTempCelsius?.takeIf { it > 0f }
             ?.let { String.format(Locale.US, "%.1f°C", it) } ?: "--"
+        val battStr = status?.batteryTempCelsius?.takeIf { it > 0f }
+            ?.let { "${it.toInt()}°C" } ?: "--"
         val jankPct = ((maxOf(status?.hyperFluid?.jankRatio ?: 0f, status?.aiJankRisk ?: 0f)) * 100f)
             .toInt().coerceIn(0, 100)
 
@@ -509,9 +568,9 @@ object CoreFlowOnnxNlu {
                 confidence = conf,
                 title = if (isIndonesian) "Panas Pengisian Cepat" else "Fast-Charge Heat Accumulation",
                 summary = if (isIndonesian) {
-                    "Kenaikan suhu berkorelasi kuat dengan daya pengisian (${(status?.batteryPower?.powerMw ?: 0f).toInt()} mW, baterai ${status?.batteryTempCelsius?.toInt() ?: 0}°C)."
+                    "Kenaikan suhu berkorelasi kuat dengan daya pengisian (${(status?.batteryPower?.powerMw ?: 0f).toInt()} mW, baterai $battStr)."
                 } else {
-                    "Thermal rise correlates strongly with charging power (${(status?.batteryPower?.powerMw ?: 0f).toInt()} mW, battery ${status?.batteryTempCelsius?.toInt() ?: 0}°C)."
+                    "Thermal rise correlates strongly with charging power (${(status?.batteryPower?.powerMw ?: 0f).toInt()} mW, battery $battStr)."
                 },
                 recommendation = if (isIndonesian) {
                     "Aktifkan Bypass Charging (jika didukung) atau Step-Charging di Control Hub saat dipakai sambil mengisi daya."

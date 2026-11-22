@@ -442,11 +442,17 @@ object CoreFlowDialogueEngine {
         )
     }
 
+    private val wordRegexCache = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+
     private fun containsAny(text: String, vararg needles: String): Boolean =
         needles.any { text.contains(it) }
 
-    private fun containsWord(text: String, word: String): Boolean =
-        Regex("(?<![a-z0-9])${Regex.escape(word)}(?![a-z0-9])").containsMatchIn(text)
+    private fun containsWord(text: String, word: String): Boolean {
+        val regex = wordRegexCache.computeIfAbsent(word) {
+            Regex("(?<![a-z0-9])${Regex.escape(it)}(?![a-z0-9])")
+        }
+        return regex.containsMatchIn(text)
+    }
 
     private fun formatTemp(c: Float): String =
         if (c > 0f && c.isFinite()) String.format(Locale.US, "%.1f°C", c) else "--"
