@@ -116,6 +116,16 @@ if len(sys.argv) >= 2:
             assert "bypassSupported" in payload["batteryPower"]
             assert "session" in payload and isinstance(payload["session"], dict)
             assert "history" in payload and isinstance(payload["history"], list)
+            assert "aiJankRisk" in payload and isinstance(payload["aiJankRisk"], (int, float))
+            assert 0.0 <= float(payload["aiJankRisk"]) <= 1.0
+            assert "aiWorkloadClass" in payload and isinstance(payload["aiWorkloadClass"], str)
+            assert payload["aiWorkloadClass"] in (
+                "idle", "balanced", "interactive", "io_bound", "gpu_heavy", "thermal_surge"
+            )
+            assert "aiBackend" in payload and isinstance(payload["aiBackend"], str)
+            assert payload["aiBackend"] in (
+                "embedded-rls-mlp", "cfw2-micro-mlp", "custom-cfw-rls-mlp", "onnx-runtime-live"
+            )
             assert "vulkan" not in payload
         elif flag == "--capabilities":
             assert payload.get("version") == "6.0.0-R"
@@ -156,5 +166,58 @@ if len(sys.argv) >= 2:
         check=False,
     )
     assert bad_tamper.returncode == 2, "Sovereign CLI must reject YIELD action!"
+
+# Verify CFW2 offline toolchain round-trip (zero third-party pip deps)
+import tempfile
+with tempfile.TemporaryDirectory(prefix="coreflow-cfw2-cli-") as tmpdir:
+    default_cfw2 = Path(tmpdir) / "default.cfw2"
+    trained_cfw2 = Path(tmpdir) / "trained.cfw2"
+    exp = subprocess.run(
+        [sys.executable, str(repo / "tools/onnx_to_cfw2.py"), "--export-default", str(default_cfw2)],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert exp.returncode == 0, f"onnx_to_cfw2 --export-default failed: {exp.stderr}"
+    assert default_cfw2.stat().st_size == 1700
+    insp = subprocess.run(
+        [sys.executable, str(repo / "tools/onnx_to_cfw2.py"), "--inspect", str(default_cfw2)],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert insp.returncode == 0 and "CFW2 VALID" in insp.stdout
+    trn = subprocess.run(
+        [sys.executable, str(repo / "tools/train_cfw2_from_diag.py"), "--epochs", "10", "-o", str(trained_cfw2)],
+        capture_output=True, text=True, timeout=20, check=False,
+    )
+    assert trn.returncode == 0, f"train_cfw2_from_diag failed: {trn.stderr}"
+    assert trained_cfw2.stat().st_size == 1700
+    insp2 = subprocess.run(
+        [sys.executable, str(repo / "tools/onnx_to_cfw2.py"), "--inspect", str(trained_cfw2)],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert insp2.returncode == 0 and "CFW2 VALID" in insp2.stdout
+
+    # Verify trainer safely survives null/corrupt fields and aggressive learning rate via best-checkpoint rollback
+    corrupt_diag = Path(tmpdir) / "corrupt_diag.json"
+    corrupt_diag.write_text(json.dumps({
+        "status": {
+            "memPsi": None,
+            "ioPsi": "bad",
+            "gpuBusyPct": None,
+            "history": [
+                {"ts": 1000 * i, "pressure": None if i == 3 else 45.0 + 0.5 * i, "cpu": None if i == 5 else 20.0, "scale": 1.0}
+                for i in range(16)
+            ],
+        }
+    }), encoding="utf-8")
+    trained_corrupt = Path(tmpdir) / "trained_corrupt.cfw2"
+    trn2 = subprocess.run(
+        [
+            sys.executable, str(repo / "tools/train_cfw2_from_diag.py"),
+            "--diag", str(corrupt_diag), "--epochs", "6", "--lr", "0.5",
+            "-o", str(trained_corrupt),
+        ],
+        capture_output=True, text=True, timeout=20, check=False,
+    )
+    assert trn2.returncode == 0, f"train_cfw2_from_diag failed on corrupt diag: {trn2.stderr}"
+    assert trained_corrupt.stat().st_size == 1700
 
 print("CoreFlow v6.0.0-R Sovereign Rebuild CLI lifecycle contract PASS")

@@ -160,7 +160,26 @@ int main() {
     assert(up_tightened < up_neutral);
     assert(hispeed_early_lead < hispeed_no_lead);
 
-    act.apply(topo, ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, {}, 42000);
+    // 6. Proactive 38 C Cool-Glide: warm Interactive (scale=0.78) must NEVER boost Big-cluster
+    //    hispeed_freq above captured OEM factory baseline (reproducing PARROTPRO 1190000 kHz).
+    write_file(hispeed, "1190000\n");
+    baseline.reinitialize();
+    assert(baseline.recover_pending());
+    act.reset_contention();
+    topo.cpu_clusters[0].opps_khz = {691200, 960000, 1190000, 1497600, 1900800, 2400000};
+    topo.cpu_clusters[0].capacity = 1024U;
+    act.apply(topo, ContextMode::Interactive, PerformanceProfile::Balanced, 0.78, false, true, {10.0, 20.0, 0.16}, 43000);
+    const uint64_t warm_interactive_hispeed = std::stoull(read_file(hispeed));
+    assert(warm_interactive_hispeed <= 1190000U);
+
+    // 7. Hands-off passive video playback while warm (scale=0.80) releases boosted nodes so playback cools smoothly
+    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, {20.0, 70.0}, 43500);
+    assert(act.stats().managed_nodes > 0U);
+    act.apply(topo, ContextMode::Interactive, PerformanceProfile::Balanced, 0.80, false, true, {8.0, 18.0, 0.16, true}, 43800);
+    assert(act.stats().managed_nodes == 0U);
+    assert(read_file(hispeed) == "1190000");
+
+    act.apply(topo, ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, {}, 44000);
     assert(!baseline.has_active_mutations());
     assert(baseline.verify_and_persist_clear_state());
     (void)::unsetenv("COREFLOW_TEST_STATE_DIR");

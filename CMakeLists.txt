@@ -174,9 +174,18 @@ if(CORE_FLOW_BUILD_TESTS)
     )
     add_test(NAME MountTopologyDynamicDiscoveryTest COMMAND test_mount_topology)
 
+    add_library(mock_onnxruntime SHARED
+        tests/mock_onnxruntime.cpp
+    )
+
     add_executable(test_neural_predictor
         tests/test_neural_predictor.cpp
         src/kernel/neural_predictor.cpp
+    )
+    add_dependencies(test_neural_predictor mock_onnxruntime)
+    target_compile_definitions(test_neural_predictor PRIVATE
+        COREFLOW_ENABLE_TEST_HOOKS=1
+        COREFLOW_MOCK_ORT_PATH="$<TARGET_FILE:mock_onnxruntime>"
     )
     target_link_libraries(test_neural_predictor PRIVATE ${CMAKE_DL_LIBS} m)
     add_test(NAME NeuralPredictorTest COMMAND test_neural_predictor)

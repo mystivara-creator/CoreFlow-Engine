@@ -151,7 +151,9 @@ pub fn compute_thermal_equilibrium(
     let mut charging_damped = false;
     let mut equilibrium_guard = false;
 
-    // 1. Slow chassis / battery equilibrium loop (prevents sawtooth thermal cliff drops)
+    // 1. Slow chassis / battery Cool-Glide equilibrium loop:
+    // Proactively steer warm chassis temperatures (37.5..43.9 C) smoothly toward the ~38 C
+    // comfort zone without triggering harsh THERMAL_GUARD (which remains at 44.0 C).
     let chassis = if skin > 0.0 && batt > 0.0 {
         skin.max(batt)
     } else if skin > 0.0 {
@@ -160,9 +162,14 @@ pub fn compute_thermal_equilibrium(
         batt
     };
 
-    if chassis >= 40.0 {
-        let excess = (chassis - 40.0).clamp(0.0, 8.0);
-        let eq_cap = (1.0 - excess * 0.045).clamp(0.55, 1.0);
+    if chassis >= 37.5 {
+        let excess = (chassis - 37.5).clamp(0.0, 9.0);
+        let mut eq_cap = (1.0 - excess * 0.055).clamp(0.55, 1.0);
+        // Sustained warm-plateau nudge: if chassis >= 38.5 C and not actively cooling,
+        // ease power draw below ambient dissipation so temperature glides back toward ~38 C.
+        if chassis >= 38.5 && vel >= -0.2 {
+            eq_cap = (eq_cap - 0.05).clamp(0.55, 1.0);
+        }
         scale = scale.min(eq_cap);
         if chassis >= 44.0 {
             equilibrium_guard = true;
@@ -170,11 +177,11 @@ pub fn compute_thermal_equilibrium(
     }
 
     // 2. Charging-aware vs Bypass-Charging-aware budget
-    // Hot active charging heats the battery & PMIC simultaneously; ease ceiling gently.
-    // When Bypass Charging is engaged, charging IC heat is removed -> unlock chassis budget.
-    if input.charging && !input.bypass_active && batt >= 39.0 {
-        let charge_excess = (batt - 39.0).clamp(0.0, 6.0);
-        let charge_cap = (0.92 - charge_excess * 0.035).clamp(0.65, 0.92);
+    // Hot active charging adds charging-IC heat to the battery & PMIC simultaneously; apply a
+    // proportional penalty below the chassis curve. Bypass Charging removes IC heat cleanly.
+    if input.charging && !input.bypass_active && batt >= 38.5 {
+        let charge_penalty = (0.04 + (batt - 38.5).clamp(0.0, 6.0) * 0.025).clamp(0.04, 0.19);
+        let charge_cap = (scale - charge_penalty).clamp(0.50, 0.92);
         if charge_cap < scale {
             scale = charge_cap;
             charging_damped = true;
@@ -293,5 +300,49 @@ mod tests {
         });
         assert!(!bypass.charging_damped);
         assert!(bypass.effective_scale > hot_chg.effective_scale);
+    }
+
+    #[test]
+    fn proactive_cool_glide_steers_41c_plateau_toward_38c_without_guard() {
+        use crate::bridge::ffi::ThermalEquilibriumInput;
+        let cool_37 = compute_thermal_equilibrium(ThermalEquilibriumInput {
+            soc_temp_c: 44.0,
+            battery_temp_c: 37.0,
+            skin_temp_c: 37.0,
+            thermal_velocity_cpm: 0.0,
+            pid_capacity_scale: 1.0,
+            charging: false,
+            bypass_active: false,
+            is_launch_burst: false,
+        });
+        assert!((cool_37.effective_scale - 1.0).abs() < 1e-9);
+        assert!(!cool_37.equilibrium_guard);
+
+        let plateau_41 = compute_thermal_equilibrium(ThermalEquilibriumInput {
+            soc_temp_c: 47.0,
+            battery_temp_c: 41.0,
+            skin_temp_c: 41.0,
+            thermal_velocity_cpm: 0.1,
+            pid_capacity_scale: 1.0,
+            charging: false,
+            bypass_active: false,
+            is_launch_burst: false,
+        });
+        // Actively trims headroom (~0.76) to cool 41 C plateau back toward ~38 C without false THERMAL_GUARD
+        assert!(!plateau_41.equilibrium_guard);
+        assert!(plateau_41.effective_scale <= 0.78 && plateau_41.effective_scale >= 0.70);
+
+        let cooling_39 = compute_thermal_equilibrium(ThermalEquilibriumInput {
+            soc_temp_c: 45.0,
+            battery_temp_c: 39.0,
+            skin_temp_c: 39.0,
+            thermal_velocity_cpm: -0.6,
+            pid_capacity_scale: 1.0,
+            charging: false,
+            bypass_active: false,
+            is_launch_burst: false,
+        });
+        assert!(!cooling_39.equilibrium_guard);
+        assert!(cooling_39.effective_scale > plateau_41.effective_scale + 0.10);
     }
 }

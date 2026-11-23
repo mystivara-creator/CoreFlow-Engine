@@ -90,6 +90,9 @@ fun SystemTab(
     onNavBadgesChange: (Boolean) -> Unit,
     onExportProfile: () -> Unit,
     onImportProfile: () -> Unit,
+    neuralModelInfo: CoreFlowManager.InstalledNeuralModelInfo = CoreFlowManager.InstalledNeuralModelInfo(),
+    onImportCfw2: () -> Unit = {},
+    onRemoveCfw2: () -> Unit = {},
     onRunSelfAudit: () -> Unit,
     onShareSelfAudit: (String) -> Unit,
     onLoadJournal: () -> Unit,
@@ -211,6 +214,39 @@ fun SystemTab(
                 }
             }
 
+            // Phase A/B Daemon Neural Model Manager (CFW2 Micro-MLP / Optional ONNX Add-on)
+            item { SmallTitle(text = strings.sectionNeuralModel) }
+            item {
+                val activeBackend = status?.let { strings.humanizeAiBackend(it.aiBackend) } ?: "Embedded RLS"
+                val modelStatusSummary = buildString {
+                    append(if (strings.isIndonesian) "Mesin aktif: $activeBackend" else "Active engine: $activeBackend")
+                    if (neuralModelInfo.cfw2Installed) {
+                        append(" · equilibrium.cfw2 (${neuralModelInfo.cfw2Bytes} B)")
+                    }
+                    if (neuralModelInfo.onnxInstalled) {
+                        append(" · equilibrium.onnx (${neuralModelInfo.onnxBytes / 1024L} KB)")
+                    }
+                }
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    ArrowPreference(
+                        title = strings.importCfw2Title,
+                        summary = "$modelStatusSummary\n${strings.importCfw2Summary}",
+                        startAction = { SettingLeadingIcon(MiuixIcons.File) },
+                        enabled = !busy,
+                        onClick = onImportCfw2,
+                    )
+                    if (neuralModelInfo.cfw2Installed) {
+                        ArrowPreference(
+                            title = strings.removeCfw2Title,
+                            summary = strings.removeCfw2Summary,
+                            startAction = { SettingLeadingIcon(MiuixIcons.Layers) },
+                            enabled = !busy,
+                            onClick = onRemoveCfw2,
+                        )
+                    }
+                }
+            }
+
             // 1-Tap Device Health Self-Audit (v6.2 Cross-Device Readiness Check)
             item { SmallTitle(text = strings.sectionSelfAudit) }
             item {
@@ -304,15 +340,16 @@ fun SystemTab(
             // Persistent OEM-Collaboration Map & Diagnostics
             item { SmallTitle(text = strings.sectionCoexistence) }
             item {
-                val contended = status?.contendedPaths.orEmpty()
                 val yielded = status?.oemYieldedPaths.orEmpty()
+                val yieldedSet = yielded.toSet()
+                val activeContended = status?.contendedPaths.orEmpty().filterNot { it in yieldedSet }
                 val headerText = when {
-                    contended.isNotEmpty() -> "${contended.size} Node(s) in Auto-Cooldown Backoff"
+                    activeContended.isNotEmpty() -> "${activeContended.size} Node(s) in Auto-Cooldown Backoff"
                     yielded.isNotEmpty() -> "${strings.oemCooperatingTitle} · ${yielded.size} Yielded"
                     else -> "Zero OEM Contention · Full Ownership"
                 }
                 val headerColor = when {
-                    contended.isNotEmpty() -> Color(0xFFF59E0B)
+                    activeContended.isNotEmpty() -> Color(0xFFF59E0B)
                     yielded.isNotEmpty() -> Color(0xFF38BDF8)
                     else -> Color(0xFF22C55E)
                 }
@@ -329,7 +366,7 @@ fun SystemTab(
                         color = headerColor,
                     )
                     Spacer(Modifier.height(4.dp))
-                    if (contended.isEmpty() && yielded.isEmpty()) {
+                    if (activeContended.isEmpty() && yielded.isEmpty()) {
                         Text(
                             text = if (strings.isIndonesian) {
                                 "CoreFlow Autonomous Co-Pilot berjalan harmonis bersama OEM tanpa konflik."
@@ -340,16 +377,16 @@ fun SystemTab(
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                     } else {
-                        if (contended.isNotEmpty()) {
+                        if (activeContended.isNotEmpty()) {
                             Text(
-                                text = contended.joinToString("\n"),
+                                text = activeContended.joinToString("\n"),
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,
                                 color = Color(0xFFF59E0B),
                             )
                         }
                         if (yielded.isNotEmpty()) {
-                            if (contended.isNotEmpty()) Spacer(Modifier.height(8.dp))
+                            if (activeContended.isNotEmpty()) Spacer(Modifier.height(8.dp))
                             Text(
                                 text = strings.oemCooperatingSummary,
                                 style = MiuixTheme.textStyles.footnote1,

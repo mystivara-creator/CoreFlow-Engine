@@ -467,10 +467,12 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
         }
     }
 
+    // Aligned with Android OverScroller kinetic fling deceleration so UI threads never
+    // drop from Interactive -> Efficiency mid-scroll while warm Little-cluster steering keeps power cool.
     const uint64_t touch_hold_ms =
-        eff_profile == PerformanceProfile::Smoothness ? 550ULL :
-        eff_profile == PerformanceProfile::Battery ? 250ULL :
-        eff_profile == PerformanceProfile::Gaming ? 450ULL : 400ULL;
+        eff_profile == PerformanceProfile::Smoothness ? 1100ULL :
+        eff_profile == PerformanceProfile::Battery ? 450ULL :
+        eff_profile == PerformanceProfile::Gaming ? 800ULL : 750ULL;
 
     if (launch_burst_until_ms_ > input.now_ms) {
         out.launch_burst_remaining_ms = launch_burst_until_ms_ - input.now_ms;

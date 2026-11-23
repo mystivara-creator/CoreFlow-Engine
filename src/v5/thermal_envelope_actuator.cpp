@@ -47,6 +47,7 @@ ThermalEnvelopeActuator::ThermalEnvelopeActuator(
 void ThermalEnvelopeActuator::reset_contention() noexcept {
     contended_paths_.clear();
     last_written_.clear();
+    baseline_hispeed_khz_.clear();
     stats_.contended_nodes = oem_map_ ? oem_map_->active_count() : 0U;
     stats_.managed_nodes = 0U;
 }
@@ -70,6 +71,7 @@ void ThermalEnvelopeActuator::record_contention(
     // and persistent OEM collaboration escalates cleanly without repeated tug-of-war.
     (void)baseline_.rollback(path);
     last_written_.erase(path);
+    baseline_hispeed_khz_.erase(path);
     if (oem_map_) {
         oem_map_->record_contention(path, observed, now_ms);
         stats_.contended_nodes = oem_map_->active_count(now_ms);
@@ -230,7 +232,7 @@ void ThermalEnvelopeActuator::apply(
     const bool calm_cool =
         !thermal_guard &&
         (mode == ContextMode::Efficiency || mode == ContextMode::ScreenOff ||
-         (mode == ContextMode::Interactive && telemetry.passive_media_only && scale >= 0.95));
+         (mode == ContextMode::Interactive && telemetry.passive_media_only));
     if (!enabled || mode == ContextMode::Excluded || calm_cool) {
         if (!last_written_.empty()) rollback_all_managed();
         return;
@@ -263,6 +265,15 @@ void ThermalEnvelopeActuator::apply(
             : (cluster.role == ClusterRole::Big ? 1.0 : cluster.role == ClusterRole::Mid ? 0.65 : 0.40);
 
         if (!cluster.hispeed_freq_path.empty() && !cluster.opps_khz.empty()) {
+            // Capture OEM factory hispeed_freq once while untouched so warm Interactive
+            // scrolling never wastes C*V^2*f power boosting Big cores above factory baseline.
+            if (!last_written_.contains(cluster.hispeed_freq_path) &&
+                !baseline_hispeed_khz_.contains(cluster.hispeed_freq_path)) {
+                uint64_t oem_khz = 0U;
+                if (parse_u64_exact(read_line_trimmed(cluster.hispeed_freq_path), oem_khz) && oem_khz > 0U) {
+                    baseline_hispeed_khz_[cluster.hispeed_freq_path] = oem_khz;
+                }
+            }
             // Higher-capacity clusters scale deeper in Efficiency to save power and higher in Burst/Gaming.
             double mode_demand = 0.55;
             if (thermal_guard) {
@@ -272,12 +283,23 @@ void ThermalEnvelopeActuator::apply(
             } else if (mode == ContextMode::LaunchBurst || mode == ContextMode::Gaming) {
                 mode_demand = 0.78 + (cap_ratio * 0.10) + (cpu_psi_norm * 0.08);
             } else if (mode == ContextMode::Interactive) {
-                mode_demand = 0.68 + (cpu_psi_norm * 0.12);
+                const double warm_big_trim = (effective_scale < 0.94 && cap_ratio >= 0.80)
+                    ? std::clamp((0.94 - effective_scale) * 0.75, 0.0, 0.22)
+                    : 0.0;
+                mode_demand = 0.64 - warm_big_trim + (cpu_psi_norm * 0.10);
             } else { // Efficiency under thermal pacing
                 mode_demand = 0.60 - (cap_ratio * 0.12) + (cpu_psi_norm * 0.10);
             }
             const double effective_tier = std::clamp(mode_demand * profile_bias * effective_scale, 0.25, 0.82);
-            const uint64_t freq = select_opp(cluster.opps_khz, effective_tier);
+            uint64_t freq = select_opp(cluster.opps_khz, effective_tier);
+            if (mode == ContextMode::Interactive &&
+                effective_scale < 0.94 &&
+                profile != PerformanceProfile::Smoothness) {
+                const auto bit = baseline_hispeed_khz_.find(cluster.hispeed_freq_path);
+                if (bit != baseline_hispeed_khz_.end() && bit->second > 0U && freq > bit->second) {
+                    freq = bit->second;
+                }
+            }
             if (freq > 0U) (void)write_managed_node(cluster.hispeed_freq_path, std::to_string(freq), now_ms);
         }
 

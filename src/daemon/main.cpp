@@ -689,6 +689,10 @@ struct RuntimeStatusData {
     double scheduler_responsiveness_scale{1.0};
     double thermal_stepdown_lead{0.0};
     uint8_t coupling_mask{0};
+    // Hybrid CFW2 + ONNX Neural Engine telemetry
+    double ai_jank_risk{0.0};
+    std::string ai_workload_class{"balanced"};
+    std::string ai_backend{"embedded-rls-mlp"};
     std::vector<HistoryPoint> history{};
 };
 
@@ -878,6 +882,9 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"ioPsi\":" << (s.io_psi ? std::to_string(safe_num(*s.io_psi)) : "null")
         << ",\"aiPredicted10s\":" << safe_num(s.ai_predicted_10s)
         << ",\"aiConfidence\":" << safe_num(s.ai_confidence)
+        << ",\"aiJankRisk\":" << safe_num(s.ai_jank_risk)
+        << ",\"aiWorkloadClass\":" << json_str(s.ai_workload_class)
+        << ",\"aiBackend\":" << json_str(s.ai_backend)
         << ",\"baselineNodesSnapshotted\":" << s.baseline_nodes
         << ",\"recoveryPending\":" << (s.recovery_pending ? "true" : "false")
         << ",\"features\":{"
@@ -1540,8 +1547,7 @@ int main(int argc, char* argv[]) {
     HardwareProbe probe;
     HardwareTopology topo = probe.discover();
     ThermalMonitor thermal_mon;
-    NeuralPredictor neural;
-    neural.initialize("/data/adb/coreflow/models");
+    NeuralPredictor neural("/data/adb/coreflow/models");
     CentralMutationCoordinator coordinator;
     HardwareLongevityManager longevity(coordinator);
 
@@ -1608,6 +1614,7 @@ int main(int argc, char* argv[]) {
     live_status.frame_pacing_available = frame_pacing.supported();
     live_status.app_dna_learned = app_dna.learned_count();
     live_status.app_dna_flush_count = app_dna.flush_count();
+    live_status.ai_backend = std::string(neural.last_prediction().backend);
     live_status.conflicting_modules_json = read_conflicting_modules_json();
     live_status.session.started_steady_ms = steady_now_ms();
 
@@ -1800,7 +1807,7 @@ int main(int argc, char* argv[]) {
                !ctx.camera_boost_active &&
                ctx.touch_hold_remaining_ms == 0U &&
                live_status.render_pressure < 0.35 &&
-               live_status.cpu_psi.value_or(0.0) < 4.0 &&
+               live_status.cpu_psi.value_or(0.0) < 12.0 &&
                live_status.gpu_busy_pct.value_or(0.0) < 25.0;
     };
     const auto build_envelope_telemetry = [&]() noexcept {
@@ -2130,16 +2137,22 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (!thermal.available && (tb.profile.total_valid_sensors > 0 || soc_temp >= 0.0f)) {
-            const double rec = static_cast<double>(config.thermal_recover_celsius);
-            const double trip = static_cast<double>(config.thermal_trip_celsius);
-            const double norm = std::clamp((static_cast<double>(soc_temp) - rec) / std::max(1.0, trip - rec), 0.0, 3.0);
-            thermal.available = true;
-            thermal.fallback_active = true;
-            thermal.pressure = std::clamp(65.0 + norm * 20.0, 0.0, 130.0);
-            thermal.source = "generic_fallback";
-            if (soc_temp >= config.thermal_trip_celsius + config.thermal_emergency_margin_celsius) {
-                thermal.emergency = true;
+        if (!thermal.available && (tb.profile.total_valid_sensors > 0 || soc_temp >= 0.0f || skin_temp > 0.0 || batt_temp > 0.0f)) {
+            const auto fallback = evaluate_generic_thermal_fallback({
+                .soc_temp_celsius = soc_temp,
+                .skin_temp_celsius = skin_temp > 0.0 ? static_cast<float>(skin_temp) : tb.skin_celsius,
+                .battery_temp_celsius = batt_temp,
+                .chassis_recover_celsius = config.thermal_recover_celsius,
+                .chassis_trip_celsius = config.thermal_trip_celsius,
+                .emergency_margin_celsius = config.thermal_emergency_margin_celsius,
+            });
+            if (fallback.available) {
+                thermal.available = fallback.available;
+                thermal.fallback_active = fallback.fallback_active;
+                thermal.pressure = fallback.pressure;
+                thermal.source = fallback.source;
+                thermal.sensor = fallback.sensor;
+                thermal.emergency = fallback.emergency;
             }
         }
         if (!pid_initialized || pid_target_fallback != thermal.fallback_active) {
@@ -2288,10 +2301,12 @@ int main(int argc, char* argv[]) {
             }
             // Compute jitter-free thermal rise/cool velocity (°C/min) via Rust OLS ring buffer
             // using monotonic steady_clock timestamps so NTP/NITZ wall-clock jumps never skew the slope.
+            const double die_trip_c = std::clamp(
+                static_cast<double>(config.thermal_trip_celsius) + 30.0, 72.0, 82.0);
             const auto trend = thermal_trend->push_sample(
                 now_ms,
                 static_cast<double>(soc_temp),
-                static_cast<double>(config.thermal_trip_celsius));
+                die_trip_c);
             live_status.thermal_velocity_cpm = trend.velocity_cpm;
             (void)write_status_snapshot(build_status_json(live_status));
         };
@@ -2323,11 +2338,11 @@ int main(int argc, char* argv[]) {
         }
         live_status.thermal_emergency = false;
 
-        const bool thermal_guard = !thermal.fallback_active
-            ? (thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0 ||
-               (live_status.thermal_guard && thermal.pressure > 65.0))
-            : (thermal.emergency || soc_temp >= config.thermal_trip_celsius ||
-               (live_status.thermal_guard && soc_temp > config.thermal_recover_celsius));
+        // Both OEM thermal policy and dual-domain generic_fallback emit normalized 0..130 pressure
+        // (65 = recovery threshold, 85 = thermal guard trip across chassis OR CPU silicon die).
+        const bool thermal_guard =
+            thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0 ||
+            (live_status.thermal_guard && thermal.pressure > 65.0);
         if (thermal_guard && !live_status.session.prev_thermal_guard) {
             ++live_status.session.thermal_guard_events;
             decision_journal.record(
@@ -2343,7 +2358,10 @@ int main(int argc, char* argv[]) {
         live_status.session.prev_thermal_guard = thermal_guard;
         live_status.thermal_guard = thermal_guard;
 
-        // 10s Online RLS + Micro-MLP thermal lookahead + Rust PID + Dual-Timescale Equilibrium
+        // 10s Hybrid CFW2/ONNX + Online RLS thermal & jank-risk lookahead
+        const double charging_mw = live_status.battery.charging
+            ? std::clamp(live_status.battery.power_mw, 0.0, 25000.0)
+            : 0.0;
         const auto ai = neural.infer_and_learn({
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
             .cpu_psi = std::clamp(cpu_psi.value_or(0.0), 0.0, 100.0),
@@ -2354,9 +2372,16 @@ int main(int argc, char* argv[]) {
             .io_psi_valid = io_psi.has_value(),
             .current_scale = live_status.capacity_scale,
             .elapsed_seconds = elapsed,
+            .gpu_busy_pct = std::clamp(gpu_busy.value_or(0.0), 0.0, 100.0),
+            .render_pressure = std::clamp(live_status.render_pressure, 0.0, 1.0),
+            .jank_ratio = live_status.jank_ratio >= 0.0 ? std::clamp(live_status.jank_ratio, 0.0, 1.0) : 0.0,
+            .charging_power_mw = charging_mw,
         });
         live_status.ai_predicted_10s = ai.valid ? ai.predicted_pressure_10s : 0.0;
         live_status.ai_confidence = ai.valid ? ai.confidence : 0.0;
+        live_status.ai_jank_risk = ai.valid ? ai.jank_risk : 0.0;
+        live_status.ai_workload_class = ai.valid ? std::string(ai.workload_class) : "balanced";
+        live_status.ai_backend = ai.valid ? std::string(ai.backend) : "embedded-rls-mlp";
 
         double eff_pressure = std::clamp(thermal.pressure, 0.0, 130.0);
         if (ai.valid && ai.confidence >= 0.55 && ai.predicted_pressure_10s > eff_pressure) {
@@ -2376,7 +2401,10 @@ int main(int argc, char* argv[]) {
         if (pid_dec.valid) {
             double scale = pid_dec.capacity_scale;
             if (ai.valid && ai.confidence >= 0.60 && ai.predicted_pressure_10s >= 80.0) {
-                scale = std::min(scale, ai.recommended_scale);
+                // Keep advisory pre-damp bounded above 0.65 unless Thermal Guard is active so
+                // 10s Android thermal headroom refresh steps cannot slam headroom down to 0.44.
+                const double ai_floor = thermal_guard ? 0.25 : 0.65;
+                scale = std::min(scale, std::max(ai.recommended_scale, ai_floor));
             }
             if (thermal_guard) scale = std::min(scale, 0.75);
             const auto eq = engine::compute_thermal_equilibrium({
@@ -2390,7 +2418,17 @@ int main(int argc, char* argv[]) {
                 live_status.ctx.mode == ContextMode::LaunchBurst});
             live_status.charging_damped = eq.charging_damped;
             equilibrium_guard = eq.equilibrium_guard;
-            live_status.capacity_scale = std::clamp(eq.effective_scale, 0.25, 1.0);
+            // Slew-rate limit post-PID AI/equilibrium scale changes (max 0.08/s down, 0.06/s up)
+            // so 1-tick telemetry/AI blips cannot produce a 40% headroom cliff.
+            const double target_scale = std::clamp(eq.effective_scale, 0.25, 1.0);
+            const double max_drop = std::clamp(0.08 * elapsed, 0.02, 0.20);
+            const double max_rise = std::clamp(0.06 * elapsed, 0.02, 0.15);
+            const double prev_scale = std::isfinite(live_status.capacity_scale)
+                ? std::clamp(live_status.capacity_scale, 0.25, 1.0)
+                : 1.0;
+            live_status.capacity_scale = std::clamp(
+                std::clamp(target_scale, prev_scale - max_drop, prev_scale + max_rise),
+                0.25, 1.0);
         } else {
             pid_controller->reset();
             live_status.charging_damped = false;
@@ -2727,7 +2765,8 @@ int main(int argc, char* argv[]) {
              ", memBusNodes=" + std::to_string(topo.memory_bus_nodes.size()) +
              ", oemYielded=" + std::to_string(oem_map.yielded_count()) +
              ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") +
-             ", bypassSupported=" + (longevity.is_bypass_supported() ? "yes" : "no") + ").");
+             ", bypassSupported=" + (longevity.is_bypass_supported() ? "yes" : "no") +
+             ", aiBackend=" + live_status.ai_backend + ").");
 
     reactor.run();
 
