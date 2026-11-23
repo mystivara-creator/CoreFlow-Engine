@@ -254,6 +254,30 @@ if(CORE_FLOW_BUILD_TESTS)
     endif()
     add_test(NAME NativeInputEventSourceTest COMMAND test_input_event_source)
 
+    if(NOT ANDROID)
+        add_executable(coreflowd_sim
+            src/daemon/main.cpp
+            src/daemon/reactor.cpp
+            ${COREFLOW_V5_SOURCES}
+        )
+        target_link_libraries(coreflowd_sim PRIVATE coreflow_rust ${CMAKE_DL_LIBS} m pthread)
+        target_compile_options(coreflowd_sim PRIVATE $<$<CONFIG:Release>:-O2>)
+        target_compile_definitions(coreflowd_sim PRIVATE
+            COREFLOW_BUILD_COMMIT="${COREFLOW_BUILD_COMMIT}"
+            COREFLOW_ENABLE_TEST_HOOKS=1
+        )
+
+        add_executable(test_cf_sim_farm
+            tests/cf_sim_farm.cpp
+        )
+        add_dependencies(test_cf_sim_farm coreflowd_sim)
+        target_link_libraries(test_cf_sim_farm PRIVATE pthread m)
+        add_test(
+            NAME CFSimVirtualSoCFarmTest
+            COMMAND test_cf_sim_farm $<TARGET_FILE:coreflowd_sim>
+        )
+    endif()
+
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_FOUND)
         add_test(

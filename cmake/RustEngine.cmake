@@ -44,7 +44,7 @@ add_custom_command(OUTPUT "${_rust_lib}"
         --release ${_cargo_args}
     DEPENDS rust/Cargo.toml rust/build.rs rust/src/lib.rs rust/src/bridge.rs
             rust/src/controller.rs rust/src/uclamp.rs rust/src/thermal_trend.rs
-            rust/src/preloader.rs
+            rust/src/thermal_model.rs rust/src/orchestrator.rs rust/src/preloader.rs
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     VERBATIM)
 add_custom_target(coreflow_rust_build DEPENDS "${_rust_lib}")

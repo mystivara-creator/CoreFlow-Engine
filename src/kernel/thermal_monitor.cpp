@@ -280,13 +280,25 @@ bool is_excluded_non_thermal_peripheral(std::string_view raw_type) {
            lower.find("zeroc") != std::string::npos;
 }
 
-void ThermalMonitor::discover_sensors_locked() const {
-    const auto now = std::chrono::steady_clock::now();
-    const auto refresh_period = (sysfs_root_ == "/sys/class/thermal")
-        ? std::chrono::seconds(180)
-        : std::chrono::seconds(30);
-    if (!sensors_.empty() && now - discovery_at_ < refresh_period) return;
-    discovery_at_ = now;
+void ThermalMonitor::discover_sensors_locked(uint64_t virtual_now_ns) const {
+    if (virtual_now_ns > 0U) {
+        const uint64_t refresh_period_ns = (sysfs_root_ == "/sys/class/thermal")
+            ? 180'000'000'000ULL
+            : 30'000'000'000ULL;
+        if (!sensors_.empty() && discovery_at_virtual_ns_ > 0U &&
+            virtual_now_ns >= discovery_at_virtual_ns_ &&
+            (virtual_now_ns - discovery_at_virtual_ns_) < refresh_period_ns) {
+            return;
+        }
+        discovery_at_virtual_ns_ = virtual_now_ns;
+    } else {
+        const auto now = std::chrono::steady_clock::now();
+        const auto refresh_period = (sysfs_root_ == "/sys/class/thermal")
+            ? std::chrono::seconds(180)
+            : std::chrono::seconds(30);
+        if (!sensors_.empty() && now - discovery_at_ < refresh_period) return;
+        discovery_at_ = now;
+    }
     sensors_.clear();
     // Sensor topology may have changed; never carry a trend across a rediscovery boundary.
     sensor_trend_trackers_.clear();
@@ -674,7 +686,7 @@ ThermalAssessment evaluate_generic_thermal_fallback(
     return out;
 }
 
-ThermalBundle ThermalMonitor::sample_bundle_locked(bool use_headroom) const {
+ThermalBundle ThermalMonitor::sample_bundle_locked(bool use_headroom, uint64_t virtual_now_ns) const {
     ThermalAssessment platform;
 
 #ifdef __ANDROID__
@@ -733,7 +745,7 @@ ThermalBundle ThermalMonitor::sample_bundle_locked(bool use_headroom) const {
 #else
     (void)use_headroom;
 #endif
-    discover_sensors_locked();
+    discover_sensors_locked(virtual_now_ns);
     ThermalAssessment result;
     MultiSensorProfile profile;
     std::vector<float> cpu_readings;
@@ -744,9 +756,11 @@ ThermalBundle ThermalMonitor::sample_bundle_locked(bool use_headroom) const {
     float hottest_compute = -1.0f;
     float hottest_skin = -1.0f;
 
-    const uint64_t sample_timestamp_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+    const uint64_t sample_timestamp_ns = (virtual_now_ns > 0U)
+        ? virtual_now_ns
+        : static_cast<uint64_t>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::steady_clock::now().time_since_epoch()).count());
     const bool cache_trips = (sysfs_root_ == "/sys/class/thermal");
     for (auto& sensor : sensors_) {
         std::string raw; float temp = -1.0f;
@@ -947,9 +961,11 @@ ThermalBundle ThermalMonitor::sample_bundle_locked(bool use_headroom) const {
     auto fused = fuse_thermal_assessments(std::move(platform), std::move(result));
     const float comp = profile.composite_soc >= 0.0f ? profile.composite_soc : hottest_compute;
     if (comp >= 0.0f) {
-        const auto now_ns = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count());
+        const auto now_ns = (virtual_now_ns > 0U)
+            ? virtual_now_ns
+            : static_cast<uint64_t>(
+                  std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch()).count());
         trend_tracker_.record_sample(comp, now_ns);
     }
     fused.temperature_velocity = trend_tracker_.evaluate_velocity();
@@ -968,9 +984,9 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
     return sample_bundle_locked(use_headroom).assessment;
 }
 
-ThermalBundle ThermalMonitor::sample_bundle(bool use_headroom) const {
+ThermalBundle ThermalMonitor::sample_bundle(bool use_headroom, uint64_t virtual_now_ns) const {
     std::lock_guard<std::mutex> lock(monitor_mutex_);
-    return sample_bundle_locked(use_headroom);
+    return sample_bundle_locked(use_headroom, virtual_now_ns);
 }
 
 TemperatureTrendTracker::TemperatureTrendTracker(size_t capacity) noexcept

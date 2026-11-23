@@ -484,7 +484,8 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
 }
 
 ForegroundAppInfo ContextEngine::resolve_foreground_app(
-    const std::string& top_app_procs_path) const noexcept {
+    const std::string& top_app_procs_path,
+    uint64_t now_ms_override) const noexcept {
     ForegroundAppInfo result{};
     if (top_app_procs_path.empty()) return result;
 
@@ -572,7 +573,7 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
     result.is_camera_app = is_camera_package(result.package_name);
     result.has_render_thread = (best_rank == 6);
 
-    const uint64_t now = steady_now_ms();
+    const uint64_t now = (now_ms_override > 0U) ? now_ms_override : steady_now_ms();
     if (best_pid == cached_fg_pid_ && now >= cached_fg_tids_ms_ &&
         now - cached_fg_tids_ms_ < 3000ULL && !cached_fg_tids_.empty()) {
         result.critical_tids = cached_fg_tids_;
@@ -650,8 +651,8 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
     return result;
 }
 
-std::vector<int32_t> ContextEngine::resolve_surfaceflinger_tids() noexcept {
-    const uint64_t now = steady_now_ms();
+std::vector<int32_t> ContextEngine::resolve_surfaceflinger_tids(uint64_t now_ms_override) noexcept {
+    const uint64_t now = (now_ms_override > 0U) ? now_ms_override : steady_now_ms();
     // Refresh SurfaceFlinger TIDs at most every 30 seconds if cached PID is still alive.
     if (cached_sf_pid_ > 0 && now >= cached_sf_checked_ms_ && now - cached_sf_checked_ms_ < 30000ULL) {
         const fs::path sf_dir = fs::path(procfs_root_) / std::to_string(cached_sf_pid_);
@@ -691,8 +692,8 @@ std::vector<int32_t> ContextEngine::resolve_surfaceflinger_tids() noexcept {
     return cached_sf_tids_;
 }
 
-std::vector<int32_t> ContextEngine::resolve_camera_hal_tids() noexcept {
-    const uint64_t now = steady_now_ms();
+std::vector<int32_t> ContextEngine::resolve_camera_hal_tids(uint64_t now_ms_override) noexcept {
+    const uint64_t now = (now_ms_override > 0U) ? now_ms_override : steady_now_ms();
     if (!cached_cam_tids_.empty() && now >= cached_cam_checked_ms_ &&
         now - cached_cam_checked_ms_ < 15000ULL) {
         return cached_cam_tids_;

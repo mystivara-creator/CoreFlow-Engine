@@ -191,6 +191,21 @@ if len(sys.argv) >= 2:
     )
     assert bad_tamper.returncode == 2, "Sovereign CLI must reject YIELD action!"
 
+    # Verify production coreflowd binary never exposes CF-Sim --sim-loop test hooks!
+    bad_sim = subprocess.run(
+        [
+            str(binary), "--sim-loop",
+            "--sysfs-root", "/tmp/cf-nonexistent-sys",
+            "--procfs-root", "/tmp/cf-nonexistent-proc",
+            "--state-dir", "/tmp/cf-nonexistent-state",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert bad_sim.returncode == 2, f"Production coreflowd must reject --sim-loop (got {bad_sim.returncode})"
+
 # Verify CFW2 offline toolchain round-trip (zero third-party pip deps)
 import tempfile
 with tempfile.TemporaryDirectory(prefix="coreflow-cfw2-cli-") as tmpdir:

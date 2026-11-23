@@ -159,13 +159,15 @@ pub fn compute_thermal_equilibrium(
         && input.model_confidence >= 45
         && input.model_ambient_c.is_finite()
         && (5.0..=45.0).contains(&input.model_ambient_c);
-    // Ambient-adaptive chassis target:
+    // Ambient-adaptive chassis target (C0-continuous across the confidence=45 gate):
     // - Cool AC room / external cooler (Ta <= 31 C): stays locked at base_target (38.0 C) while
     //   higher sustainable power P_sus unlocks extra Watt headroom.
     // - Hot tropical ambient (Ta in 31..34.5 C): lifts target gently up to 41.5 C (strictly below
     //   the 44.0 C THERMAL_GUARD ceiling) so idle phones never falsely enter Cool-Glide.
+    let target_blend = ((f64::from(input.model_confidence) - 45.0) / 20.0).clamp(0.0, 1.0);
     let effective_target_c = if ambient_valid {
-        base_target.max(input.model_ambient_c + 7.0).clamp(base_target, 41.5)
+        let raw_target = base_target.max(input.model_ambient_c + 7.0).clamp(base_target, 41.5);
+        base_target + (raw_target - base_target) * target_blend
     } else {
         base_target
     };
@@ -203,11 +205,11 @@ pub fn compute_thermal_equilibrium(
     if chassis >= onset_c {
         let excess = (chassis - onset_c).clamp(0.0, 9.0);
         eq_cap = (1.0 - excess * 0.055).clamp(0.55, 1.0);
-        // Sustained warm-plateau nudge: if chassis >= plateau_c and not actively cooling,
-        // ease power draw further so steady-state silicon heat stays bounded.
-        if chassis >= plateau_c && vel >= -0.2 {
-            eq_cap = (eq_cap - 0.05).clamp(0.55, 1.0);
-        }
+        // Sustained warm-plateau nudge: smoothly ease power draw as chassis approaches/exceeds
+        // plateau_c while not actively cooling (C0-continuous ramp prevents step-cliff chatter).
+        let plateau_frac = ((chassis - (plateau_c - 0.3)) / 0.8).clamp(0.0, 1.0);
+        let vel_frac = ((vel + 0.4) / 0.6).clamp(0.0, 1.0);
+        eq_cap = (eq_cap - 0.05 * plateau_frac * vel_frac).clamp(0.55, 1.0);
     }
 
     if model_closed_loop && chassis > 0.0 {
@@ -222,9 +224,12 @@ pub fn compute_thermal_equilibrium(
         closed_loop_active = true;
 
         // Silicon dynamic power law P ~ s^gamma (gamma = 1.8) converts Watt ratio to capacity_scale.
+        // Caller supplies reconstructed unthrottled demand power P_demand = P_ewma / s_ewma^1.8 so
+        // s_power = s_ewma * (P_budget / P_ewma)^(1/1.8) has an exact overdamped fixed point at P_ewma == P_budget.
         let power_ratio = (p_budget / input.model_avg_power_w.max(0.50)).clamp(0.05, 4.0);
         let s_power = power_ratio.powf(1.0 / 1.8).clamp(0.52, 1.0);
-        let conf_weight = ((f64::from(input.model_confidence) - 40.0) / 45.0).clamp(0.0, 1.0);
+        // Zero-step C0 handoff at model_confidence == 45 prevents limit-cycle chatter when confidence hovers at 44..46.
+        let conf_weight = ((f64::from(input.model_confidence) - 45.0) / 40.0).clamp(0.0, 1.0);
 
         if chassis >= onset_c {
             // Above onset: blend temperature curve with physical power budget.
@@ -233,12 +238,12 @@ pub fn compute_thermal_equilibrium(
             let blended = (1.0 - conf_weight) * eq_cap + conf_weight * s_power;
             scale = scale.min(blended.clamp(0.52, 1.0));
         } else if !input.is_launch_burst && s_power < 1.0 {
-            // Approaching equilibrium (within 3.5 C of target): smoothly engage proactive Watt pacing
-            // so sustained heavy load glides asymptotically into T_target without overshooting.
-            let approach = ((chassis - (effective_target_c - 3.5)) / 3.5).clamp(0.0, 1.0);
+            // Approaching equilibrium (within 3.0 C below onset_c): smoothly engage proactive Watt pacing
+            // with exact C0 continuity at chassis == onset_c (approach -> 1.0 matches blended at onset_c).
+            let approach = ((chassis - (onset_c - 3.0)) / 3.0).clamp(0.0, 1.0);
             if approach > 0.0 {
                 let proactive_cap = 1.0 - (1.0 - s_power) * approach * conf_weight;
-                scale = scale.min(proactive_cap.clamp(0.58, 1.0));
+                scale = scale.min(proactive_cap.clamp(0.52, 1.0));
             }
         }
     } else if chassis >= onset_c {
@@ -452,5 +457,76 @@ mod tests {
         let out_guard = compute_thermal_equilibrium(make_model(56.0, 44.5, -0.3, 90, 3.5, 320.0, 18.0, 4.0));
         assert!(out_guard.equilibrium_guard);
         assert!(out_guard.effective_scale <= 0.65);
+    }
+
+    #[test]
+    fn equilibrium_is_c0_continuous_and_fixed_point_stable() {
+        let make = |chassis, vel, p_demand| ThermalEquilibriumInput {
+            soc_temp_c: chassis + 15.0,
+            battery_temp_c: chassis,
+            skin_temp_c: chassis,
+            thermal_velocity_cpm: vel,
+            pid_capacity_scale: 1.0,
+            charging: false,
+            bypass_active: false,
+            is_launch_burst: false,
+            model_valid: true,
+            model_confidence: 90,
+            model_r_theta: 5.5,
+            model_tau_s: 180.0,
+            model_ambient_c: 26.0,
+            model_avg_power_w: p_demand,
+            base_target_c: 38.0,
+        };
+
+        // C0 continuity across onset_c = 37.5 C
+        let below = compute_thermal_equilibrium(make(37.499, 0.2, 4.2));
+        let above = compute_thermal_equilibrium(make(37.501, 0.2, 4.2));
+        assert!(
+            (below.effective_scale - above.effective_scale).abs() < 1e-3,
+            "discontinuity at onset_c: below={} above={}",
+            below.effective_scale,
+            above.effective_scale
+        );
+
+        // C0 continuity across vel = -0.2 C/min at plateau_c = 38.5 C (legacy curve)
+        let o1 = compute_thermal_equilibrium(fallback_eq_input(52.0, 38.8, 38.8, -0.22));
+        let o2 = compute_thermal_equilibrium(fallback_eq_input(52.0, 38.8, 38.8, -0.18));
+        assert!(
+            (o1.effective_scale - o2.effective_scale).abs() < 0.01,
+            "step cliff at plateau vel=-0.2: o1={} o2={}",
+            o1.effective_scale,
+            o2.effective_scale
+        );
+        let p1 = compute_thermal_equilibrium(fallback_eq_input(52.0, 38.49, 38.49, -0.18));
+        let p2 = compute_thermal_equilibrium(fallback_eq_input(52.0, 38.51, 38.51, -0.18));
+        assert!((p1.effective_scale - p2.effective_scale).abs() < 0.01);
+
+        // Fixed-point stability: at T_chassis = T_target (38.0 C), P_budget = P_sus = (38 - 26) / 5.5 = 2.1818 W.
+        // If current scale is s = 0.72 and measured power equals P_budget, reconstructing unthrottled demand
+        // P_demand = P_meas / s^1.8 must hold exact fixed point effective_scale == 0.72 (no bounce to 1.0!).
+        let s_eq: f64 = 0.72;
+        let p_sus = (38.0 - 26.0) / 5.5;
+        let p_demand = p_sus / s_eq.powf(1.8);
+        let eq = compute_thermal_equilibrium(make(38.0, 0.0, p_demand));
+        assert!(
+            (eq.effective_scale - s_eq).abs() < 1e-4,
+            "fixed point drifted: expected {} got {}",
+            s_eq,
+            eq.effective_scale
+        );
+
+        // C0 continuity across model_confidence = 44 -> 45 gate (both scale and effective_target_c)
+        let mut c44 = make(40.0, 0.1, 4.2);
+        c44.model_ambient_c = 34.0;
+        c44.model_confidence = 44;
+        let mut c45 = make(40.0, 0.1, 4.2);
+        c45.model_ambient_c = 34.0;
+        c45.model_confidence = 45;
+        let o44 = compute_thermal_equilibrium(c44);
+        let o45 = compute_thermal_equilibrium(c45);
+        assert!(!o44.model_closed_loop_active && o45.model_closed_loop_active);
+        assert!((o44.effective_target_c - o45.effective_target_c).abs() < 1e-6);
+        assert!((o44.effective_scale - o45.effective_scale).abs() < 1e-6);
     }
 }
