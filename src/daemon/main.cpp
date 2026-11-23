@@ -642,6 +642,8 @@ struct RuntimeStatusData {
     double cpu_util_pct{0.0};
     double render_pressure{0.0};
     double thermal_velocity_cpm{0.0};
+    // Observe-only online RC chassis model (see rust/src/thermal_model.rs). Never actuates.
+    engine::ThermalModelResult thermal_model{};
     std::optional<double> gpu_busy_pct{};
     std::optional<double> cpu_psi{};
     std::optional<double> mem_psi{};
@@ -703,6 +705,10 @@ struct RuntimeStatusData {
 bool compute_low_battery_eco(const BatteryPowerTelemetry& b) noexcept {
     return !b.charging && b.battery_capacity_pct > 0 && b.battery_capacity_pct <= 20;
 }
+
+// Chassis (battery/skin node) temperature the user wants sustained; used only to report the
+// sustainable-power budget from the identified RC model. Observe-only until validated on device.
+constexpr double kChassisTargetCelsius = 38.0;
 
 std::string compute_autonomous_regime(const RuntimeStatusData& s) {
     if (s.config.inspection_mode) return "paused_oem";
@@ -918,6 +924,18 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"batteryTempCelsius\":" << (std::isfinite(s.battery_temp) && s.battery_temp >= 0.0 ? std::to_string(s.battery_temp) : "null")
         << ",\"thermalPressure\":" << safe_num(s.thermal_pressure)
         << ",\"thermalVelocityCpm\":" << safe_num(s.thermal_velocity_cpm)
+        << ",\"thermalModel\":{"
+        << "\"valid\":" << (s.thermal_model.valid ? "true" : "false")
+        << ",\"confidence\":" << s.thermal_model.confidence
+        << ",\"steps\":" << s.thermal_model.steps
+        << ",\"targetCelsius\":" << safe_num(kChassisTargetCelsius)
+        << ",\"rThetaCPerW\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.r_theta_c_per_w)) : "null")
+        << ",\"tauSec\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.tau_s)) : "null")
+        << ",\"ambientCelsius\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.ambient_c)) : "null")
+        << ",\"sustainablePowerMw\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.sustainable_w * 1000.0)) : "null")
+        << ",\"avgPowerMw\":" << safe_num(s.thermal_model.avg_power_w * 1000.0)
+        << ",\"headroomMw\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.headroom_w * 1000.0)) : "null")
+        << "}"
         << ",\"thermalSource\":" << json_str(s.thermal_source)
         << ",\"cpuUtilPct\":" << safe_num(s.cpu_util_pct)
         << ",\"renderPressure\":" << safe_num(s.render_pressure)
@@ -1771,6 +1789,7 @@ int main(int argc, char* argv[]) {
     };
 
     auto thermal_trend = engine::new_thermal_trend_analyzer();
+    auto thermal_model = engine::new_thermal_model_estimator();
     double thermal_trend_ewma_c = -1.0;
     auto preloader = engine::new_app_preloader();
     std::unordered_map<uint64_t, std::string> preloader_pkg_map;
@@ -2399,6 +2418,18 @@ int main(int argc, char* argv[]) {
                 thermal_trend_ewma_c,
                 trip_c);
             live_status.thermal_velocity_cpm = trend.velocity_cpm;
+            // Observe-only RC chassis identification: total system power (discharging only) vs the
+            // slow chassis node. Charging/unknown power poisons the step instead of fabricating data.
+            {
+                const bool power_ok = live_status.battery.available && !live_status.battery.charging &&
+                                      std::isfinite(live_status.battery.power_mw) &&
+                                      live_status.battery.power_mw > 0.0;
+                const double model_temp = slow_chassis_c > 0.0 ? slow_chassis_c : -1.0;
+                live_status.thermal_model = thermal_model->push_sample(
+                    now_ms, model_temp,
+                    power_ok ? live_status.battery.power_mw / 1000.0 : -1.0,
+                    kChassisTargetCelsius);
+            }
             (void)write_status_snapshot(build_status_json(live_status));
         };
 

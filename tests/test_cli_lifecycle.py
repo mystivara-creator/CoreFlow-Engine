@@ -111,6 +111,10 @@ if len(sys.argv) >= 2:
             assert isinstance(payload["actuators"].get("contendedPaths"), list)
             assert "easTopAppCapPct" in payload["actuators"]
             assert "easCappedGroups" in payload["actuators"]
+            model = payload.get("thermalModel")
+            assert isinstance(model, dict) and model["valid"] is False
+            assert model["rThetaCPerW"] is None and model["sustainablePowerMw"] is None
+            assert model["targetCelsius"] == 38.0 and model["confidence"] == 0
             assert "memoryBusKnobs" in payload["actuators"]
             assert "hardware" in payload and isinstance(payload["hardware"], dict)
             assert "memory" in payload and isinstance(payload["memory"], dict)

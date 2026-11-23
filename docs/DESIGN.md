@@ -26,3 +26,5 @@ CoreFlow Companion (Miuix Compose) and MD3 WebUI follow six strict engineering &
 ## 6. Respectful Coexistence & Bilingual Accessibility
 - External OEM sysfs mutations trigger exponential-backoff cooldown (`30s → 300s`) and are surfaced transparently as `OEM Yield` episodes instead of fighting the OEM daemon.
 - All user-facing Companion App tabs support instant live switching between **English** and **Bahasa Indonesia** via `Strings.kt`.
+
+Arsitektur lengkap (pipeline, fisika, invarian, cara membaca dump): [ARCHITECTURE.md](ARCHITECTURE.md).

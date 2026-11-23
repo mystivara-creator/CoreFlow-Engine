@@ -1,6 +1,7 @@
 use crate::controller::{Controller, new_controller};
 use crate::orchestrator::compute_symbiotic_plan;
 use crate::preloader::{AppPreloader, new_app_preloader};
+use crate::thermal_model::{ThermalModelEstimator, new_thermal_model_estimator};
 use crate::thermal_trend::{
     ThermalTrendAnalyzer, compute_thermal_equilibrium, new_thermal_trend_analyzer,
 };
@@ -90,6 +91,17 @@ pub mod ffi {
         stability_score: u32,
         seconds_to_trip: f64,
     }
+    struct ThermalModelResult {
+        valid: bool,
+        confidence: u32,
+        r_theta_c_per_w: f64,
+        tau_s: f64,
+        ambient_c: f64,
+        sustainable_w: f64,
+        avg_power_w: f64,
+        headroom_w: f64,
+        steps: u32,
+    }
     struct ThermalEquilibriumInput {
         soc_temp_c: f64,
         battery_temp_c: f64,
@@ -129,6 +141,17 @@ pub mod ffi {
             trip_c: f64,
         ) -> ThermalTrendResult;
         fn reset(self: &mut ThermalTrendAnalyzer);
+
+        type ThermalModelEstimator;
+        fn new_thermal_model_estimator() -> Box<ThermalModelEstimator>;
+        fn push_sample(
+            self: &mut ThermalModelEstimator,
+            ts_ms: u64,
+            temp_c: f64,
+            power_w: f64,
+            target_c: f64,
+        ) -> ThermalModelResult;
+        fn reset(self: &mut ThermalModelEstimator);
 
         type AppPreloader;
         fn new_app_preloader() -> Box<AppPreloader>;
