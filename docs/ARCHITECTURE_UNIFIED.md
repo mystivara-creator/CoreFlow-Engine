@@ -136,14 +136,14 @@ Aturan prioritas (urutan menang bila konflik):
 
 ## 8. Celah jujur (belum selesai / belum terbukti)
 
-1. **Validasi lapangan 30 menit pasca-boot.** Dump terakhir sebelumnya masih berumur 427 detik pasca-boot; perlu dump 20–30 menit untuk mengonfirmasi kurva closed-loop `thermalModel` (`R_theta`, `tau`, `ambientCelsius`, `powerBudgetMw`) dan kestabilan cap `top-app`/`background` di perangkat nyata.
-2. **Simulasi lintas-OEM otomatis belum ada.** Verifikasi lintas arketipe SoC/ROM (HyperOS, OneUI/SDHMS, Dimensity/FPSGO, Tensor/LTPO, budget eMMC) masih menunggu **Virtual SoC Farm (`CF-Sim`)** di Fase 2.
+1. **Validasi lapangan 30 menit pasca-boot pada perangkat fisik.** Seluruh 6 arketipe lintas-OEM kini terverifikasi deterministik di CI oleh **Virtual SoC Farm (`CF-Sim`)** (`tests/cf_sim_plant.hpp` + `tests/cf_sim_farm.cpp` menjalankan binary `coreflowd_sim` sungguhan dengan jam virtual dipercepat), namun validasi lapangan 20–30 menit pada perangkat fisik tetap dianjurkan untuk mengonfirmasi kurva `R_theta`/`tau`/`ambientCelsius` di dunia nyata.
+2. **Belum ada verifikasi kausal daring (`device_effectiveness.map`).** `CF-Sim` membuktikan 0 osilasi, 0 perang tulis OEM, 0 false `THERMAL_GUARD`, karantina non-LTPO fail-closed, dan rollback `CFJ4` bersih lintas 6 arketipe SoC/OEM di CI; pengukuran efektivitas kausal *on-device* per aktuator menjadi langkah lanjutan berikutnya.
 3. **Belum ada distribusi frame-time per-frame (`p95`/`p99`).** `FramePacingSensor` kini fail-closed aman di panel non-LTPO dan dibantu `SchedstatSensor` `run_delay`, namun belum mengukur distribusi *per-commit frame time* `p99` terhadap batas VSync secara langsung.
 
 ## 9. Arah penyempurnaan (urutan usulan)
 
-1. **Validasi perangkat Fase 1**: Ambil dump 30 menit untuk verifikasi lapangan `thermalModel.closedLoopActive`, `schedstat` `runqueueDelayMs`, `/proc/vmstat` `thrashingPressure`, dan status `framePacingVerified` di perangkat nyata.
-2. **Fase 2 — Virtual SoC Farm (`CF-Sim`) & Online Causal Verification**: Bangun simulator fisika multi-SoC/OEM di CI dan `device_effectiveness.map` untuk membuktikan 0 osilasi dan 0 kontensi di arketipe perangkat asing.
+1. **Validasi lapangan Fase 1 + Fase 2**: Ambil dump 30 menit pada perangkat fisik sekaligus jaga scorecard 6 arketipe `CF-Sim` (`cf-sim-report.json`) hijau di setiap PR (Host, ASan+UBSan, TSan).
+2. **Fase 2B — Online Causal Verification (`device_effectiveness.map`)**: Ukur efektivitas aktual (penurunan Watt / suhu / starvation) tiap aktuator secara daring dan nonaktifkan otomatis aktuator tanpa dampak di SoC tertentu.
 3. **Fase 3 — Per-Frame `p99` Deadline Control & Online Silicon EDP Knee**: Jadikan margin deadline VSync (`p99`) sebagai fungsi tujuan resmi bersama profil kurva efisiensi $C \cdot V^2 \cdot f$ per-perangkat.
 
 

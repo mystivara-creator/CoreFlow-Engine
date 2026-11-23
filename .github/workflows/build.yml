@@ -135,6 +135,8 @@ jobs:
         run: cmake --build build/host --parallel "$(nproc)"
       - name: Run CTest with persistent diagnostics
         shell: bash
+        env:
+          CF_SIM_REPORT_JSON: ${{ github.workspace }}/build/host/ci-diagnostics/cf-sim-report.json
         run: |
           set -uo pipefail
           mkdir -p build/host/ci-diagnostics
@@ -184,6 +186,7 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: print_stacktrace=1
+          CF_SIM_REPORT_JSON: ${{ github.workspace }}/build/sanitize/ci-diagnostics/cf-sim-report.json
         run: |
           set -uo pipefail
           mkdir -p build/sanitize/ci-diagnostics
@@ -232,6 +235,7 @@ jobs:
         shell: bash
         env:
           TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
+          CF_SIM_REPORT_JSON: ${{ github.workspace }}/build/tsan/ci-diagnostics/cf-sim-report.json
         run: |
           set -uo pipefail
           mkdir -p build/tsan/ci-diagnostics

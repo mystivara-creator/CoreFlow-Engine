@@ -154,7 +154,7 @@ public:
     [[nodiscard]] float skin_celsius() const;
     [[nodiscard]] MultiSensorProfile multi_sensor_profile() const;
     [[nodiscard]] ThermalAssessment assess(bool headroom = true) const;
-    [[nodiscard]] ThermalBundle sample_bundle(bool headroom = true) const;
+    [[nodiscard]] ThermalBundle sample_bundle(bool headroom = true, uint64_t virtual_now_ns = 0) const;
     [[nodiscard]] TemperatureVelocityReading current_temperature_velocity() const;
     void record_temperature_sample(float celsius, uint64_t timestamp_ns) const;
 private:
@@ -174,13 +174,14 @@ private:
     mutable std::mutex monitor_mutex_;
     mutable std::vector<Sensor> sensors_;
     mutable std::chrono::steady_clock::time_point discovery_at_{};
+    mutable uint64_t discovery_at_virtual_ns_{0};
     mutable TemperatureTrendTracker trend_tracker_{8};
     mutable std::unordered_map<std::string, TemperatureTrendTracker> sensor_trend_trackers_;
     mutable std::unordered_map<std::string, ThermalSensorFreshnessTracker> sensor_freshness_trackers_;
-    void discover_sensors_locked() const;
+    void discover_sensors_locked(uint64_t virtual_now_ns = 0) const;
     float hottest_category_locked(int category) const;
     float battery_celsius_locked() const;
     MultiSensorProfile multi_sensor_profile_locked() const;
-    ThermalBundle sample_bundle_locked(bool use_headroom) const;
+    ThermalBundle sample_bundle_locked(bool use_headroom, uint64_t virtual_now_ns = 0) const;
 };
 }

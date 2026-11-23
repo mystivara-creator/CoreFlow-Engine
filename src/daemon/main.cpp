@@ -226,11 +226,12 @@ bool service_launcher_authorized() {
            (::kill(parent, 0) == 0 || errno == EPERM);
 }
 
-bool ensure_secure_state_dir() {
-    if (::mkdir(kStateDir, 0700) != 0 && errno != EEXIST) return false;
+bool ensure_secure_state_dir(const char* dir = kStateDir) {
+    if (dir == nullptr || dir[0] == '\0') return false;
+    if (::mkdir(dir, 0700) != 0 && errno != EEXIST) return false;
     struct stat st{};
-    if (::lstat(kStateDir, &st) != 0 || !S_ISDIR(st.st_mode)) return false;
-    (void)::chmod(kStateDir, 0700);
+    if (::lstat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) return false;
+    (void)::chmod(dir, 0700);
     return true;
 }
 
@@ -252,8 +253,8 @@ void clear_pid(const UniqueFd& lock) noexcept {
     if (lock.valid() && ::ftruncate(lock.get(), 0) == 0) (void)::fsync(lock.get());
 }
 
-bool journal_clear() {
-    const std::string jpath = std::string(kStateDir) + "/baseline.journal";
+bool journal_clear(const std::string& state_dir = kStateDir) {
+    const std::string jpath = state_dir + "/baseline.journal";
     UniqueFd fd(::open(jpath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return errno == ENOENT;
     struct stat st{};
@@ -282,8 +283,8 @@ bool journal_clear() {
     return true;
 }
 
-size_t count_journal_entries() {
-    const std::string jpath = std::string(kStateDir) + "/baseline.journal";
+size_t count_journal_entries(const std::string& state_dir = kStateDir) {
+    const std::string jpath = state_dir + "/baseline.journal";
     UniqueFd fd(::open(jpath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return 0;
     struct stat st{};
@@ -309,9 +310,11 @@ size_t count_journal_entries() {
     return count;
 }
 
-bool write_status_snapshot(std::string_view payload) noexcept {
-    if (payload.empty() || payload.size() > 512U * 1024U || !ensure_secure_state_dir()) return false;
-    UniqueFd dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+bool write_status_snapshot(std::string_view payload, const std::string& state_dir = kStateDir) noexcept {
+    if (payload.empty() || payload.size() > 512U * 1024U || !ensure_secure_state_dir(state_dir.c_str())) {
+        return false;
+    }
+    UniqueFd dir(::open(state_dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     if (!dir.valid()) return false;
     static std::atomic<uint64_t> nonce{0};
     const uint64_t seq = nonce.fetch_add(1U, std::memory_order_relaxed) + 1U;
@@ -333,8 +336,9 @@ bool write_status_snapshot(std::string_view payload) noexcept {
 }
 
 bool save_preloader_state(const engine::AppPreloader& preloader,
-                          const std::unordered_map<uint64_t, std::string>& pkg_map) noexcept {
-    if (!ensure_secure_state_dir()) return false;
+                          const std::unordered_map<uint64_t, std::string>& pkg_map,
+                          const std::string& state_dir = kStateDir) noexcept {
+    if (!ensure_secure_state_dir(state_dir.c_str())) return false;
     const rust::String exported = preloader.export_state();
     std::ostringstream out;
     out << std::string_view(exported.data(), exported.size());
@@ -347,7 +351,7 @@ bool save_preloader_state(const engine::AppPreloader& preloader,
     const std::string payload = out.str();
     if (payload.empty() || payload.size() > 64U * 1024U) return false;
 
-    UniqueFd dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    UniqueFd dir(::open(state_dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     if (!dir.valid()) return false;
     const std::string tmp = "preloader.state.tmp." + std::to_string(::getpid());
     UniqueFd fd(::openat(dir.get(), tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600));
@@ -368,8 +372,9 @@ bool save_preloader_state(const engine::AppPreloader& preloader,
 }
 
 void load_preloader_state(engine::AppPreloader& preloader,
-                          std::unordered_map<uint64_t, std::string>& pkg_map) noexcept {
-    const std::string path = std::string(kStateDir) + "/preloader.state";
+                          std::unordered_map<uint64_t, std::string>& pkg_map,
+                          const std::string& state_dir = kStateDir) noexcept {
+    const std::string path = state_dir + "/preloader.state";
     UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return;
     struct stat st{};
@@ -493,8 +498,11 @@ bool daemonize_process() noexcept {
 
 class CpuUtilSampler {
 public:
+    explicit CpuUtilSampler(std::string procfs_root = "/proc") noexcept
+        : stat_path_(procfs_root.empty() ? std::string("/proc/stat") : (std::move(procfs_root) + "/stat")) {}
+
     double sample() noexcept {
-        UniqueFd fd(::open("/proc/stat", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+        UniqueFd fd(::open(stat_path_.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
         if (!fd.valid()) return last_pct_;
         char buf[512];
         const ssize_t n = ::read(fd.get(), buf, sizeof(buf));
@@ -518,6 +526,7 @@ public:
     }
 
 private:
+    std::string stat_path_{"/proc/stat"};
     uint64_t prev_total_{0};
     uint64_t prev_idle_{0};
     double last_pct_{0.0};
@@ -528,7 +537,8 @@ class RenderLoadSampler {
 public:
     static constexpr size_t kMaxSlots = 4U;
 
-    RenderLoadSampler() noexcept {
+    explicit RenderLoadSampler(std::string procfs_root = "/proc") noexcept
+        : procfs_root_(procfs_root.empty() ? std::string("/proc") : std::move(procfs_root)) {
         const long hz = ::sysconf(_SC_CLK_TCK);
         clk_tck_ = (hz > 0) ? static_cast<double>(hz) : 100.0;
     }
@@ -575,9 +585,10 @@ private:
         bool valid{false};
     };
 
-    static bool read_tid_cpu_ticks(int32_t pid, int32_t tid, uint64_t& out_ticks) noexcept {
-        char path[64];
-        const int plen = std::snprintf(path, sizeof(path), "/proc/%d/task/%d/stat", pid, tid);
+    bool read_tid_cpu_ticks(int32_t pid, int32_t tid, uint64_t& out_ticks) const noexcept {
+        char path[256];
+        const int plen = std::snprintf(
+            path, sizeof(path), "%s/%d/task/%d/stat", procfs_root_.c_str(), pid, tid);
         if (plen <= 0 || static_cast<size_t>(plen) >= sizeof(path)) return false;
         UniqueFd fd(::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
         if (!fd.valid()) return false;
@@ -612,6 +623,7 @@ private:
         return true;
     }
 
+    std::string procfs_root_{"/proc"};
     double clk_tck_{100.0};
     int32_t last_pid_{0};
     std::array<Slot, kMaxSlots> prev_slots_{};
@@ -1535,6 +1547,160 @@ int stop_daemon() {
     return journal_clear() ? 0 : 1;
 }
 
+#ifdef COREFLOW_ENABLE_TEST_HOOKS
+struct SimLoopOptions {
+    bool enabled{false};
+    std::string sysfs_root;
+    std::string procfs_root;
+    std::string state_dir;
+    std::string config_path;
+    uint64_t start_ms{1000ULL};
+};
+
+bool sim_safe_tmp_path(std::string_view p) noexcept {
+    if (p.size() < 6U || p.size() > 384U) return false;
+    if (p.rfind("/tmp/", 0) != 0 && p.rfind("/dev/shm/", 0) != 0) return false;
+    if (p.find("..") != std::string_view::npos ||
+        p.find('\0') != std::string_view::npos ||
+        p.find('\n') != std::string_view::npos ||
+        p.find('\r') != std::string_view::npos) {
+        return false;
+    }
+    return true;
+}
+
+bool parse_sim_loop_args(int argc, char* argv[], SimLoopOptions& out) {
+    out = {};
+    out.enabled = true;
+    for (int i = 2; i < argc; ++i) {
+        const std::string_view arg(argv[i]);
+        auto next_val = [&](std::string& dst) -> bool {
+            if (i + 1 >= argc) return false;
+            dst = argv[++i];
+            return true;
+        };
+        if (arg == "--sysfs-root") {
+            if (!next_val(out.sysfs_root)) return false;
+        } else if (arg == "--procfs-root") {
+            if (!next_val(out.procfs_root)) return false;
+        } else if (arg == "--state-dir") {
+            if (!next_val(out.state_dir)) return false;
+        } else if (arg == "--config") {
+            if (!next_val(out.config_path)) return false;
+        } else if (arg == "--start-ms") {
+            std::string raw;
+            if (!next_val(raw)) return false;
+            uint64_t ms = 0U;
+            const auto r = std::from_chars(raw.data(), raw.data() + raw.size(), ms);
+            if (r.ec != std::errc{} || r.ptr != raw.data() + raw.size() || ms == 0U) return false;
+            out.start_ms = ms;
+        } else {
+            return false;
+        }
+    }
+    if (!sim_safe_tmp_path(out.sysfs_root) ||
+        !sim_safe_tmp_path(out.procfs_root) ||
+        !sim_safe_tmp_path(out.state_dir)) {
+        return false;
+    }
+    if (!out.config_path.empty() && !sim_safe_tmp_path(out.config_path)) {
+        return false;
+    }
+    return true;
+}
+
+bool prepare_sim_boot_id_file(const std::string& state_dir, std::string& out_boot_id_path) {
+    if (!ensure_secure_state_dir(state_dir.c_str())) return false;
+    out_boot_id_path = state_dir + "/boot_id";
+    const std::string token = "cfsim-boot-" + std::to_string(::getpid()) + "\n";
+    UniqueFd fd(::open(out_boot_id_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600));
+    if (!fd.valid()) return false;
+    return ::write(fd.get(), token.data(), token.size()) == static_cast<ssize_t>(token.size());
+}
+
+std::string build_sim_ready_json(const RuntimeStatusData& s) {
+    std::ostringstream out;
+    out << "{\"socModel\":" << json_str(s.topo.soc_model)
+        << ",\"gpuModel\":" << json_str(s.topo.gpu.model)
+        << ",\"isKgsl\":" << (s.topo.gpu.is_kgsl ? "true" : "false")
+        << ",\"isMtkGed\":" << (s.topo.gpu.is_mtk_ged ? "true" : "false")
+        << ",\"storageType\":" << json_str(HardwareProbe::storage_type_name(s.topo.primary_storage))
+        << ",\"refreshHz\":" << s.topo.refresh_hz
+        << ",\"cpuClusters\":" << s.topo.cpu_clusters.size()
+        << ",\"mglruAvailable\":" << (!s.topo.vm.mglru_min_ttl_path.empty() ? "true" : "false")
+        << ",\"cgroupV2Available\":" << (!s.topo.cgroups.top_app_procs_path.empty() ? "true" : "false")
+        << ",\"bypassSupported\":" << (s.battery.bypass_supported ? "true" : "false")
+        << ",\"bootSettleActive\":" << (s.boot_settle_active ? "true" : "false")
+        << ",\"semanticKnobsDiscovered\":" << s.semantic_stats.discovered_total
+        << "}";
+    return out.str();
+}
+
+std::string build_sim_tick_json(const RuntimeStatusData& s, uint64_t now_ms, size_t journal_entries) {
+    std::ostringstream out;
+    const char* mode_str = s.thermal_emergency ? "THERMAL_EMERGENCY"
+        : s.thermal_guard ? "THERMAL_GUARD"
+        : s.boot_settle_active ? "BOOT_SETTLE"
+        : ContextEngine::mode_name(s.ctx.mode);
+    out << "{\"nowMs\":" << now_ms
+        << ",\"mode\":" << json_str(mode_str)
+        << ",\"autonomousRegime\":" << json_str(s.autonomous_regime)
+        << ",\"bootSettleActive\":" << (s.boot_settle_active ? "true" : "false")
+        << ",\"bootRampProgress\":" << safe_num(s.boot_ramp_progress, 1.0)
+        << ",\"capacityScale\":" << safe_num(s.capacity_scale, 1.0)
+        << ",\"thermalGuard\":" << (s.thermal_guard ? "true" : "false")
+        << ",\"thermalEmergency\":" << (s.thermal_emergency ? "true" : "false")
+        << ",\"socTemp\":" << (std::isfinite(s.soc_temp) && s.soc_temp >= 0.0 ? std::to_string(s.soc_temp) : "null")
+        << ",\"batteryTemp\":" << (std::isfinite(s.battery_temp) && s.battery_temp >= 0.0 ? std::to_string(s.battery_temp) : "null")
+        << ",\"thermalPressure\":" << safe_num(s.thermal_pressure)
+        << ",\"thermalVelocityCpm\":" << safe_num(s.thermal_velocity_cpm)
+        << ",\"effectiveTargetC\":" << safe_num(s.effective_chassis_target_c, kChassisTargetCelsius)
+        << ",\"powerBudgetMw\":" << (s.power_budget_mw >= 0.0 ? std::to_string(safe_num(s.power_budget_mw)) : "null")
+        << ",\"modelValid\":" << (s.thermal_model.valid ? "true" : "false")
+        << ",\"modelConfidence\":" << s.thermal_model.confidence
+        << ",\"modelClosedLoop\":" << (s.thermal_model_closed_loop ? "true" : "false")
+        << ",\"modelAmbientC\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.ambient_c)) : "null")
+        << ",\"modelRTheta\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.r_theta_c_per_w)) : "null")
+        << ",\"easTopAppCapPct\":" << s.envelope_stats.eas_top_app_cap_pct
+        << ",\"easCappedGroups\":" << s.envelope_stats.eas_capped_groups
+        << ",\"uclampMin\":" << s.thread_stats.last_util_min
+        << ",\"uclampMax\":" << s.thread_stats.last_util_max
+        << ",\"boostedTids\":" << s.thread_stats.active_boosted_tids
+        << ",\"framePacingAvailable\":" << (s.frame_pacing_available ? "true" : "false")
+        << ",\"framePacingVerified\":" << (s.frame_pacing_verified ? "true" : "false")
+        << ",\"framePacingSource\":" << json_str(s.frame_pacing_source)
+        << ",\"measuredFps\":" << safe_num(s.measured_fps)
+        << ",\"jankRatio\":" << (s.jank_ratio >= 0.0 ? std::to_string(safe_num(s.jank_ratio)) : "null")
+        << ",\"schedstatSupported\":" << (s.schedstat_supported ? "true" : "false")
+        << ",\"runqueueDelayMs\":" << safe_num(s.runqueue_delay_ms)
+        << ",\"starvationPressure\":" << (s.starvation_pressure >= 0.0 ? std::to_string(safe_num(s.starvation_pressure)) : "null")
+        << ",\"vmstatSupported\":" << (s.vmstat_supported ? "true" : "false")
+        << ",\"refaultFilePerSec\":" << safe_num(s.refault_file_per_sec)
+        << ",\"directReclaimPerSec\":" << safe_num(s.direct_reclaim_per_sec)
+        << ",\"thrashingPressure\":" << safe_num(s.thrashing_pressure)
+        << ",\"directReclaimStorm\":" << (s.direct_reclaim_storm ? "true" : "false")
+        << ",\"memoryHealthPct\":" << s.storage_stats.memory_health_pct
+        << ",\"readAheadKb\":" << s.storage_stats.active_read_ahead_kb
+        << ",\"backgroundIsolated\":" << (s.storage_stats.background_isolated ? "true" : "false")
+        << ",\"prereadFiles\":" << s.storage_stats.preread_files_total
+        << ",\"bypassSupported\":" << (s.battery.bypass_supported ? "true" : "false")
+        << ",\"bypassActive\":" << (s.battery.bypass_active ? "true" : "false")
+        << ",\"bypassReason\":" << json_str(s.battery.bypass_reason)
+        << ",\"chargingDamped\":" << (s.charging_damped ? "true" : "false")
+        << ",\"contendedNodes\":" << s.contended_paths.size()
+        << ",\"oemYieldedNodes\":" << s.oem_yielded_paths.size()
+        << ",\"oemYieldedPaths\":" << serialize_string_array(s.oem_yielded_paths)
+        << ",\"managedEnvelopeNodes\":" << s.envelope_stats.managed_nodes
+        << ",\"semanticKnobsActive\":" << s.semantic_stats.active_managed
+        << ",\"baselineNodes\":" << s.baseline_nodes
+        << ",\"journalEntries\":" << journal_entries
+        << ",\"lockedNodes\":" << s.locked_nodes
+        << ",\"quarantinedNodes\":" << s.quarantined_nodes
+        << "}";
+    return out.str();
+}
+#endif
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -1543,14 +1709,30 @@ int main(int argc, char* argv[]) {
     (void)std::setlocale(LC_ALL, "C");
 
     bool fork_daemon = false;
+#ifdef COREFLOW_ENABLE_TEST_HOOKS
+    SimLoopOptions sim_opts{};
+    if (argc >= 2 && std::string_view(argv[1]) == "--sim-loop") {
+        if (!parse_sim_loop_args(argc, argv, sim_opts)) {
+            std::cerr << "Usage: coreflowd_sim --sim-loop --sysfs-root /tmp/... --procfs-root /tmp/... --state-dir /tmp/... [--config /tmp/...] [--start-ms <ms>]\n";
+            return 2;
+        }
+        std::string sim_boot_id_path;
+        if (!prepare_sim_boot_id_file(sim_opts.state_dir, sim_boot_id_path)) {
+            std::cerr << "[CF-Sim] Unable to initialize isolated state directory: " << sim_opts.state_dir << "\n";
+            return 1;
+        }
+        (void)::setenv("COREFLOW_TEST_STATE_DIR", sim_opts.state_dir.c_str(), 1);
+        (void)::setenv("COREFLOW_STATE_DIR", sim_opts.state_dir.c_str(), 1);
+        (void)::setenv("COREFLOW_TEST_BOOT_ID_PATH", sim_boot_id_path.c_str(), 1);
+    } else
+#endif
     if (argc >= 2 && std::string_view(argv[1]) == "--resolve-tamper") {
         if (argc != 4) {
             std::cerr << "Usage: coreflowd --resolve-tamper <node_path> <RESYNC|ENFORCE>\n";
             return 2;
         }
         return handle_resolve_tamper_cli(argv[2], argv[3]);
-    }
-    if (argc >= 2 && std::string_view(argv[1]) == "--set-config") {
+    } else if (argc >= 2 && std::string_view(argv[1]) == "--set-config") {
         if (argc < 3) {
             std::cerr << "Usage: coreflowd --set-config key=value [key=value ...]\n";
             return 2;
@@ -1576,9 +1758,7 @@ int main(int argc, char* argv[]) {
         const pid_t pid = daemon_pid();
         if (pid > 0) (void)::kill(pid, SIGHUP);
         return 0;
-    }
-
-    if (argc == 2) {
+    } else if (argc == 2) {
         const std::string_view cmd(argv[1]);
         if (cmd == "--status") {
             const pid_t live = daemon_pid();
@@ -1624,31 +1804,52 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    if (safety_halt_requested()) {
-        emit_log(true, "[CoreFlow] Safety marker active; refusing runtime start.");
-        return 2;
+#ifdef COREFLOW_ENABLE_TEST_HOOKS
+    const bool sim_mode = sim_opts.enabled;
+    if (sim_mode) {
+        (void)::setenv("COREFLOW_TEST_SKIP_FSYNC", "1", 1);
     }
-    if (daemon_pid() > 0) return 0;
-    if (!service_launcher_authorized()) {
-        emit_log(true, "[CoreFlow] Launch rejected: service.sh must hold service.lock.");
-        return 2;
-    }
-
-    if (fork_daemon) {
-        if (!daemonize_process()) return 1;
-    } else {
-        (void)::setsid();
-        for (int fd = 3; fd < 256; ++fd) (void)::close(fd);
-    }
-
-    escape_app_cgroups_and_protect_oom();
-    install_signal_hardening();
+    const std::string sysfs_root = sim_mode ? sim_opts.sysfs_root : std::string("/sys");
+    const std::string procfs_root = sim_mode ? sim_opts.procfs_root : std::string("/proc");
+    const std::string state_dir = sim_mode ? sim_opts.state_dir : std::string(kStateDir);
+    const std::string sim_config_path = sim_mode ? sim_opts.config_path : std::string{};
+    uint64_t virtual_clock_ms = sim_mode ? sim_opts.start_ms : 0ULL;
+#else
+    constexpr bool sim_mode = false;
+    const std::string sysfs_root = "/sys";
+    const std::string procfs_root = "/proc";
+    const std::string state_dir = kStateDir;
+    const std::string sim_config_path{};
+    uint64_t virtual_clock_ms = 0ULL;
+#endif
 
     UniqueFd pid_lock;
-    if (!write_pid(pid_lock)) {
-        if (errno == EWOULDBLOCK || errno == EAGAIN) return 0;
-        emit_log(true, "[CoreFlow] Unable to acquire PID singleton lock.");
-        return 1;
+    if (!sim_mode) {
+        if (safety_halt_requested()) {
+            emit_log(true, "[CoreFlow] Safety marker active; refusing runtime start.");
+            return 2;
+        }
+        if (daemon_pid() > 0) return 0;
+        if (!service_launcher_authorized()) {
+            emit_log(true, "[CoreFlow] Launch rejected: service.sh must hold service.lock.");
+            return 2;
+        }
+
+        if (fork_daemon) {
+            if (!daemonize_process()) return 1;
+        } else {
+            (void)::setsid();
+            for (int fd = 3; fd < 256; ++fd) (void)::close(fd);
+        }
+
+        escape_app_cgroups_and_protect_oom();
+        install_signal_hardening();
+
+        if (!write_pid(pid_lock)) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) return 0;
+            emit_log(true, "[CoreFlow] Unable to acquire PID singleton lock.");
+            return 1;
+        }
     }
 
     auto& baseline = BaselineStore::instance();
@@ -1658,33 +1859,52 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // CFAE System Framework / CoreFlow Engine v6.0.0-R Runtime Composition
-    DaemonConfig config = DaemonConfig::load_best_available();
-    HardwareProbe probe;
-    HardwareTopology topo = probe.discover();
-    ThermalMonitor thermal_mon;
-    NeuralPredictor neural("/data/adb/coreflow/models");
-    CentralMutationCoordinator coordinator;
-    HardwareLongevityManager longevity(coordinator);
+    const auto load_active_config = [&]() -> DaemonConfig {
+        if (sim_mode) {
+            if (!sim_config_path.empty()) {
+                return DaemonConfig::load_from_file(sim_config_path);
+            }
+            return DaemonConfig{};
+        }
+        return DaemonConfig::load_best_available();
+    };
+    const auto clock_steady_ms = [&]() noexcept -> uint64_t {
+        return sim_mode ? virtual_clock_ms : steady_now_ms();
+    };
+    const auto clock_epoch_ms = [&]() noexcept -> uint64_t {
+        return sim_mode ? virtual_clock_ms : epoch_now_ms();
+    };
 
-    ContextEngine context_engine;
-    ThreadSchedulerActuator thread_scheduler;
+    // CFAE System Framework / CoreFlow Engine v6.1.0-R Runtime Composition
+    DaemonConfig config = load_active_config();
+    HardwareProbe probe(sysfs_root, procfs_root);
+    HardwareTopology topo = probe.discover();
+    ThermalMonitor thermal_mon(sysfs_root + "/class/thermal");
+    NeuralPredictor neural(state_dir + "/models");
+    CentralMutationCoordinator coordinator;
+    HardwareLongevityManager longevity(coordinator, sysfs_root, procfs_root);
+
+    ContextEngine context_engine(procfs_root);
+    ThreadSchedulerActuator thread_scheduler(
+        sim_mode
+            ? ThreadSchedulerActuator::ApplierFn([](int32_t, uint32_t, uint32_t) noexcept { return 0; })
+            : ThreadSchedulerActuator::ApplierFn{});
     (void)thread_scheduler.probe_support();
     v6::OemCollaborationMap oem_map;
-    oem_map.initialize(kStateDir, topo.kernel_version,
-                       v6::OemCollaborationMap::discover_rom_fingerprint());
-    StorageMemoryActuator storage_memory(baseline, "/proc", &oem_map);
+    oem_map.initialize(state_dir, topo.kernel_version,
+                       v6::OemCollaborationMap::discover_rom_fingerprint(procfs_root));
+    StorageMemoryActuator storage_memory(baseline, procfs_root, &oem_map);
     ThermalEnvelopeActuator thermal_envelope(baseline, &oem_map);
     v6::SemanticKnobEngine semantic_knobs(baseline, oem_map, &coordinator);
-    semantic_knobs.discover(topo);
+    semantic_knobs.discover(topo, sysfs_root, procfs_root);
     v6::FramePacingSensor frame_pacing;
-    frame_pacing.discover("/sys", "/proc", topo.vblank_irq_token);
+    frame_pacing.discover(sysfs_root, procfs_root, topo.vblank_irq_token);
     bool frame_pacing_quarantine_logged = false;
-    v6::SchedstatSensor schedstat_sensor("/proc");
-    v6::VmstatThrashingSensor vmstat_sensor("/proc");
+    v6::SchedstatSensor schedstat_sensor(procfs_root);
+    v6::VmstatThrashingSensor vmstat_sensor(procfs_root);
     AndroidFrameEventBridge frame_bridge;
     v6::AppDnaStore app_dna;
-    app_dna.initialize(kStateDir);
+    app_dna.initialize(state_dir);
 
     const auto apply_config_to_subsystems = [&]() {
         context_engine.set_profile(ContextEngine::parse_profile(config.profile));
@@ -1718,8 +1938,8 @@ int main(int argc, char* argv[]) {
 
     EpollReactor reactor;
     NativeInputEventSource input_source(reactor);
-    CpuUtilSampler cpu_sampler;
-    RenderLoadSampler render_sampler;
+    CpuUtilSampler cpu_sampler(procfs_root);
+    RenderLoadSampler render_sampler(procfs_root);
 
     RuntimeStatusData live_status{};
     v6::DecisionJournal decision_journal{};
@@ -1739,7 +1959,7 @@ int main(int argc, char* argv[]) {
     live_status.app_dna_entries = app_dna.snapshot_entries();
     live_status.ai_backend = std::string(neural.last_prediction().backend);
     live_status.conflicting_modules_json = read_conflicting_modules_json();
-    live_status.session.started_steady_ms = steady_now_ms();
+    live_status.session.started_steady_ms = clock_steady_ms();
 
     // Pillar 1: Sovereign Tamper Guard event listener (DecisionJournal + circuit-breaker IPC broadcast)
     // One-off writes from OEM system daemons (e.g. perf-hal during app launch) are logged quietly in
@@ -1750,7 +1970,7 @@ int main(int argc, char* argv[]) {
         const auto slash = ev.node_path.find_last_of('/');
         const std::string leaf = slash != std::string::npos ? ev.node_path.substr(slash + 1U) : ev.node_path;
         decision_journal.record(
-            epoch_now_ms(),
+            clock_epoch_ms(),
             "sovereign",
             ev.circuit_open ? "TamperCircuitOpen" : "TamperBlocked",
             "Perubahan eksternal pada " + leaf + " (nilai=" + ev.observed_value +
@@ -1758,14 +1978,16 @@ int main(int argc, char* argv[]) {
                 (ev.circuit_open ? " - Circuit breaker 30d aktif" : " - Dicatat & dikembalikan"),
             ev.circuit_open ? "quarantined" : (ev.reclaimed ? "reclaimed" : "failed"),
             live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
-        emit_log(true, "[CFAE][SovereignGuard] External write on " + ev.node_path +
-                 " (observed=" + ev.observed_value + ", enforced=" + ev.expected_value +
-                 ", reclaimed=" + (ev.reclaimed ? "yes" : "no") +
-                 ", breaker=" + (ev.circuit_open ? "OPEN" : "closed") + ")");
-        if (!ev.circuit_open) {
+        if (!sim_mode) {
+            emit_log(true, "[CFAE][SovereignGuard] External write on " + ev.node_path +
+                     " (observed=" + ev.observed_value + ", enforced=" + ev.expected_value +
+                     ", reclaimed=" + (ev.reclaimed ? "yes" : "no") +
+                     ", breaker=" + (ev.circuit_open ? "OPEN" : "closed") + ")");
+        }
+        if (!ev.circuit_open || sim_mode) {
             return;
         }
-        const uint64_t now_ipc = steady_now_ms();
+        const uint64_t now_ipc = clock_steady_ms();
         const auto it = last_tamper_ipc_ms.find(ev.node_path);
         if (it == last_tamper_ipc_ms.end() || now_ipc >= it->second + 30'000ULL) {
             last_tamper_ipc_ms[ev.node_path] = now_ipc;
@@ -1774,7 +1996,7 @@ int main(int argc, char* argv[]) {
     });
 
     v6::BootCalmSanctuary boot_calm;
-    const double init_uptime_sec = v6::BootCalmSanctuary::read_kernel_uptime_sec("/proc");
+    const double init_uptime_sec = v6::BootCalmSanctuary::read_kernel_uptime_sec(procfs_root);
     boot_calm.initialize(init_uptime_sec, live_status.session.started_steady_ms);
     bool last_screen_off = probe.is_screen_off(topo);
     v6::BootCalmDecision boot_dec = boot_calm.evaluate({
@@ -1800,7 +2022,7 @@ int main(int argc, char* argv[]) {
     MemorySnapshot last_mem_snap = probe.read_memory_snapshot();
     live_status.memory = last_mem_snap;
     decision_journal.record(
-        epoch_now_ms(), "context", "Boot",
+        clock_epoch_ms(), "context", "Boot",
         boot_dec.boot_settle_active
             ? "CFAE System Framework v6.1.0-R initialized in BOOT_SETTLE sanctuary (Zero-Profile Autonomous)"
             : "CFAE System Framework v6.1.0-R initialized (Zero-Profile Autonomous)",
@@ -1814,12 +2036,12 @@ int main(int argc, char* argv[]) {
             return;
         }
         if (ev.missed_frames * 100ULL >= ev.frame_count * 8ULL) {
-            const uint64_t now_ms = steady_now_ms();
+            const uint64_t now_ms = clock_steady_ms();
             if (last_jank_episode_ms == 0U || now_ms >= last_jank_episode_ms + 15'000ULL) {
                 last_jank_episode_ms = now_ms;
                 const uint64_t pct = (ev.missed_frames * 100ULL) / ev.frame_count;
                 decision_journal.record(
-                    epoch_now_ms(), "uclamp", "FrameJankRescue",
+                    clock_epoch_ms(), "uclamp", "FrameJankRescue",
                     "Detected " + std::to_string(pct) + "% frame drop (" +
                         (frame_pacing.active_source().empty() ? std::string("display") : frame_pacing.active_source()) +
                         "); elevating per-TID floor",
@@ -1850,9 +2072,17 @@ int main(int argc, char* argv[]) {
     auto thermal_trend = engine::new_thermal_trend_analyzer();
     auto thermal_model = engine::new_thermal_model_estimator();
     double thermal_trend_ewma_c = -1.0;
+    double closed_loop_power_ewma_w = -1.0;
+    double closed_loop_scale_ewma = 1.0;
+    double model_conf_ewma = 0.0;
+    double model_r_ewma = -1.0;
+    double model_tau_ewma = -1.0;
+    double model_ta_ewma = -1.0;
+    bool model_ewma_init = false;
+    int last_scale_dir = 0;
     auto preloader = engine::new_app_preloader();
     std::unordered_map<uint64_t, std::string> preloader_pkg_map;
-    load_preloader_state(*preloader, preloader_pkg_map);
+    load_preloader_state(*preloader, preloader_pkg_map, state_dir);
     bool preloader_dirty = false;
     const auto hash_pkg_fnv1a = [](std::string_view pkg) noexcept -> uint64_t {
         if (pkg.empty()) return 0ULL;
@@ -1873,10 +2103,10 @@ int main(int argc, char* argv[]) {
         preloader->record_launch(h);
         preloader_dirty = true;
     };
-    const auto build_fg_chain_tids = [&](const ForegroundAppInfo& fg, bool camera_active) {
+    const auto build_fg_chain_tids = [&](const ForegroundAppInfo& fg, bool camera_active, uint64_t now_ms_override = 0U) {
         auto tids = fg.critical_tids;
         if (camera_active && config.enable_camera_boost) {
-            const auto cam_tids = context_engine.resolve_camera_hal_tids();
+            const auto cam_tids = context_engine.resolve_camera_hal_tids(now_ms_override);
             tids.insert(tids.end(), cam_tids.begin(), cam_tids.end());
         }
         return tids;
@@ -1979,308 +2209,126 @@ int main(int argc, char* argv[]) {
     live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
     uint64_t last_refresh_check_ms = 0U;
 
-    const auto collect_contended_paths = [&]() {
-        return oem_map.active_contended_paths(steady_now_ms());
+    const auto collect_contended_paths = [&](uint64_t now_ms) {
+        return oem_map.active_contended_paths(now_ms);
     };
 
-    // Fast path 1 (< 5 ms): Touchscreen event -> instant per-TID UI/RenderThread boost + 700ms feed-forward guard
-    if (!input_source.start([&](const FrameEvent&) {
-            if (config.inspection_mode || live_status.thermal_emergency) return;
-            if (last_screen_off) {
-                last_screen_off = probe.is_screen_off(topo);
-                if (last_screen_off) return;
-            }
-            const uint64_t now_ms = steady_now_ms();
-            feedforward_freeze_until_ms = std::max<uint64_t>(feedforward_freeze_until_ms, now_ms + uint64_t{700});
-            context_engine.notify_touch(now_ms);
-            if (boot_dec.boot_settle_active) {
-                // Touch-Aware Soft Bypass during BOOT_SETTLE: light per-TID UI/SF UClamp ONLY for real apps
-                // (never system launchers), keeping 0 sysfs writes and 0 storage preread.
-                const bool real_app = !last_fg.package_name.empty() &&
-                                      !ContextEngine::is_system_launcher_package(last_fg.package_name);
-                if (real_app && !live_status.thermal_guard && !live_status.ctx.app_excluded) {
-                    const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
-                    ThreadDemandContext soft_demand = build_thread_demand(now_ms);
-                    soft_demand.symbiotic_cpu_scale = 0.88;
-                    thread_scheduler.apply(
-                        ContextMode::Interactive, live_status.ctx.effective_profile,
-                        live_status.capacity_scale, live_status.thermal_guard,
-                        config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
-                        soft_demand, {});
-                    live_status.thread_stats = thread_scheduler.stats();
-                }
-                return;
-            }
-            if (live_status.ctx.mode == ContextMode::Efficiency && !live_status.ctx.app_excluded) {
-                ContextSignalInput sig{};
-                sig.now_ms = now_ms;
-                sig.screen_off = false;
-                sig.thermal_guard = live_status.thermal_guard;
-                sig.cpu_util_pct = live_status.cpu_util_pct;
-                sig.gpu_busy_pct = live_status.gpu_busy_pct;
-                sig.foreground_pid = last_fg.pid;
-                sig.foreground_package = last_fg.package_name;
-                sig.has_game_thread = last_fg.has_game_thread;
-                sig.is_camera_app = config.enable_camera_boost && last_fg.is_camera_app;
-                sig.has_media_thread = last_fg.has_media_thread;
-                sig.refresh_hz = topo.refresh_hz;
-                sig.low_battery_eco = live_status.low_battery_eco;
-                live_status.ctx = context_engine.evaluate(sig);
-                live_status.autonomous_regime = compute_autonomous_regime(live_status);
-                const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
-                const auto chain_tids = build_fg_chain_tids(last_fg, live_status.ctx.camera_boost_active);
+    int thermal_timer_fd = -1;
+
+    const auto handle_touch = [&](uint64_t now_ms) {
+        if (config.inspection_mode || live_status.thermal_emergency) return;
+        if (last_screen_off) {
+            last_screen_off = probe.is_screen_off(topo);
+            if (last_screen_off) return;
+        }
+        const uint64_t ctx_clock_override = sim_mode ? now_ms : 0ULL;
+        feedforward_freeze_until_ms = std::max<uint64_t>(feedforward_freeze_until_ms, now_ms + uint64_t{700});
+        context_engine.notify_touch(now_ms);
+        if (boot_dec.boot_settle_active) {
+            // Touch-Aware Soft Bypass during BOOT_SETTLE: light per-TID UI/SF UClamp ONLY for real apps
+            // (never system launchers), keeping 0 sysfs writes and 0 storage preread.
+            const bool real_app = !last_fg.package_name.empty() &&
+                                  !ContextEngine::is_system_launcher_package(last_fg.package_name);
+            if (real_app && !live_status.thermal_guard && !live_status.ctx.app_excluded) {
+                const auto sf_tids = context_engine.resolve_surfaceflinger_tids(ctx_clock_override);
+                ThreadDemandContext soft_demand = build_thread_demand(now_ms);
+                soft_demand.symbiotic_cpu_scale = 0.88;
                 thread_scheduler.apply(
-                    live_status.ctx.mode, live_status.ctx.effective_profile,
+                    ContextMode::Interactive, live_status.ctx.effective_profile,
                     live_status.capacity_scale, live_status.thermal_guard,
-                    config.enable_frame_smoothness, sf_tids, chain_tids,
-                    build_thread_demand(now_ms), last_fg.helper_tids);
+                    config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
+                    soft_demand, {});
                 live_status.thread_stats = thread_scheduler.stats();
             }
-        })) {
-        emit_log(false, "[CoreFlow] Touchscreen evdev unavailable; running timer-driven context path.");
-    }
-
-    // Signals: SIGINT, SIGTERM, SIGHUP, SIGUSR1 (Sovereign Tamper RESYNC/ENFORCE)
-    sigset_t mask{};
-    sigemptyset(&mask);
-    sigaddset(&mask, SIGINT);
-    sigaddset(&mask, SIGTERM);
-    sigaddset(&mask, SIGHUP);
-    sigaddset(&mask, SIGUSR1);
-    if (::pthread_sigmask(SIG_BLOCK, &mask, nullptr) != 0) {
-        clear_pid(pid_lock);
-        return 1;
-    }
-
-    int thermal_timer_fd = -1;
-    UniqueFd signal_fd(::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC));
-    if (!signal_fd.valid() ||
-        !reactor.register_fd(signal_fd.get(), EPOLLIN, [&](uint32_t) {
-            signalfd_siginfo info{};
-            while (::read(signal_fd.get(), &info, sizeof(info)) == static_cast<ssize_t>(sizeof(info))) {
-                if (info.ssi_signo == SIGUSR1) {
-                    const char* sig_env_dir = std::getenv("COREFLOW_STATE_DIR");
-                    const std::string sig_state_dir = (sig_env_dir && sig_env_dir[0] != '\0')
-                        ? std::string(sig_env_dir) : std::string(kStateDir);
-                    const std::string req_path = sig_state_dir + "/tamper_cmd.req";
-                    UniqueFd rfd(::open(req_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-                    if (rfd.valid()) {
-                        char rbuf[1024];
-                        const ssize_t rn = ::read(rfd.get(), rbuf, sizeof(rbuf) - 1U);
-                        rfd.reset();
-                        (void)::unlink(req_path.c_str());
-                        if (rn > 0) {
-                            rbuf[rn] = '\0';
-                            std::string line(rbuf, static_cast<size_t>(rn));
-                            const auto nl = line.find('\n');
-                            if (nl != std::string::npos) line.resize(nl);
-                            const auto tab = line.find('\t');
-                            if (tab != std::string::npos && tab + 1U < line.size()) {
-                                const std::string action = line.substr(0, tab);
-                                const std::string node = line.substr(tab + 1U);
-                                const uint64_t now_sig_ms = steady_now_ms();
-                                bool resynced = false;
-                                if (node == "*" || node == "ALL") {
-                                    for (const auto& k : semantic_knobs.knobs()) {
-                                        if (semantic_knobs.force_resync_node(k.path, now_sig_ms)) {
-                                            resynced = true;
-                                        }
-                                    }
-                                } else {
-                                    resynced = semantic_knobs.force_resync_node(node, now_sig_ms);
-                                    coordinator.clear_node_quarantine(node);
-                                }
-                                decision_journal.record(
-                                    epoch_now_ms(), "sovereign", "TamperResync",
-                                    "Perintah " + action + " pada " + node +
-                                        (resynced ? " · Sinkronisasi & kunci 0444 dipulihkan"
-                                                  : " · Karantina dibersihkan"),
-                                    "verified", live_status.soc_temp, live_status.render_pressure,
-                                    live_status.capacity_scale);
-                                live_status.locked_nodes = baseline.locked_node_count();
-                                live_status.quarantined_nodes = coordinator.quarantined_node_count(now_sig_ms);
-                                live_status.total_tamper_events = coordinator.total_tamper_events();
-                                live_status.tamper_events = coordinator.recent_tamper_events(12U);
-                                live_status.episodes = decision_journal.recent(16U);
-                                (void)write_status_snapshot(build_status_json(live_status));
-                            }
-                        }
-                    }
-                } else if (info.ssi_signo == SIGHUP) {
-                    thread_scheduler.reset_all();
-                    semantic_knobs.rollback_all();
-                    longevity.restore_oem_baseline();
-                    prev_bypass_active = false;
-                    (void)baseline.rollback_all();
-                    oem_map.reset_transient_cooldowns();
-                    storage_memory.reset_contention();
-                    thermal_envelope.reset_contention();
-                    config = DaemonConfig::load_best_available();
-                    topo = probe.discover();
-                    frame_pacing.discover("/sys", "/proc", topo.vblank_irq_token);
-                    frame_pacing_quarantine_logged = false;
-                    semantic_knobs.discover(topo);
-                    apply_config_to_subsystems();
-                    pid_initialized = false;
-                    pid_controller = engine::new_controller({
-                        config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(pid_target_fallback)});
-                    live_status.config = config;
-                    live_status.topo = topo;
-                    live_status.frame_pacing_available = frame_pacing.verified();
-                    live_status.frame_pacing_verified = frame_pacing.verified();
-                    live_status.frame_pacing_source = frame_pacing.active_source().empty() ? "unavailable" : frame_pacing.active_source();
-                    live_status.semantic_stats = semantic_knobs.stats();
-                    live_status.semantic_knob_leaves = collect_semantic_leaves();
-                    live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
-                    live_status.ctx.effective_profile = context_engine.profile();
-                    live_status.autonomous_regime = compute_autonomous_regime(live_status);
-                    const uint32_t ms = std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u);
-                    itimerspec ts{};
-                    ts.it_interval.tv_sec = ms / 1000;
-                    ts.it_interval.tv_nsec = (ms % 1000) * 1000000L;
-                    // Fire the first post-reload actuation tick promptly (50 ms) so new settings apply immediately.
-                    ts.it_value.tv_sec = 0;
-                    ts.it_value.tv_nsec = 50'000'000L;
-                    if (thermal_timer_fd >= 0) (void)::timerfd_settime(thermal_timer_fd, 0, &ts, nullptr);
-                    emit_log(false, std::string("[CoreFlow] Configuration reloaded (mode=autonomous, paused=") +
-                             (config.inspection_mode ? "yes" : "no") + ").");
-                    decision_journal.record(
-                        epoch_now_ms(), "context", "ConfigReload",
-                        config.inspection_mode ? "Paused (OEM A/B inspection mode)"
-                                               : (std::string("Zero-Profile Autonomous") +
-                                                  (config.bypass_charging ? " · Bypass ON" : "")),
-                        "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
-                    live_status.episodes = decision_journal.recent(16U);
-                    (void)write_status_snapshot(build_status_json(live_status));
-                } else {
-                    reactor.stop();
-                }
-            }
-        })) {
-        clear_pid(pid_lock);
-        return 1;
-    }
-
-    // Fast path 2 (200 ms while screen ON): Rapid foreground app change & launch burst trigger
-    (void)reactor.create_timerfd(std::chrono::milliseconds(200), [&](uint32_t) {
-        if (last_screen_off || config.inspection_mode || live_status.thermal_emergency) return;
-        const auto fg = context_engine.resolve_foreground_app(topo.cgroups.top_app_procs_path);
-        const bool changed = fg.pid != last_fg.pid || fg.package_name != last_fg.package_name;
-        if (!changed && live_status.ctx.mode != ContextMode::LaunchBurst &&
-            live_status.ctx.mode != ContextMode::Interactive) {
             return;
         }
-        last_fg = fg;
-        if (boot_dec.boot_settle_active) {
-            // Phase 1 (BOOT_SETTLE): observe foreground package only; 0 sysfs writes, 0 preread, 0 learning.
-            live_status.ctx.foreground_pid = fg.pid;
-            live_status.ctx.foreground_package = fg.package_name;
-            return;
-        }
-        const uint64_t now_ms = steady_now_ms();
-        ContextSignalInput sig{};
-        sig.now_ms = now_ms;
-        sig.screen_off = false;
-        sig.thermal_guard = live_status.thermal_guard;
-        sig.cpu_util_pct = live_status.cpu_util_pct;
-        sig.gpu_busy_pct = live_status.gpu_busy_pct;
-        sig.foreground_pid = fg.pid;
-        sig.foreground_package = fg.package_name;
-        sig.has_game_thread = fg.has_game_thread;
-        sig.is_camera_app = config.enable_camera_boost && fg.is_camera_app;
-        sig.has_media_thread = fg.has_media_thread;
-        sig.refresh_hz = topo.refresh_hz;
-        sig.low_battery_eco = live_status.low_battery_eco;
-        const ContextMode prev_mode = live_status.ctx.mode;
-        live_status.ctx = context_engine.evaluate(sig);
-        live_status.autonomous_regime = compute_autonomous_regime(live_status);
-        const bool is_launcher = ContextEngine::is_system_launcher_package(fg.package_name);
-        if (boot_dec.allow_learning && !is_launcher && live_status.ctx.newly_launched_app &&
-            (fg.has_render_thread || fg.has_game_thread)) {
-            ++live_status.session.launch_bursts;
-            if (config.enable_predictive_preload) {
-                record_preloader_launch(fg.package_name);
-            }
-            app_dna.record_launch(fg.package_name, now_ms, to_dna_signature(fg.engine_class));
-            live_status.app_dna_learned = app_dna.learned_count();
-            const bool cam_launch = live_status.ctx.camera_boost_active && config.enable_camera_boost;
-            decision_journal.record(
-                epoch_now_ms(),
-                cam_launch ? "uclamp" : "storage",
-                cam_launch ? "CameraBoost" : "LaunchBurst",
-                (cam_launch ? "Camera HAL + UI fast-launch: " : "Boosted ") +
-                    (fg.package_name.empty() ? std::string("foreground app") : fg.package_name),
-                "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
-        }
-        if (changed) {
-            live_status.active_app_bias = app_dna.uclamp_bias_for(fg.package_name);
-        }
-        if (changed || live_status.ctx.mode != prev_mode) {
-            if (boot_dec.allow_uclamp) {
-                const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
-                const auto chain_tids = build_fg_chain_tids(fg, live_status.ctx.camera_boost_active);
-                thread_scheduler.apply(
-                    live_status.ctx.mode, live_status.ctx.effective_profile,
-                    live_status.capacity_scale, live_status.thermal_guard,
-                    config.enable_frame_smoothness, sf_tids, chain_tids,
-                    build_thread_demand(now_ms), fg.helper_tids);
-            }
-            const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, fg);
-            if (boot_dec.allow_storage_and_symbiotic) {
-                storage_memory.apply(
-                    topo, sysfs_ctx, live_status.ctx.effective_profile,
-                    config.enable_storage_burst, config.enable_memory_guard, now_ms,
-                    build_storage_telemetry(last_mem_snap));
-            }
-            if (boot_dec.allow_envelope_and_semantic) {
-                thermal_envelope.apply(
-                    topo, sysfs_ctx.mode, live_status.ctx.effective_profile,
-                    live_status.capacity_scale, live_status.thermal_guard,
-                    config.enable_thermal_pacing,
-                    build_envelope_telemetry(), now_ms);
-                semantic_knobs.apply(
-                    sysfs_ctx.mode, live_status.ctx.effective_profile,
-                    live_status.capacity_scale, live_status.thermal_guard,
-                    config.enable_thermal_pacing || config.enable_storage_burst,
-                    last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
-                    live_status.mem_psi.value_or(0.0), now_ms,
-                    is_passive_media_only(live_status.ctx),
-                    build_symbiotic_hints());
-            }
-            if (config.bypass_on_gaming) {
-                (void)longevity.apply_power_control(
-                    config.bypass_charging,
-                    live_status.ctx.mode == ContextMode::Gaming,
-                    config.bypass_on_gaming,
-                    config.charge_limit_pct);
-            }
+        if (live_status.ctx.mode == ContextMode::Efficiency && !live_status.ctx.app_excluded) {
+            ContextSignalInput sig{};
+            sig.now_ms = now_ms;
+            sig.screen_off = false;
+            sig.thermal_guard = live_status.thermal_guard;
+            sig.cpu_util_pct = live_status.cpu_util_pct;
+            sig.gpu_busy_pct = live_status.gpu_busy_pct;
+            sig.foreground_pid = last_fg.pid;
+            sig.foreground_package = last_fg.package_name;
+            sig.has_game_thread = last_fg.has_game_thread;
+            sig.is_camera_app = config.enable_camera_boost && last_fg.is_camera_app;
+            sig.has_media_thread = last_fg.has_media_thread;
+            sig.refresh_hz = topo.refresh_hz;
+            sig.low_battery_eco = live_status.low_battery_eco;
+            live_status.ctx = context_engine.evaluate(sig);
+            live_status.autonomous_regime = compute_autonomous_regime(live_status);
+            const auto sf_tids = context_engine.resolve_surfaceflinger_tids(ctx_clock_override);
+            const auto chain_tids = build_fg_chain_tids(last_fg, live_status.ctx.camera_boost_active, ctx_clock_override);
+            thread_scheduler.apply(
+                live_status.ctx.mode, live_status.ctx.effective_profile,
+                live_status.capacity_scale, live_status.thermal_guard,
+                config.enable_frame_smoothness, sf_tids, chain_tids,
+                build_thread_demand(now_ms), last_fg.helper_tids);
             live_status.thread_stats = thread_scheduler.stats();
-            live_status.storage_stats = storage_memory.stats();
-            live_status.envelope_stats = thermal_envelope.stats();
-            live_status.semantic_stats = semantic_knobs.stats();
-            live_status.contended_paths = collect_contended_paths();
-            live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
         }
-    });
+    };
+
+    const auto handle_config_reload = [&](uint64_t) {
+        thread_scheduler.reset_all();
+        semantic_knobs.rollback_all();
+        longevity.restore_oem_baseline();
+        prev_bypass_active = false;
+        (void)baseline.rollback_all();
+        oem_map.reset_transient_cooldowns();
+        storage_memory.reset_contention();
+        thermal_envelope.reset_contention();
+        config = load_active_config();
+        topo = probe.discover();
+        frame_pacing.discover(sysfs_root, procfs_root, topo.vblank_irq_token);
+        frame_pacing_quarantine_logged = false;
+        semantic_knobs.discover(topo, sysfs_root, procfs_root);
+        apply_config_to_subsystems();
+        pid_initialized = false;
+        last_scale_dir = 0;
+        pid_controller = engine::new_controller({
+            config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(pid_target_fallback)});
+        live_status.config = config;
+        live_status.topo = topo;
+        live_status.frame_pacing_available = frame_pacing.verified();
+        live_status.frame_pacing_verified = frame_pacing.verified();
+        live_status.frame_pacing_source = frame_pacing.active_source().empty() ? "unavailable" : frame_pacing.active_source();
+        live_status.semantic_stats = semantic_knobs.stats();
+        live_status.semantic_knob_leaves = collect_semantic_leaves();
+        live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
+        live_status.ctx.effective_profile = context_engine.profile();
+        live_status.autonomous_regime = compute_autonomous_regime(live_status);
+        if (!sim_mode) {
+            const uint32_t ms = std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u);
+            itimerspec ts{};
+            ts.it_interval.tv_sec = ms / 1000;
+            ts.it_interval.tv_nsec = (ms % 1000) * 1000000L;
+            // Fire the first post-reload actuation tick promptly (50 ms) so new settings apply immediately.
+            ts.it_value.tv_sec = 0;
+            ts.it_value.tv_nsec = 50'000'000L;
+            if (thermal_timer_fd >= 0) (void)::timerfd_settime(thermal_timer_fd, 0, &ts, nullptr);
+            emit_log(false, std::string("[CoreFlow] Configuration reloaded (mode=autonomous, paused=") +
+                     (config.inspection_mode ? "yes" : "no") + ").");
+        }
+        decision_journal.record(
+            clock_epoch_ms(), "context", "ConfigReload",
+            config.inspection_mode ? "Paused (OEM A/B inspection mode)"
+                                   : (std::string("Zero-Profile Autonomous") +
+                                      (config.bypass_charging ? " · Bypass ON" : "")),
+            "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+        live_status.episodes = decision_journal.recent(16U);
+        if (!sim_mode) {
+            (void)write_status_snapshot(build_status_json(live_status), state_dir);
+        }
+    };
 
     // Main control path (default 1000 ms): Thermal + PSI + Online RLS/MLP + Rust PID + Dual-Timescale Equilibrium + Orthogonal Symbiotic Orchestrator
-    const auto interval = std::chrono::milliseconds(std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
-    thermal_timer_fd = reactor.create_timerfd(interval, [&](uint32_t) {
-        if (safety_halt_requested()) {
-            reactor.stop();
-            return;
-        }
-
-        const auto now_tp = std::chrono::steady_clock::now();
-        const double elapsed = std::clamp(
-            std::chrono::duration<double>(now_tp - last_thermal_tick).count(), 0.001, 60.0);
-        last_thermal_tick = now_tp;
-        const uint64_t now_ms = steady_now_ms();
+    const auto run_control_tick = [&](uint64_t now_ms, double elapsed) {
         if (now_ms >= live_status.session.started_steady_ms) {
             live_status.session.uptime_sec = (now_ms - live_status.session.started_steady_ms) / 1000ULL;
         }
 
-        const auto tb = thermal_mon.sample_bundle(true);
+        const auto tb = thermal_mon.sample_bundle(true, sim_mode ? (now_ms * 1'000'000ULL) : 0ULL);
         auto thermal = tb.assessment;
         const float soc_temp = tb.composite_celsius;
         const float batt_temp = tb.battery_celsius;
@@ -2397,7 +2445,7 @@ int main(int argc, char* argv[]) {
             live_status.low_battery_eco = compute_low_battery_eco(live_status.battery);
             live_status.autonomous_regime = compute_autonomous_regime(live_status);
             live_status.app_dna_entries = app_dna.snapshot_entries();
-            live_status.contended_paths = collect_contended_paths();
+            live_status.contended_paths = collect_contended_paths(now_ms);
             live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
             if (live_status.contended_paths.size() > prev_contended_count) {
                 std::string node_label = std::to_string(live_status.contended_paths.size()) + " sysfs node(s)";
@@ -2412,12 +2460,12 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 decision_journal.record(
-                    epoch_now_ms(), "thermal", "OEMContention",
+                    clock_epoch_ms(), "thermal", "OEMContention",
                     "Yielded " + node_label + " to OEM cooldown",
                     "oem_yield", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
             } else if (live_status.contended_paths.empty() && prev_contended_count > 0U) {
                 decision_journal.record(
-                    epoch_now_ms(), "thermal", "OEMRecovery",
+                    clock_epoch_ms(), "thermal", "OEMRecovery",
                     "Re-acquired full sysfs ownership after cooldown",
                     "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
             }
@@ -2441,7 +2489,7 @@ int main(int argc, char* argv[]) {
             live_status.episodes = decision_journal.recent(16U);
             ++live_status.session.scale_samples;
             live_status.session.scale_sum += live_status.capacity_scale;
-            const uint64_t sample_ts = epoch_now_ms();
+            const uint64_t sample_ts = clock_epoch_ms();
             live_status.history.push_back(HistoryPoint{
                 .ts_ms = sample_ts,
                 .soc_temp = soc_temp >= 0.0f ? static_cast<double>(soc_temp) : -1.0,
@@ -2487,7 +2535,7 @@ int main(int argc, char* argv[]) {
                 thermal_trend_ewma_c,
                 trip_c);
             live_status.thermal_velocity_cpm = trend.velocity_cpm;
-            // Observe-only RC chassis identification: total system power (discharging only) vs the
+            // Online RC chassis identification: total system power (discharging only) vs the
             // slow chassis node. Charging/unknown power poisons the step instead of fabricating data.
             {
                 const bool power_ok = live_status.battery.available && !live_status.battery.charging &&
@@ -2499,7 +2547,9 @@ int main(int argc, char* argv[]) {
                     power_ok ? live_status.battery.power_mw / 1000.0 : -1.0,
                     kChassisTargetCelsius);
             }
-            (void)write_status_snapshot(build_status_json(live_status));
+            if (!sim_mode) {
+                (void)write_status_snapshot(build_status_json(live_status), state_dir);
+            }
         };
 
         // Hard hardware safety cutoff (battery >= 58C or SoC >= 95C)
@@ -2519,10 +2569,12 @@ int main(int argc, char* argv[]) {
                 prev_bypass_active = false;
                 (void)baseline.rollback_all();
                 decision_journal.record(
-                    epoch_now_ms(), "thermal", "EmergencyCutoff",
+                    clock_epoch_ms(), "thermal", "EmergencyCutoff",
                     "Extreme thermal limit reached; restored OEM baseline",
                     "rolled_back", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
-                emit_log(true, "[CoreFlow][Safety] Extreme thermal threshold reached; rolled back to OEM baseline.");
+                if (!sim_mode) {
+                    emit_log(true, "[CoreFlow][Safety] Extreme thermal threshold reached; rolled back to OEM baseline.");
+                }
             }
             record_history_and_publish();
             return;
@@ -2537,12 +2589,12 @@ int main(int argc, char* argv[]) {
         if (thermal_guard && !live_status.session.prev_thermal_guard) {
             ++live_status.session.thermal_guard_events;
             decision_journal.record(
-                epoch_now_ms(), "thermal", "ThermalGuard",
+                clock_epoch_ms(), "thermal", "ThermalGuard",
                 "Thermal Guard engaged; smoothly capping headroom",
                 "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
         } else if (!thermal_guard && live_status.session.prev_thermal_guard) {
             decision_journal.record(
-                epoch_now_ms(), "thermal", "ThermalRecovered",
+                clock_epoch_ms(), "thermal", "ThermalRecovered",
                 "Thermal Guard released; full headroom restored",
                 "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
         }
@@ -2591,13 +2643,75 @@ int main(int argc, char* argv[]) {
         bool equilibrium_guard = false;
         if (pid_dec.valid) {
             double scale = pid_dec.capacity_scale;
-            if (ai.valid && ai.confidence >= 0.60 && ai.predicted_pressure_10s >= 80.0) {
-                // Keep advisory pre-damp bounded above 0.65 unless Thermal Guard is active so
-                // 10s Android thermal headroom refresh steps cannot slam headroom down to 0.44.
+            if (ai.valid && ai.confidence >= 0.60 && ai.predicted_pressure_10s > 76.0) {
+                // Smoothly blend advisory pre-damp across 76..82 pressure (no step cliff at 80.0),
+                // keeping it bounded above 0.65 unless Thermal Guard is active.
                 const double ai_floor = thermal_guard ? 0.25 : 0.65;
-                scale = std::min(scale, std::max(ai.recommended_scale, ai_floor));
+                const double ai_blend = std::clamp((ai.predicted_pressure_10s - 76.0) / 6.0, 0.0, 1.0);
+                const double ai_cap = 1.0 - (1.0 - std::max(ai.recommended_scale, ai_floor)) * ai_blend;
+                scale = std::min(scale, ai_cap);
             }
             if (thermal_guard) scale = std::min(scale, 0.75);
+
+            // Phase-matched 30s EWMA of discharging power and applied capacity_scale:
+            // Reconstructing unthrottled demand P_demand = P_ewma / s_ewma^1.8 turns the power-budget
+            // law into s_power = s_ewma * (P_budget / P_ewma)^(1/1.8), which has an exact monotonically
+            // overdamped fixed point at P_ewma == P_budget without negative-feedback unthrottling bounce.
+            const double prev_scale = std::isfinite(live_status.capacity_scale)
+                ? std::clamp(live_status.capacity_scale, 0.25, 1.0)
+                : 1.0;
+            const bool discharging_power_ok =
+                live_status.battery.available && !live_status.battery.charging &&
+                std::isfinite(live_status.battery.power_mw) && live_status.battery.power_mw > 50.0;
+            if (discharging_power_ok) {
+                const double p_now_w = std::clamp(live_status.battery.power_mw / 1000.0, 0.1, 30.0);
+                if (closed_loop_power_ewma_w <= 0.0 || !std::isfinite(closed_loop_power_ewma_w)) {
+                    closed_loop_power_ewma_w = p_now_w;
+                    closed_loop_scale_ewma = prev_scale;
+                } else {
+                    const double alpha = 1.0 - std::exp(-std::clamp(elapsed, 0.1, 30.0) / 30.0);
+                    closed_loop_power_ewma_w += alpha * (p_now_w - closed_loop_power_ewma_w);
+                    closed_loop_scale_ewma += alpha * (prev_scale - closed_loop_scale_ewma);
+                }
+            }
+            const double demand_power_w =
+                (closed_loop_power_ewma_w > 0.0 && std::isfinite(closed_loop_power_ewma_w))
+                    ? (closed_loop_power_ewma_w / std::pow(std::clamp(closed_loop_scale_ewma, 0.45, 1.0), 1.8))
+                    : live_status.thermal_model.avg_power_w;
+
+            // Smooth 10s-decimated RLS thermal_model outputs so discrete 10-second model steps
+            // never inject sawtooth reversals. Confidence ramps slower (50s) than power EWMA (30s)
+            // so rising confidence never pulls capacity_scale downward during an idle cooling lull.
+            const double m_alpha = 1.0 - std::exp(-std::clamp(elapsed, 0.1, 30.0) / 25.0);
+            const double c_alpha = 1.0 - std::exp(-std::clamp(elapsed, 0.1, 30.0) / 50.0);
+            if (live_status.thermal_model.valid &&
+                std::isfinite(live_status.thermal_model.r_theta_c_per_w) &&
+                std::isfinite(live_status.thermal_model.tau_s) &&
+                std::isfinite(live_status.thermal_model.ambient_c)) {
+                const double raw_conf = static_cast<double>(live_status.thermal_model.confidence);
+                if (!model_ewma_init) {
+                    model_ewma_init = true;
+                    model_r_ewma = live_status.thermal_model.r_theta_c_per_w;
+                    model_tau_ewma = live_status.thermal_model.tau_s;
+                    model_ta_ewma = live_status.thermal_model.ambient_c;
+                    model_conf_ewma = std::min(raw_conf, 45.0);
+                } else {
+                    model_r_ewma += m_alpha * (live_status.thermal_model.r_theta_c_per_w - model_r_ewma);
+                    model_tau_ewma += m_alpha * (live_status.thermal_model.tau_s - model_tau_ewma);
+                    model_ta_ewma += m_alpha * (live_status.thermal_model.ambient_c - model_ta_ewma);
+                    model_conf_ewma += c_alpha * (raw_conf - model_conf_ewma);
+                }
+            } else if (model_ewma_init) {
+                model_conf_ewma += c_alpha * (0.0 - model_conf_ewma);
+                if (model_conf_ewma < 1.0) {
+                    model_conf_ewma = 0.0;
+                    model_ewma_init = false;
+                }
+            }
+            const bool smooth_model_valid = model_ewma_init && model_conf_ewma >= 1.0;
+            const uint32_t smooth_model_conf = static_cast<uint32_t>(
+                std::clamp(std::llround(model_conf_ewma), 0LL, 100LL));
+
             const auto eq = engine::compute_thermal_equilibrium({
                 static_cast<double>(soc_temp),
                 static_cast<double>(batt_temp),
@@ -2607,12 +2721,12 @@ int main(int argc, char* argv[]) {
                 live_status.battery.charging,
                 longevity.is_bypass_active(),
                 live_status.ctx.mode == ContextMode::LaunchBurst,
-                live_status.thermal_model.valid,
-                live_status.thermal_model.confidence,
-                live_status.thermal_model.r_theta_c_per_w,
-                live_status.thermal_model.tau_s,
-                live_status.thermal_model.ambient_c,
-                live_status.thermal_model.avg_power_w,
+                smooth_model_valid,
+                smooth_model_conf,
+                smooth_model_valid ? model_r_ewma : -1.0,
+                smooth_model_valid ? model_tau_ewma : -1.0,
+                smooth_model_valid ? model_ta_ewma : -1.0,
+                demand_power_w,
                 kChassisTargetCelsius});
             live_status.charging_damped = eq.charging_damped;
             live_status.thermal_model_closed_loop = eq.model_closed_loop_active;
@@ -2620,16 +2734,28 @@ int main(int argc, char* argv[]) {
             live_status.power_budget_mw = eq.power_budget_w >= 0.0 ? eq.power_budget_w * 1000.0 : -1.0;
             equilibrium_guard = eq.equilibrium_guard;
             // Slew-rate limit post-PID AI/equilibrium scale changes (max 0.08/s down, 0.06/s up)
-            // so 1-tick telemetry/AI blips cannot produce a 40% headroom cliff.
+            // with 2.5% asymmetric reversal deadband so 0.1 C quantization & confidence ramp blips never
+            // cause chatter while same-direction tracking and urgent thermal guard drops remain immediate.
             const double target_scale = std::clamp(eq.effective_scale, 0.25, 1.0);
             const double max_drop = std::clamp(0.08 * elapsed, 0.02, 0.20);
             const double max_rise = std::clamp(0.06 * elapsed, 0.02, 0.15);
-            const double prev_scale = std::isfinite(live_status.capacity_scale)
-                ? std::clamp(live_status.capacity_scale, 0.25, 1.0)
-                : 1.0;
-            live_status.capacity_scale = std::clamp(
-                std::clamp(target_scale, prev_scale - max_drop, prev_scale + max_rise),
-                0.25, 1.0);
+            double desired_delta = target_scale - prev_scale;
+            const int proposed_dir = (desired_delta > 0.002) ? 1 : (desired_delta < -0.002 ? -1 : 0);
+            const bool reversing = (last_scale_dir != 0 && proposed_dir != 0 && proposed_dir != last_scale_dir);
+            const bool urgent_guard_drop = (thermal_guard || equilibrium_guard) && (desired_delta < 0.0);
+            const bool cooling_hold =
+                !urgent_guard_drop && last_scale_dir > 0 && desired_delta < 0.0 &&
+                live_status.thermal_velocity_cpm <= -0.30;
+            if ((reversing && !urgent_guard_drop && std::abs(desired_delta) < 0.025) || cooling_hold) {
+                desired_delta = 0.0;
+            }
+            const double applied_delta = std::clamp(desired_delta, -max_drop, max_rise);
+            live_status.capacity_scale = std::clamp(prev_scale + applied_delta, 0.25, 1.0);
+            if (applied_delta > 0.002) {
+                last_scale_dir = 1;
+            } else if (applied_delta < -0.002) {
+                last_scale_dir = -1;
+            }
         } else {
             pid_controller->reset();
             live_status.charging_damped = false;
@@ -2641,9 +2767,11 @@ int main(int argc, char* argv[]) {
         live_status.thermal_guard = effective_thermal_guard;
 
         std::vector<int32_t> sf_tids_tick;
+        const uint64_t ctx_clock_override = sim_mode ? now_ms : 0ULL;
         if (!screen_off) {
-            last_fg = context_engine.resolve_foreground_app(topo.cgroups.top_app_procs_path);
-            sf_tids_tick = context_engine.resolve_surfaceflinger_tids();
+            last_fg = context_engine.resolve_foreground_app(
+                topo.cgroups.top_app_procs_path, ctx_clock_override);
+            sf_tids_tick = context_engine.resolve_surfaceflinger_tids(ctx_clock_override);
             double rp = render_sampler.sample(last_fg.pid, last_fg.critical_tids, elapsed);
             // Universal zero-eBPF CPU runqueue starvation sensor (/proc/<pid>/task/<tid>/schedstat)
             const auto sched_sample = schedstat_sensor.sample(
@@ -2692,7 +2820,7 @@ int main(int argc, char* argv[]) {
         const bool touch_active_now = (now_ms <= feedforward_freeze_until_ms) ||
                                       (live_status.ctx.touch_hold_remaining_ms > 0U);
         boot_dec = boot_calm.evaluate({
-            .kernel_uptime_sec = v6::BootCalmSanctuary::read_kernel_uptime_sec("/proc"),
+            .kernel_uptime_sec = v6::BootCalmSanctuary::read_kernel_uptime_sec(procfs_root),
             .now_ms = now_ms,
             .screen_off = screen_off,
             .thermal_guard = effective_thermal_guard,
@@ -2712,9 +2840,9 @@ int main(int argc, char* argv[]) {
             // Phase 3 Entry (Screen-ON): Re-discover & capture true post-boot OEM baselines AFTER
             // HyperOS perf-hal & mi_thermald finished boot init, preventing false OEM yields.
             topo = probe.discover();
-            frame_pacing.discover("/sys", "/proc", topo.vblank_irq_token);
+            frame_pacing.discover(sysfs_root, procfs_root, topo.vblank_irq_token);
             frame_pacing_quarantine_logged = false;
-            semantic_knobs.discover(topo);
+            semantic_knobs.discover(topo, sysfs_root, procfs_root);
             live_status.topo = topo;
             live_status.frame_pacing_available = frame_pacing.verified();
             live_status.frame_pacing_verified = frame_pacing.verified();
@@ -2722,7 +2850,7 @@ int main(int argc, char* argv[]) {
             live_status.semantic_stats = semantic_knobs.stats();
             live_status.semantic_knob_leaves = collect_semantic_leaves();
             decision_journal.record(
-                epoch_now_ms(), "context", "BootSettleComplete",
+                clock_epoch_ms(), "context", "BootSettleComplete",
                 "Exited BOOT_SETTLE (" + boot_dec.exit_reason + ", " +
                     std::to_string(static_cast<unsigned>(std::round(boot_dec.settle_duration_sec))) +
                     "s); captured late OEM baseline & started 30s soft-start ramp",
@@ -2768,7 +2896,7 @@ int main(int argc, char* argv[]) {
                             ? "CPU draw-call bound: lifted parallel worker headroom"
                             : "I/O supply co-pacing: boosted asset read-ahead";
                 decision_journal.record(
-                    epoch_now_ms(), "uclamp", "SymbioticBalance", desc,
+                    clock_epoch_ms(), "uclamp", "SymbioticBalance", desc,
                     "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
             }
             prev_symbiotic_regime = symbiotic_plan.regime;
@@ -2827,7 +2955,7 @@ int main(int argc, char* argv[]) {
             if (fps_sample.quarantined_fixed_hz && !frame_pacing_quarantine_logged) {
                 frame_pacing_quarantine_logged = true;
                 decision_journal.record(
-                    epoch_now_ms(), "frame", "FramePacingFailClosed",
+                    clock_epoch_ms(), "frame", "FramePacingFailClosed",
                     "Fixed-Hz non-LTPO display clock detected; quarantined unverified VBlank/fps source to prevent false 0% jank trims",
                     "fail_closed", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
             }
@@ -2865,7 +2993,7 @@ int main(int argc, char* argv[]) {
                 (last_state_persist_ms == 0U || now_ms >= last_state_persist_ms + 900'000ULL)) {
                 last_state_persist_ms = now_ms;
                 (void)app_dna.flush_if_significant();
-                if (preloader_dirty && save_preloader_state(*preloader, preloader_pkg_map)) {
+                if (preloader_dirty && save_preloader_state(*preloader, preloader_pkg_map, state_dir)) {
                     preloader_dirty = false;
                 }
             }
@@ -2873,7 +3001,7 @@ int main(int argc, char* argv[]) {
 
         if (!boot_dec.boot_settle_active && live_status.ctx.mode != prev_mode) {
             decision_journal.record(
-                epoch_now_ms(), "context", "ModeShift",
+                clock_epoch_ms(), "context", "ModeShift",
                 std::string(ContextEngine::mode_name(prev_mode)) + " -> " +
                     ContextEngine::mode_name(live_status.ctx.mode) +
                     (live_status.ctx.foreground_package.empty() ? "" : (" (" + live_status.ctx.foreground_package + ")")),
@@ -2912,7 +3040,7 @@ int main(int argc, char* argv[]) {
                 const auto& sf_tids = sf_tids_tick;
                 const auto chain_tids = screen_off
                     ? std::vector<int32_t>{}
-                    : build_fg_chain_tids(last_fg, live_status.ctx.camera_boost_active);
+                    : build_fg_chain_tids(last_fg, live_status.ctx.camera_boost_active, ctx_clock_override);
                 const auto helper_tids = screen_off ? std::vector<int32_t>{} : last_fg.helper_tids;
                 if (boot_dec.allow_uclamp) {
                     thread_scheduler.apply(
@@ -2933,7 +3061,7 @@ int main(int argc, char* argv[]) {
                     if (screen_off && config.enable_memory_guard && config.enable_idle_compaction) {
                         if (storage_memory.maybe_run_idle_compaction(topo, storage_tel, soc_temp, now_ms)) {
                             decision_journal.record(
-                                epoch_now_ms(), "memory", "IdleCompaction",
+                                clock_epoch_ms(), "memory", "IdleCompaction",
                                 "Defragmented RAM during cool ScreenOff idle (anti-aging guard)",
                                 "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
                         }
@@ -2960,7 +3088,7 @@ int main(int argc, char* argv[]) {
                                 if (warmed > 0U) {
                                     live_status.last_predicted_pkg = pit->second;
                                     decision_journal.record(
-                                        epoch_now_ms(), "storage", "PredictivePreload",
+                                        clock_epoch_ms(), "storage", "PredictivePreload",
                                         "Pre-warmed " + pit->second + " (" +
                                             std::to_string(static_cast<unsigned>(pred.confidence * 100.0)) + "% match)",
                                         "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
@@ -2997,7 +3125,7 @@ int main(int argc, char* argv[]) {
                 if (now_bypass != prev_bypass_active) {
                     const auto btel = longevity.sample_battery_telemetry();
                     decision_journal.record(
-                        epoch_now_ms(), "power",
+                        clock_epoch_ms(), "power",
                         now_bypass ? "BypassEngaged" : "BypassReleased",
                         now_bypass ? ("Charging bypassed (" + btel.bypass_reason + ")") : "Restored OEM charging path",
                         "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
@@ -3014,29 +3142,274 @@ int main(int argc, char* argv[]) {
         live_status.envelope_stats = thermal_envelope.stats();
         live_status.semantic_stats = semantic_knobs.stats();
         record_history_and_publish();
-    });
+    };
 
-    (void)write_status_snapshot(build_status_json(live_status));
-    emit_log(false, "[CFAE] CoreFlow Engine v6.1.0-R Unified Autonomous Daemon started (mode=autonomous" +
-             std::string(", storage=") + HardwareProbe::storage_type_name(topo.primary_storage) +
-             ", hz=" + std::to_string(topo.refresh_hz) +
-             ", framePacing=" + (frame_pacing.supported() ? "yes" : "no") +
-             ", appDna=" + std::to_string(app_dna.learned_count()) +
-             ", semanticKnobs=" + std::to_string(semantic_knobs.stats().discovered_total) +
-             ", memBusNodes=" + std::to_string(topo.memory_bus_nodes.size()) +
-             ", oemYielded=" + std::to_string(oem_map.yielded_count()) +
-             ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") +
-             ", bypassSupported=" + (longevity.is_bypass_supported() ? "yes" : "no") +
-             ", aiBackend=" + live_status.ai_backend + ").");
+#ifdef COREFLOW_ENABLE_TEST_HOOKS
+    if (sim_mode) {
+        std::cout << "READY " << build_sim_ready_json(live_status) << "\n" << std::flush;
+        std::string cmd_line;
+        while (std::getline(std::cin, cmd_line)) {
+            if (!cmd_line.empty() && cmd_line.back() == '\r') cmd_line.pop_back();
+            std::istringstream iss(cmd_line);
+            std::string op;
+            if (!(iss >> op)) continue;
+            if (op == "STEP") {
+                uint64_t step_ms = 0U;
+                double step_dt = 1.0;
+                if (!(iss >> step_ms >> step_dt)) {
+                    std::cout << "ERR invalid_step\n" << std::flush;
+                    continue;
+                }
+                virtual_clock_ms = step_ms;
+                run_control_tick(step_ms, std::clamp(step_dt, 0.001, 60.0));
+                std::cout << "TICK "
+                          << build_sim_tick_json(live_status, step_ms, count_journal_entries(state_dir))
+                          << "\n" << std::flush;
+            } else if (op == "TOUCH") {
+                uint64_t touch_ms = virtual_clock_ms;
+                (void)(iss >> touch_ms);
+                virtual_clock_ms = std::max(virtual_clock_ms, touch_ms);
+                handle_touch(virtual_clock_ms);
+                std::cout << "TOUCHED {\"mode\":"
+                          << json_str(ContextEngine::mode_name(live_status.ctx.mode))
+                          << ",\"uclampMin\":" << live_status.thread_stats.last_util_min
+                          << "}\n" << std::flush;
+            } else if (op == "RELOAD") {
+                uint64_t reload_ms = virtual_clock_ms;
+                (void)(iss >> reload_ms);
+                virtual_clock_ms = std::max(virtual_clock_ms, reload_ms);
+                handle_config_reload(virtual_clock_ms);
+                std::cout << "RELOADED {\"ok\":true}\n" << std::flush;
+            } else if (op == "STOP") {
+                break;
+            } else {
+                std::cout << "ERR unknown_command\n" << std::flush;
+            }
+        }
+    } else
+#endif
+    {
+        // Fast path 1 (< 5 ms): Touchscreen event -> instant per-TID UI/RenderThread boost + 700ms feed-forward guard
+        if (!input_source.start([&](const FrameEvent&) {
+                handle_touch(steady_now_ms());
+            })) {
+            emit_log(false, "[CoreFlow] Touchscreen evdev unavailable; running timer-driven context path.");
+        }
 
-    reactor.run();
+        // Signals: SIGINT, SIGTERM, SIGHUP, SIGUSR1 (Sovereign Tamper RESYNC/ENFORCE)
+        sigset_t mask{};
+        sigemptyset(&mask);
+        sigaddset(&mask, SIGINT);
+        sigaddset(&mask, SIGTERM);
+        sigaddset(&mask, SIGHUP);
+        sigaddset(&mask, SIGUSR1);
+        if (::pthread_sigmask(SIG_BLOCK, &mask, nullptr) != 0) {
+            clear_pid(pid_lock);
+            return 1;
+        }
+
+        UniqueFd signal_fd(::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC));
+        if (!signal_fd.valid() ||
+            !reactor.register_fd(signal_fd.get(), EPOLLIN, [&](uint32_t) {
+                signalfd_siginfo info{};
+                while (::read(signal_fd.get(), &info, sizeof(info)) == static_cast<ssize_t>(sizeof(info))) {
+                    if (info.ssi_signo == SIGUSR1) {
+                        const char* sig_env_dir = std::getenv("COREFLOW_STATE_DIR");
+                        const std::string sig_state_dir = (sig_env_dir && sig_env_dir[0] != '\0')
+                            ? std::string(sig_env_dir) : std::string(kStateDir);
+                        const std::string req_path = sig_state_dir + "/tamper_cmd.req";
+                        UniqueFd rfd(::open(req_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+                        if (rfd.valid()) {
+                            char rbuf[1024];
+                            const ssize_t rn = ::read(rfd.get(), rbuf, sizeof(rbuf) - 1U);
+                            rfd.reset();
+                            (void)::unlink(req_path.c_str());
+                            if (rn > 0) {
+                                rbuf[rn] = '\0';
+                                std::string line(rbuf, static_cast<size_t>(rn));
+                                const auto nl = line.find('\n');
+                                if (nl != std::string::npos) line.resize(nl);
+                                const auto tab = line.find('\t');
+                                if (tab != std::string::npos && tab + 1U < line.size()) {
+                                    const std::string action = line.substr(0, tab);
+                                    const std::string node = line.substr(tab + 1U);
+                                    const uint64_t now_sig_ms = steady_now_ms();
+                                    bool resynced = false;
+                                    if (node == "*" || node == "ALL") {
+                                        for (const auto& k : semantic_knobs.knobs()) {
+                                            if (semantic_knobs.force_resync_node(k.path, now_sig_ms)) {
+                                                resynced = true;
+                                            }
+                                        }
+                                    } else {
+                                        resynced = semantic_knobs.force_resync_node(node, now_sig_ms);
+                                        coordinator.clear_node_quarantine(node);
+                                    }
+                                    decision_journal.record(
+                                        epoch_now_ms(), "sovereign", "TamperResync",
+                                        "Perintah " + action + " pada " + node +
+                                            (resynced ? " · Sinkronisasi & kunci 0444 dipulihkan"
+                                                      : " · Karantina dibersihkan"),
+                                        "verified", live_status.soc_temp, live_status.render_pressure,
+                                        live_status.capacity_scale);
+                                    live_status.locked_nodes = baseline.locked_node_count();
+                                    live_status.quarantined_nodes = coordinator.quarantined_node_count(now_sig_ms);
+                                    live_status.total_tamper_events = coordinator.total_tamper_events();
+                                    live_status.tamper_events = coordinator.recent_tamper_events(12U);
+                                    live_status.episodes = decision_journal.recent(16U);
+                                    (void)write_status_snapshot(build_status_json(live_status), state_dir);
+                                }
+                            }
+                        }
+                    } else if (info.ssi_signo == SIGHUP) {
+                        handle_config_reload(steady_now_ms());
+                    } else {
+                        reactor.stop();
+                    }
+                }
+            })) {
+            clear_pid(pid_lock);
+            return 1;
+        }
+
+        // Fast path 2 (200 ms while screen ON): Rapid foreground app change & launch burst trigger
+        (void)reactor.create_timerfd(std::chrono::milliseconds(200), [&](uint32_t) {
+            if (last_screen_off || config.inspection_mode || live_status.thermal_emergency) return;
+            const auto fg = context_engine.resolve_foreground_app(topo.cgroups.top_app_procs_path);
+            const bool changed = fg.pid != last_fg.pid || fg.package_name != last_fg.package_name;
+            if (!changed && live_status.ctx.mode != ContextMode::LaunchBurst &&
+                live_status.ctx.mode != ContextMode::Interactive) {
+                return;
+            }
+            last_fg = fg;
+            if (boot_dec.boot_settle_active) {
+                // Phase 1 (BOOT_SETTLE): observe foreground package only; 0 sysfs writes, 0 preread, 0 learning.
+                live_status.ctx.foreground_pid = fg.pid;
+                live_status.ctx.foreground_package = fg.package_name;
+                return;
+            }
+            const uint64_t now_ms = steady_now_ms();
+            ContextSignalInput sig{};
+            sig.now_ms = now_ms;
+            sig.screen_off = false;
+            sig.thermal_guard = live_status.thermal_guard;
+            sig.cpu_util_pct = live_status.cpu_util_pct;
+            sig.gpu_busy_pct = live_status.gpu_busy_pct;
+            sig.foreground_pid = fg.pid;
+            sig.foreground_package = fg.package_name;
+            sig.has_game_thread = fg.has_game_thread;
+            sig.is_camera_app = config.enable_camera_boost && fg.is_camera_app;
+            sig.has_media_thread = fg.has_media_thread;
+            sig.refresh_hz = topo.refresh_hz;
+            sig.low_battery_eco = live_status.low_battery_eco;
+            const ContextMode prev_mode = live_status.ctx.mode;
+            live_status.ctx = context_engine.evaluate(sig);
+            live_status.autonomous_regime = compute_autonomous_regime(live_status);
+            const bool is_launcher = ContextEngine::is_system_launcher_package(fg.package_name);
+            if (boot_dec.allow_learning && !is_launcher && live_status.ctx.newly_launched_app &&
+                (fg.has_render_thread || fg.has_game_thread)) {
+                ++live_status.session.launch_bursts;
+                if (config.enable_predictive_preload) {
+                    record_preloader_launch(fg.package_name);
+                }
+                app_dna.record_launch(fg.package_name, now_ms, to_dna_signature(fg.engine_class));
+                live_status.app_dna_learned = app_dna.learned_count();
+                const bool cam_launch = live_status.ctx.camera_boost_active && config.enable_camera_boost;
+                decision_journal.record(
+                    epoch_now_ms(),
+                    cam_launch ? "uclamp" : "storage",
+                    cam_launch ? "CameraBoost" : "LaunchBurst",
+                    (cam_launch ? "Camera HAL + UI fast-launch: " : "Boosted ") +
+                        (fg.package_name.empty() ? std::string("foreground app") : fg.package_name),
+                    "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+            }
+            if (changed) {
+                live_status.active_app_bias = app_dna.uclamp_bias_for(fg.package_name);
+            }
+            if (changed || live_status.ctx.mode != prev_mode) {
+                if (boot_dec.allow_uclamp) {
+                    const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
+                    const auto chain_tids = build_fg_chain_tids(fg, live_status.ctx.camera_boost_active);
+                    thread_scheduler.apply(
+                        live_status.ctx.mode, live_status.ctx.effective_profile,
+                        live_status.capacity_scale, live_status.thermal_guard,
+                        config.enable_frame_smoothness, sf_tids, chain_tids,
+                        build_thread_demand(now_ms), fg.helper_tids);
+                }
+                const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, fg);
+                if (boot_dec.allow_storage_and_symbiotic) {
+                    storage_memory.apply(
+                        topo, sysfs_ctx, live_status.ctx.effective_profile,
+                        config.enable_storage_burst, config.enable_memory_guard, now_ms,
+                        build_storage_telemetry(last_mem_snap));
+                }
+                if (boot_dec.allow_envelope_and_semantic) {
+                    thermal_envelope.apply(
+                        topo, sysfs_ctx.mode, live_status.ctx.effective_profile,
+                        live_status.capacity_scale, live_status.thermal_guard,
+                        config.enable_thermal_pacing,
+                        build_envelope_telemetry(), now_ms);
+                    semantic_knobs.apply(
+                        sysfs_ctx.mode, live_status.ctx.effective_profile,
+                        live_status.capacity_scale, live_status.thermal_guard,
+                        config.enable_thermal_pacing || config.enable_storage_burst,
+                        last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
+                        live_status.mem_psi.value_or(0.0), now_ms,
+                        is_passive_media_only(live_status.ctx),
+                        build_symbiotic_hints());
+                }
+                if (config.bypass_on_gaming) {
+                    (void)longevity.apply_power_control(
+                        config.bypass_charging,
+                        live_status.ctx.mode == ContextMode::Gaming,
+                        config.bypass_on_gaming,
+                        config.charge_limit_pct);
+                }
+                live_status.thread_stats = thread_scheduler.stats();
+                live_status.storage_stats = storage_memory.stats();
+                live_status.envelope_stats = thermal_envelope.stats();
+                live_status.semantic_stats = semantic_knobs.stats();
+                live_status.contended_paths = collect_contended_paths(now_ms);
+                live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
+            }
+        });
+
+        // Main control path (default 1000 ms)
+        const auto interval = std::chrono::milliseconds(std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
+        thermal_timer_fd = reactor.create_timerfd(interval, [&](uint32_t) {
+            if (safety_halt_requested()) {
+                reactor.stop();
+                return;
+            }
+            const auto now_tp = std::chrono::steady_clock::now();
+            const double elapsed = std::clamp(
+                std::chrono::duration<double>(now_tp - last_thermal_tick).count(), 0.001, 60.0);
+            last_thermal_tick = now_tp;
+            run_control_tick(steady_now_ms(), elapsed);
+        });
+
+        (void)write_status_snapshot(build_status_json(live_status), state_dir);
+        emit_log(false, "[CFAE] CoreFlow Engine v6.1.0-R Unified Autonomous Daemon started (mode=autonomous" +
+                 std::string(", storage=") + HardwareProbe::storage_type_name(topo.primary_storage) +
+                 ", hz=" + std::to_string(topo.refresh_hz) +
+                 ", framePacing=" + (frame_pacing.supported() ? "yes" : "no") +
+                 ", appDna=" + std::to_string(app_dna.learned_count()) +
+                 ", semanticKnobs=" + std::to_string(semantic_knobs.stats().discovered_total) +
+                 ", memBusNodes=" + std::to_string(topo.memory_bus_nodes.size()) +
+                 ", oemYielded=" + std::to_string(oem_map.yielded_count()) +
+                 ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") +
+                 ", bypassSupported=" + (longevity.is_bypass_supported() ? "yes" : "no") +
+                 ", aiBackend=" + live_status.ai_backend + ").");
+
+        reactor.run();
+    }
 
     // Guaranteed clean shutdown, cross-reboot state persistence & OEM baseline restoration
     input_source.stop();
     frame_bridge.stop();
     (void)app_dna.flush_if_dirty();
     if (preloader_dirty) {
-        (void)save_preloader_state(*preloader, preloader_pkg_map);
+        (void)save_preloader_state(*preloader, preloader_pkg_map, state_dir);
     }
     thread_scheduler.reset_all();
     semantic_knobs.rollback_all();
@@ -3045,7 +3418,26 @@ int main(int argc, char* argv[]) {
     live_status.running = false;
     live_status.pid = 0;
     live_status.locked_nodes = baseline.locked_node_count();
-    (void)write_status_snapshot(build_status_json(live_status));
+#ifdef COREFLOW_ENABLE_TEST_HOOKS
+    if (sim_mode) {
+        size_t active_mutations = 0U;
+        for (const auto& entry : baseline.get_audit_trail()) {
+            if (entry.is_modified) ++active_mutations;
+        }
+        const size_t j_entries = count_journal_entries(state_dir);
+        const bool j_clear = journal_clear(state_dir);
+        const uint32_t rem_tids = thread_scheduler.stats().active_boosted_tids;
+        std::cout << "STOPPED {\"activeMutations\":" << active_mutations
+                  << ",\"journalClear\":" << (j_clear ? "true" : "false")
+                  << ",\"journalEntries\":" << j_entries
+                  << ",\"remainingBoostedTids\":" << rem_tids
+                  << ",\"lockedNodes\":" << live_status.locked_nodes
+                  << ",\"bypassActive\":" << (longevity.is_bypass_active() ? "true" : "false")
+                  << "}\n" << std::flush;
+        return 0;
+    }
+#endif
+    (void)write_status_snapshot(build_status_json(live_status), state_dir);
     clear_pid(pid_lock);
     emit_log(false, "[CFAE] CoreFlow Engine v6.1.0-R Unified Autonomous Daemon stopped; OEM baseline restored.");
     return 0;

@@ -94,9 +94,12 @@ public:
 
     // Lightweight /proc readers (parameterized by procfs_root_ for unit tests).
     [[nodiscard]] ForegroundAppInfo resolve_foreground_app(
-        const std::string& top_app_procs_path) const noexcept;
-    [[nodiscard]] std::vector<int32_t> resolve_surfaceflinger_tids() noexcept;
-    [[nodiscard]] std::vector<int32_t> resolve_camera_hal_tids() noexcept;
+        const std::string& top_app_procs_path,
+        uint64_t now_ms_override = 0) const noexcept;
+    [[nodiscard]] std::vector<int32_t> resolve_surfaceflinger_tids(
+        uint64_t now_ms_override = 0) noexcept;
+    [[nodiscard]] std::vector<int32_t> resolve_camera_hal_tids(
+        uint64_t now_ms_override = 0) noexcept;
 
     [[nodiscard]] PerformanceProfile profile() const noexcept { return profile_; }
     [[nodiscard]] static PerformanceProfile parse_profile(std::string_view text) noexcept;

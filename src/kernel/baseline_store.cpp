@@ -235,9 +235,10 @@ bool path_writable(const std::string& path) {
     }
 
 #ifdef COREFLOW_ENABLE_TEST_HOOKS
-    // Unit tests can use private mock files only in test builds when isolated in /tmp.
+    // Unit tests and CF-Sim can use private mock files only in test builds when isolated in /tmp or /dev/shm.
     const char* test_dir = std::getenv("COREFLOW_TEST_STATE_DIR");
-    return test_dir != nullptr && *test_dir != '\0' && path.rfind("/tmp/", 0) == 0;
+    return test_dir != nullptr && *test_dir != '\0' &&
+           (path.rfind("/tmp/", 0) == 0 || path.rfind("/dev/shm/", 0) == 0);
 #else
     return false;
 #endif
@@ -423,7 +424,7 @@ bool BaselineStore::write_raw_node(
     if (!path_writable(path) || value.empty() || value.size() > 4096) return false;
     const bool virtual_node = path.rfind("/sys/", 0) == 0 ||
                               path.rfind("/proc/", 0) == 0 ||
-                              path.rfind("/dev/", 0) == 0;
+                              (path.rfind("/dev/", 0) == 0 && path.rfind("/dev/shm/", 0) != 0);
 
     // Open with O_NOFOLLOW | O_NONBLOCK first, then fstat the descriptor to eliminate TOCTOU.
     UniqueFd fd(::open(path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
@@ -439,7 +440,15 @@ bool BaselineStore::write_raw_node(
     }
     if (!virtual_node && ::ftruncate(fd.get(), 0) != 0) return false;
     if (!write_all(fd.get(), value)) return false;
-    if (!virtual_node && ::fsync(fd.get()) != 0) return false;
+    if (!virtual_node) {
+#ifdef COREFLOW_ENABLE_TEST_HOOKS
+        const char* skip = std::getenv("COREFLOW_TEST_SKIP_FSYNC");
+        const bool skip_fsync = (skip != nullptr && skip[0] == '1' && skip[1] == '\0');
+        if (!skip_fsync && ::fsync(fd.get()) != 0) return false;
+#else
+        if (::fsync(fd.get()) != 0) return false;
+#endif
+    }
     fd.reset();
 
     // Kernel nodes may normalize input; verify the actual read-back and object identity.
@@ -559,6 +568,14 @@ bool BaselineStore::owns_retained_performance_value(
         });
 }
 
+static bool sync_fd_if_needed(int fd) noexcept {
+#ifdef COREFLOW_ENABLE_TEST_HOOKS
+    const char* skip = std::getenv("COREFLOW_TEST_SKIP_FSYNC");
+    if (skip != nullptr && skip[0] == '1' && skip[1] == '\0') return true;
+#endif
+    return ::fsync(fd) == 0;
+}
+
 bool BaselineStore::persist_performance_locked() {
     if (identity_unavailable_ || !valid_boot_token(boot_id_)) return false;
     UniqueFd directory_fd = open_directory_chain_nofollow(state_dir_, true);
@@ -574,7 +591,7 @@ bool BaselineStore::persist_performance_locked() {
     (void)::unlinkat(directory_fd.get(), temp_name, 0);
     UniqueFd fd(::openat(directory_fd.get(), temp_name,
         O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
-    if (!fd.valid() || !write_all(fd.get(), payload) || ::fsync(fd.get()) != 0) {
+    if (!fd.valid() || !write_all(fd.get(), payload) || !sync_fd_if_needed(fd.get())) {
         (void)::unlinkat(directory_fd.get(), temp_name, 0);
         return false;
     }
@@ -583,7 +600,7 @@ bool BaselineStore::persist_performance_locked() {
         (void)::unlinkat(directory_fd.get(), temp_name, 0);
         return false;
     }
-    return ::fsync(directory_fd.get()) == 0;
+    return sync_fd_if_needed(directory_fd.get());
 }
 
 bool BaselineStore::persist_locked() {
@@ -611,7 +628,7 @@ bool BaselineStore::persist_locked() {
     UniqueFd fd(::openat(
         directory_fd.get(), temp_name,
         O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
-    if (!fd.valid() || !write_all(fd.get(), payload) || ::fsync(fd.get()) != 0) {
+    if (!fd.valid() || !write_all(fd.get(), payload) || !sync_fd_if_needed(fd.get())) {
         (void)::unlinkat(directory_fd.get(), temp_name, 0);
         return false;
     }
@@ -620,7 +637,7 @@ bool BaselineStore::persist_locked() {
         (void)::unlinkat(directory_fd.get(), temp_name, 0);
         return false;
     }
-    return ::fsync(directory_fd.get()) == 0;
+    return sync_fd_if_needed(directory_fd.get());
 }
 
 bool BaselineStore::recover_pending() {

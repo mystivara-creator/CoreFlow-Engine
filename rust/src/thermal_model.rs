@@ -7,7 +7,7 @@ const STEP_S: f64 = 10.0;
 const RING: usize = 60;
 const MIN_STEPS: u32 = 60;
 const FORGET_STEADY: f64 = 0.996;
-const FORGET_ADAPT: f64 = 0.960;
+const FORGET_ADAPT: f64 = 0.925;
 const MAX_GAP_MS: u64 = 120_000;
 
 /// Online first-order lumped-RC chassis identification with innovation-triggered adaptive forgetting.
@@ -43,6 +43,7 @@ pub struct ThermalModelEstimator {
     steps: u32,
     innovation_ewma: f64,
     shift_streak: u8,
+    adapt_steps_remaining: u8,
     // Excitation ring
     ring_p: [f64; RING],
     ring_t: [f64; RING],
@@ -68,6 +69,7 @@ pub fn new_thermal_model_estimator() -> Box<ThermalModelEstimator> {
         steps: 0,
         innovation_ewma: 0.0,
         shift_streak: 0,
+        adapt_steps_remaining: 0,
         ring_p: [0.0; RING],
         ring_t: [0.0; RING],
         ring_len: 0,
@@ -108,6 +110,7 @@ impl ThermalModelEstimator {
         self.steps = 0;
         self.innovation_ewma = 0.0;
         self.shift_streak = 0;
+        self.adapt_steps_remaining = 0;
         self.ring_len = 0;
         self.ring_head = 0;
         self.avg_power_w = 0.0;
@@ -210,18 +213,26 @@ impl ThermalModelEstimator {
             if self.innovation_ewma.abs() > 0.22 {
                 self.shift_streak = self.shift_streak.saturating_add(1);
                 // On initial regime-shift detection (e.g. external cooler attached or moving outdoors),
-                // inject bounded diagonal covariance so RLS adapts immediately without exponential wind-up.
-                if self.shift_streak == 6 {
-                    self.cov[0][0] = (self.cov[0][0] + 0.05).min(50.0);
-                    self.cov[1][1] = (self.cov[1][1] + 0.20).min(50.0);
-                    self.cov[2][2] = (self.cov[2][2] + 1.00).min(100.0);
+                // inject physically scaled diagonal covariance (dominantly into ambient intercept c)
+                // and hold FORGET_ADAPT for 60 steps (~10 min) to cleanly flush pre-shift memory.
+                if self.shift_streak == 4 {
+                    // Add strictly PSD diagonal matrix D (NEVER clamp a diagonal below its current
+                    // value while off-diagonals exist, which breaks positive-definiteness!).
+                    self.cov[0][0] += 0.0003;
+                    self.cov[1][1] += 0.008;
+                    self.cov[2][2] += 0.40;
+                    self.adapt_steps_remaining = 60;
                 }
             } else if self.innovation_ewma.abs() <= 0.10 {
                 self.shift_streak = 0;
             }
         }
         let cov_trace = self.cov[0][0] + self.cov[1][1] + self.cov[2][2];
-        let lambda = if self.shift_streak >= 6 && cov_trace < 250.0 {
+        let adapting = self.shift_streak >= 4 || self.adapt_steps_remaining > 0;
+        if self.adapt_steps_remaining > 0 {
+            self.adapt_steps_remaining -= 1;
+        }
+        let lambda = if adapting && cov_trace < 250.0 {
             FORGET_ADAPT
         } else {
             FORGET_STEADY
@@ -248,25 +259,49 @@ impl ThermalModelEstimator {
             k[i] = p_phi[i] / denom;
             self.theta[i] += k[i] * err;
         }
-        // P = (P - k phi' P) / lambda
-        let mut phi_p = [0.0; 3];
-        for j in 0..3 {
-            for i in 0..3 {
-                phi_p[j] += phi[i] * self.cov[i][j];
-            }
-        }
+        // Joseph-stabilized symmetric PSD update:
+        //   P_new = ((I - k phi') P (I - k phi')' + lambda * k k') / lambda
+        let mut a_mat = [[0.0; 3]; 3];
         for i in 0..3 {
             for j in 0..3 {
-                self.cov[i][j] = (self.cov[i][j] - k[i] * phi_p[j]) / lambda;
+                a_mat[i][j] = (if i == j { 1.0 } else { 0.0 }) - k[i] * phi[j];
             }
         }
-        // Wind-up guard: with poor excitation and forgetting, the covariance can blow up.
-        // Re-arm the whole estimator rather than carrying a corrupted (non-PSD) matrix.
+        let mut ap = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                let mut s = 0.0;
+                for m in 0..3 {
+                    s += a_mat[i][m] * self.cov[m][j];
+                }
+                ap[i][j] = s;
+            }
+        }
+        let mut next_cov = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                let mut s = lambda * k[i] * k[j];
+                for m in 0..3 {
+                    s += ap[i][m] * a_mat[j][m];
+                }
+                next_cov[i][j] = s / lambda;
+            }
+        }
+        // Enforce exact floating-point symmetry
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                let sym = 0.5 * (next_cov[i][j] + next_cov[j][i]);
+                next_cov[i][j] = sym;
+                next_cov[j][i] = sym;
+            }
+        }
+        self.cov = next_cov;
+        // Wind-up & PSD guard: re-arm if any diagonal becomes non-positive, non-finite, or blows up.
         if self
             .cov
             .iter()
             .enumerate()
-            .any(|(i, row)| !row[i].is_finite() || row[i] > 1.0e7)
+            .any(|(i, row)| !row[i].is_finite() || row[i] <= 0.0 || row[i] > 1.0e7)
         {
             self.reset();
         }
@@ -311,7 +346,7 @@ impl ThermalModelEstimator {
         }
 
         let residual_damp = if self.shift_streak >= 6 {
-            (1.0 - (self.innovation_ewma.abs() - 0.12).max(0.0) / 0.80).clamp(0.35, 1.0)
+            (1.0 - (self.innovation_ewma.abs() - 0.12).max(0.0) / 0.55).clamp(0.15, 1.0)
         } else {
             1.0
         };
@@ -478,5 +513,69 @@ mod tests {
         assert!(!r.valid);
         let r = est.push_sample(2_000, 500.0, 2.0, 38.0);
         assert!(!r.valid);
+    }
+
+    #[test]
+    fn adapts_to_tropical_ambient_shift_without_r_theta_explosion() {
+        let mut est = new_thermal_model_estimator();
+        let mut t: f64 = 30.0;
+        let mut last = invalid(0, 0.0);
+
+        // Phase 1: 18 min indoor AC room (Ta=26 C, R=5.5 C/W, tau=180 s)
+        for sec in 0..1080u64 {
+            let p = if (sec / 60) % 2 == 0 { 3.6 } else { 1.1 };
+            let c = 180.0 / 5.5;
+            t += (p - (t - 26.0) / 5.5) / c;
+            let measured = (t / 0.1).round() * 0.1;
+            last = est.push_sample(1_000 + sec * 1_000, measured, p, 38.0);
+        }
+        assert!(last.valid);
+        assert!((last.ambient_c - 26.0).abs() < 2.0, "phase1 Ta={}", last.ambient_c);
+
+        // Phase 2: 13 min tropical outdoor ambient (Ta=34 C, R=5.5 C/W, tau=180 s)
+        for sec in 1080..1860u64 {
+            let p = if ((sec - 1080) / 90) % 2 == 0 { 2.4 } else { 0.7 };
+            let c = 180.0 / 5.5;
+            t += (p - (t - 34.0) / 5.5) / c;
+            let measured = (t / 0.1).round() * 0.1;
+            last = est.push_sample(1_000 + sec * 1_000, measured, p, 38.0);
+        }
+        assert!(last.valid, "model must stay valid after tropical ambient shift");
+        assert!(
+            last.ambient_c > 31.5 && last.ambient_c < 36.5,
+            "ambient_c must track 34 C tropical shift, got Ta={} R={}",
+            last.ambient_c,
+            last.r_theta_c_per_w
+        );
+        assert!(
+            last.r_theta_c_per_w > 3.5 && last.r_theta_c_per_w < 8.0,
+            "R_theta must remain physical (~5.5 C/W) without explosion, got R={}",
+            last.r_theta_c_per_w
+        );
+
+        // Phase 3: 10 min sudden Peltier cooler attach (Ta=16 C, R=3.2 C/W, tau=112 s)
+        for sec in 1860..2460u64 {
+            let p = if ((sec - 1860) / 60) % 2 == 0 { 5.6 } else { 2.8 };
+            let c = 112.0 / 3.2;
+            t += (p - (t - 16.0) / 3.2) / c;
+            let measured = (t / 0.1).round() * 0.1;
+            last = est.push_sample(1_000 + sec * 1_000, measured, p, 38.0);
+        }
+        assert!(
+            last.valid,
+            "model must remain valid after Phase 3 Peltier cooler attach (steps={} theta={:?} cov_diag=[{},{},{}])",
+            last.steps, est.theta, est.cov[0][0], est.cov[1][1], est.cov[2][2]
+        );
+        assert!(
+            last.ambient_c < 22.0,
+            "ambient_c must drop sharply on Peltier cooler, got Ta={} R={}",
+            last.ambient_c,
+            last.r_theta_c_per_w
+        );
+        assert!(
+            last.sustainable_w > 5.0,
+            "sustainable_w must surge on Peltier cooler, got Psus={}",
+            last.sustainable_w
+        );
     }
 }
