@@ -232,7 +232,7 @@ void ThermalEnvelopeActuator::apply(
     const bool calm_cool =
         !thermal_guard &&
         (mode == ContextMode::Efficiency || mode == ContextMode::ScreenOff ||
-         (mode == ContextMode::Interactive && telemetry.passive_media_only && scale >= 0.95));
+         (mode == ContextMode::Interactive && telemetry.passive_media_only));
     if (!enabled || mode == ContextMode::Excluded || calm_cool) {
         if (!last_written_.empty()) rollback_all_managed();
         return;

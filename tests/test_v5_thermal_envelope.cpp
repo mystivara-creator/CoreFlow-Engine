@@ -172,6 +172,13 @@ int main() {
     const uint64_t warm_interactive_hispeed = std::stoull(read_file(hispeed));
     assert(warm_interactive_hispeed <= 1190000U);
 
+    // 7. Hands-off passive video playback while warm (scale=0.80) releases boosted nodes so playback cools smoothly
+    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, {20.0, 70.0}, 43500);
+    assert(act.stats().managed_nodes > 0U);
+    act.apply(topo, ContextMode::Interactive, PerformanceProfile::Balanced, 0.80, false, true, {8.0, 18.0, 0.16, true}, 43800);
+    assert(act.stats().managed_nodes == 0U);
+    assert(read_file(hispeed) == "1190000");
+
     act.apply(topo, ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, {}, 44000);
     assert(!baseline.has_active_mutations());
     assert(baseline.verify_and_persist_clear_state());

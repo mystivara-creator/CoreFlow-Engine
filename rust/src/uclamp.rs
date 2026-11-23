@@ -150,14 +150,14 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
         * bounded_scale.clamp(0.50, 1.0))
     .min(max_safe_floor);
     // Warm-zone Little-cluster steering: when chassis is in Cool-Glide (scale < 0.92) during
-    // light Interactive browsing (render < 0.35, no jank, no sudden touch/GPU spike), trim floor
-    // smoothly so routine UI tasks stay on cool Little cores instead of waking hot Big cores.
+    // light Interactive scrolling/browsing (render < 0.35, no jank), trim floor smoothly so
+    // routine UI work stays on cool Little cores instead of waking hot Big cores — even during
+    // active touch windows (feedforward_freeze guards jank_factor only, never overrides thermal physics).
     let jank_rescue = input.jank_ratio.is_finite() && input.jank_ratio >= 0.05;
     let warm_efficiency = if input.mode == MODE_INTERACTIVE
         && bounded_scale < 0.92
         && render_norm < 0.35
         && !jank_rescue
-        && !input.feedforward_freeze
     {
         (bounded_scale / 0.92).clamp(0.65, 1.0)
     } else {
@@ -312,6 +312,7 @@ mod tests {
         let mut light_warm = base_input(MODE_INTERACTIVE);
         light_warm.capacity_scale = 0.76; // 41 C Cool-Glide zone
         light_warm.render_pressure = 0.16;
+        light_warm.feedforward_freeze = true; // active touch scroll window
 
         let mut heavy_warm = base_input(MODE_INTERACTIVE);
         heavy_warm.capacity_scale = 0.76;

@@ -1807,7 +1807,7 @@ int main(int argc, char* argv[]) {
                !ctx.camera_boost_active &&
                ctx.touch_hold_remaining_ms == 0U &&
                live_status.render_pressure < 0.35 &&
-               live_status.cpu_psi.value_or(0.0) < 4.0 &&
+               live_status.cpu_psi.value_or(0.0) < 12.0 &&
                live_status.gpu_busy_pct.value_or(0.0) < 25.0;
     };
     const auto build_envelope_telemetry = [&]() noexcept {
