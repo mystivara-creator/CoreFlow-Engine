@@ -1,143 +1,70 @@
-# CoreFlow — Arsitektur & Konteks Tunggal (v6.1.0-R)
+# CFAE System Framework v4.0.0 — Mutation Safety & Coordinated Optimization Architecture
 
-Dokumen ini satu-satunya "peta" cara CoreFlow berpikir dan bekerja. Isinya dibagi menjadi tiga bagian: **yang sudah ada** (diverifikasi dari kode dan dump perangkat), **prinsip desain**, dan **celah jujur** yang belum selesai.
+## 1. Architectural Principle
 
-> Dokumen acuan arsitektur. Kontrak kejujuran dan desain UI ada di [DESIGN.md](DESIGN.md).
+Zero device-specific hardcoding does not mean blind mutation. Ability to write to a sysfs/cgroup node proves only file access, not safety, semantic meaning, compatibility, or system benefit.
 
-## 1. Satu kalimat
+The primary unit of control in CFAE System Framework v4.0.0 is the **Coordinated Mutation Transaction**: one explicit optimization objective, a dependency-verified change plan within a bounded risk budget, domain ownership arbitration via `CentralMutationCoordinator`, per-write readback verification, settling-window + noise-floor validation, and ownership-safe rollback.
 
-> CoreFlow adalah **pengendali umpan-balik tertutup**: ia mengukur kondisi fisik dan beban perangkat, memutuskan **berapa banyak daya yang boleh dipakai sekarang** (satu skalar `capacity_scale`), lalu menerjemahkannya ke batas-batas kernel yang aman, bisa di-rollback, dan tidak melawan OEM.
+### Unified Optimization Lifecycle
 
-Tidak ada profil, mode manual, atau per-app preset. Perilaku muncul dari fisika dan telemetri.
-
-## 2. Pipeline 6 lapis
-
-```mermaid
-flowchart TD
-    subgraph S["1. SENSE (hanya membaca)"]
-      HP["HardwareProbe<br/>topologi cluster, GPU, cgroup, node sysfs"]
-      TM["ThermalMonitor<br/>zona die/board/baterai, komposit"]
-      FP["FramePacingSensor<br/>fps, jank ratio"]
-      PSI["PSI cpu/io/mem + GPU busy"]
-      CE["ContextEngine<br/>sentuhan, foreground, launch, game, media"]
-      BP["BatteryPower<br/>arus, tegangan, mW, %"]
-    end
-    subgraph U["2. UNDERSTAND (estimasi)"]
-      TT["ThermalTrend (Rust)<br/>EWMA tau=15s, velocity C/menit"]
-      AI["Prediktor beban<br/>RLS / CFW2 / ONNX, jank risk"]
-      DNA["AppDnaStore<br/>bias per-app yang dipelajari"]
-      OR["Orchestrator (Rust)<br/>regime: GPU-bound, CPU-draw, IO-starved, hotspot"]
-    end
-    subgraph D["3. DECIDE (hukum kendali)"]
-      CT["Controller (Rust, PID+integral)<br/>pressure → capacity_scale 0.25..1.0"]
-    end
-    subgraph A["4. ACT (aktuator)"]
-      TS["ThreadScheduler<br/>per-TID uclamp min/max"]
-      TE["ThermalEnvelope<br/>governor CPU/GPU + EAS cgroup uclamp.max"]
-      SM["StorageMemory<br/>readahead, preread, background cap"]
-      SK["SemanticKnobs + Longevity<br/>knob sched/vm, batas charge"]
-    end
-    subgraph G["5. GUARD (keselamatan & koeksistensi)"]
-      MC["MutationCoordinator<br/>satu jalur tulis"]
-      BS["BaselineStore CFJ4<br/>nilai pabrik + rollback"]
-      OEM["OEM Collaboration Map<br/>yield saat OEM menulis node yang sama"]
-      HS["Hard cutoff + Tamper Guard + Boot Calm"]
-    end
-    subgraph O["6. OBSERVE"]
-      DJ["DecisionJournal (episodes)"]
-      ST["status JSON / diag / audit"]
-      UI["Companion App + WebUI"]
-    end
-    S --> U --> D --> A --> G
-    G -->|"tulis terverifikasi (readback)"| KERNEL[("Kernel: sysfs / procfs / cgroup")]
-    KERNEL -.->|"umpan balik: suhu, fps, beban"| S
-    G --> O
+```text
+Device Discovery
+  -> Capability & Semantic Classification (ReadOnly | Writable | WritableButUnsafe | UnknownSemantic | VerifiedConstraints | IncompleteMetadata)
+  -> Trustworthy System Observation (Multi-Sensor Thermal Fusion, CPU/Memory/I/O PSI, Frequency Residency)
+  -> Workload Detection (11-State Evidence-Based Classifier)
+  -> Bottleneck Diagnosis (Correlated Multi-Metric Evidence)
+  -> Optimization Objective Selection (HoldBaseline | InteractiveLatency | ThroughputBalance | MemoryRelief | IoLatencyRelief | ThermalStabilization | ThermalRecovery | EmergencyMitigation)
+  -> Candidate Generation & Adaptive Step Sizing (Relative to OEM Factory Baseline)
+  -> Context-Aware Anti-Repeat & UCB1 Scoring
+  -> Safety, Dependency & CentralMutationCoordinator Admission Gate
+  -> Single-Mutation-Per-Domain Transaction (CFJ4 Write-Ahead Journal + Readback Verification)
+  -> Domain Settling Period
+  -> Noise-Floor Outcome Verification
+  -> Retain / Rollback / Inconclusive / OwnershipLost
+  -> Crash-Safe Persistent Learning (CFTS2 with Capability Fingerprint Validation)
 ```
 
-Lokasi kode:
+## 2. Six-Layer Coordinated Pipeline
 
-| Lapis | File utama |
-|---|---|
-| Sense | `src/v5/hardware_probe.cpp`, `src/kernel/thermal_monitor.cpp`, `src/v6/frame_pacing_sensor.cpp`, `src/v5/context_engine.cpp` |
-| Understand | `rust/src/thermal_trend.rs`, `rust/src/thermal_model.rs`, `src/kernel/neural_predictor.cpp`, `src/v6/app_dna_store.cpp`, `rust/src/orchestrator.rs` |
-| Decide | `rust/src/controller.rs` |
-| Act | `src/v5/thread_scheduler.cpp`, `src/v5/thermal_envelope_actuator.cpp`, `src/v5/storage_memory_actuator.cpp`, `src/v6/semantic_knob_engine.cpp` |
-| Guard | `src/kernel/mutation_coordinator.cpp`, `src/kernel/baseline_store.cpp`, `src/v6/oem_collaboration_map.cpp`, `src/v6/boot_calm_sanctuary.cpp` |
-| Loop | `src/daemon/main.cpp` (reactor + timerfd), `src/daemon/reactor.cpp` |
+1. **Universal Capability Classifier**: Classifies every discovered kernel node into `ReadOnly`, `Writable`, `WritableButUnsafe` (e.g., virtual block queues `zram*`/`loop*`/`dm-*`, governor mismatch, or inactive `zram`), `UnknownSemantic`, `VerifiedConstraints`, or `IncompleteMetadata`. Nodes with `UnknownSemantic`, `IncompleteMetadata`, or `WritableButUnsafe` are strictly excluded from mutation.
+2. **Workload & Bottleneck Reasoning Engine**: Classifies runtime state into 11 workload classes (`Idle`, `GeneralInteraction`, `ScrollingAndAnimation`, `Gaming`, `HeavyMultitasking`, `CpuBound`, `GpuBound`, `MemoryPressure`, `StorageIoPressure`, `ThermalConstrained`, `BackgroundWorkload`) and correlates multi-metric PSI and thermal headroom/trend to select an explicit `OptimizationObjective`.
+3. **Active Thermal Stabilization & Hysteresis Recovery**: Rather than merely halting when thermal headroom narrows (`ThermalConstrained`), the engine transitions to `OptimizationObjective::ThermalStabilization` and applies verified thermal-relief transactions (`thermal.schedutil_damped_pacing`, `thermal.io_burst_pacing`) that damp frequency ramp spikes and burst depth relative to OEM baselines. Emergency thermal thresholds (`>= 88.0` pressure or hardware emergency trip) trigger immediate `EmergencyMitigation` rollback. Exiting thermal stabilization transitions through a hysteresis-guarded `ThermalRecovery` window before re-enabling aggressive performance candidates.
+4. **Central Mutation Coordinator (`CentralMutationCoordinator`)**: Serializes mutations across domains (`CpuPolicy`, `BlockIo`, `VmMemory`, `UclampCgroup`, `GpuDevfreq`, `PowerLongevity`, `ThermalCore`), enforces single-mutation-per-domain ownership, and arbitrates controller priorities (`EmergencySafety > ThermalStabilization > PressureGuard > WorkloadOptimization > BackgroundEfficiency`).
+5. **Transaction Executor & `CFJ4` Journal (`BaselineStore`)**: Captures immutable OEM baselines with device/inode identity (`O_NOFOLLOW` + `fstat`), commits the write-ahead journal (`CFJ4`) with per-boot `boot_id` / `boot_epoch` validation prior to any write, applies steps in strict `RequiredAnchor -> RequiredDependent` order, and verifies every write via immediate readback.
+6. **Noise-Floor Evaluator & Persistent Learning (`CFTS2`)**: Applies domain-specific settling ticks, evaluates post-settling utility delta ($\Delta U$) against the running noise floor, steps down `adaptive_scale` (`0.25..1.0`) on rollback, enforces context-aware anti-repeat cooldowns keyed by workload class and thermal bucket, and persists learning atomically in `CFTS2` format guarded by a topology/capability fingerprint.
 
-## 3. Fisika di balik keputusan
+## 3. Implemented Production Core (C++23 + Rust 2024 + Kotlin 2.1)
 
-1. **Daya dinamis:** \(P \approx C\,V^2 f\). Tegangan naik hampir linear dengan frekuensi di ujung atas OPP, jadi 10% frekuensi terakhir bisa memakan ±25–30% daya tetapi memberi <10% kinerja. Memangkas **lutut atas** itu hampir gratis untuk pengguna dan mengurangi panas secara nyata. Ini alasan `uclamp.max` memotong ceiling dan tidak membekukan frekuensi minimum.
-2. **Termal itu RC:** \(T_{chassis} \approx T_{amb} + P_{sustained}\cdot R_\theta\), dengan konstanta waktu menit, bukan detik. Konsekuensinya:
-   - Die melonjak cepat (detik), baterai/casing lambat (menit).
-   - Keputusan termal harus memakai sinyal lambat (EWMA τ=15 s), bukan suhu die mentah.
-   - **Suhu casing tidak bisa dipaksa turun di bawah apa yang dibolehkan daya rata-rata.** Target "38 °C" hanya mungkin jika daya rata-rata jangka panjang cukup kecil. Karena itu target 38 °C bukan satu tombol, melainkan hasil dari anggaran daya.
-3. **Responsif = latensi, bukan frekuensi puncak:** Yang menentukan rasa mulus adalah seberapa cepat thread kritis (UI/Render) mendapat kapasitas. Karena itu boost dilakukan **per-TID** (`SYS_sched_setattr`), bukan menaikkan seluruh cluster.
-4. **Little's Law (\(L=\lambda W\))** dipakai Orchestrator untuk menentukan siapa bottleneck (CPU, GPU, atau memori/IO) sehingga daya diberikan ke yang membuat pipeline macet, bukan ke semuanya.
+Component presence is not feature completion. See `docs/architecture/P1_FEATURE_ACCOUNTABILITY_REPORT.md`. ART/DEX2OAT/JIT/AOT, SurfaceFlinger control, ANGLE, OpenGL tuning, SkiaVK/HWUI renderer changes, adaptive VRS, and Power HAL hint submission are not implemented. Vulkan ICD probing is observation-only. The implicit layer contains bounded VkPipelineCache persistence hooks, but controller-side installation/configuration does not prove Android application processes load it; process-level activation remains unverified. Qualcomm KGSL uses a bounded evidence-driven GPU candidate route: GPU-bound/gaming classification, actual FrameTimeline misses, live `gpuclk` OPP verification, validated paired endpoints, and thermal headroom gate one `GpuDevfreq` lease. A GPU-only outcome evaluator checks frame misses, clock stability, and thermal pressure; inconclusive or regressing trials restore the `BaselineStore` pair. This is limited Qualcomm KGSL actuation, not general rendering optimization, and still requires physical-device acceptance. Mali `power_policy` is limited actuation only.
 
-## 4. Variabel kendali tunggal
+- `src/daemon/main.cpp`: Daemon lifecycle, singleton PID lock, signal hardening, PSI reads, and coordinated state application.
+- `src/daemon/reactor.cpp`: Zero-polling Linux `epoll` + `timerfd` + `signalfd` event loop.
+- `src/kernel/uclamp.cpp`: Semantic cgroup v2 discovery across `/proc/self/mountinfo`, capacity encoding detection (`0..1024` vs `%`), and bounded top-app UClamp writes.
+- `src/kernel/thermal_monitor.cpp`: Type-labelled multi-sensor thermal discovery (`thermal_zone*` + secondary `hwmon*`), Android NDK thermal severity/headroom fusion, and degraded-sensor resilience.
+- `src/kernel/baseline_store.cpp`: Write-ahead journal (`CFJ4`), object identity verification (`dev:ino` via `O_NOFOLLOW` + `fstat`), `boot_id` / `boot_epoch` validation, readback verification, and ownership-safe recovery.
+- `rust/src/controller.rs`: Rust 2024 thermal/pressure state machine and slew-bounded PID capacity budget.
+- `rust/src/bridge.rs`: Typed `cxx` FFI bridge between C++23 and Rust 2024.
+- `src/kernel/frequency_controller.cpp`: CPUFreq and GPU devfreq ceiling actuation with OEM ownership verification.
+- `src/kernel/autonomous_tuner.cpp`: Universal resource classifier, `CentralMutationCoordinator`, workload/bottleneck/objective reasoning engine, relative baseline scaling (`compute_relative_u64` with `adaptive_scale`), active `ThermalStabilization` & `ThermalRecovery`, settling + noise-floor outcome evaluator, and `CFTS2` persistent learning.
+- `src/kernel/vulkan_controller.cpp` & `src/layer/vk_layer_coreflow.cpp`: Native ICD inspection and bounded `VkPipelineCache` lifecycle persistence hooks in the implicit layer. Process-level Android loader activation and cache reuse still require runtime proof; no SkiaVK/HWUI, adaptive VRS, or rendering optimizer is claimed. Mali `power_policy` remains separate limited actuation; KGSL paired-level support is bounded autonomous actuation behind live OPP/readback, thermal, and workload admission; physical ABI and thermal-recovery validation remain required.
+- `src/kernel/neural_predictor.cpp`: Hybrid ONNX Runtime C-API (`dlopen`) + Online Recursive Least Squares & 6×8×2 Micro-MLP 10-second horizon thermal/pressure predictor.
+- `src/kernel/hardware_longevity.cpp`: Bounded battery step-charging ceiling reduction and cgroup v2 relative I/O weights.
+- `src/kernel/power_bridge.cpp`: AIDL Power HAL presence discovery only (`OBSERVATION_ONLY`); Binder interception and hint submission are `NOT_IMPLEMENTED`.
+- `android/src/main/kotlin/io/coreflow/`: Kotlin 2.1 Android Quick Settings TileService and thermal broadcast integration.
 
-```
-sinyal beban + tekanan termal ──► Controller ──► capacity_scale ∈ [0.25, 1.0]
-```
+## 4. Twelve Non-Negotiable Safety Invariants
 
-`capacity_scale` adalah satu-satunya angka "berapa daya yang boleh". Semua aktuator **menerjemahkan** skalar itu sesuai sifat fisiknya sendiri:
-
-| Aktuator | Terjemahan dari `capacity_scale` |
-|---|---|
-| ThermalEnvelope | ceiling frekuensi CPU/GPU, `hispeed_load`; `top-app` / `foreground` / `system-background` `cpu.uclamp.max` |
-| StorageMemory | `background/cpu.uclamp.max` ke kapasitas core Little saat hangat; readahead |
-| ThreadScheduler | uclamp min/max per-TID, dibatasi skalar |
-| Knob semantik | agresivitas sched/vm |
-
-Aturan prioritas (urutan menang bila konflik):
-
-1. **Keselamatan keras:** baterai ≥ 58 °C atau die ≥ 95 °C → semuanya rollback ke baseline.
-2. **Latensi pengguna:** `LaunchBurst`, jank ≥ 3%, atau suhu dingin → cap `top-app` langsung diangkat.
-3. **Termal:** saat hangat → cap daya sesuai skalar.
-4. **Baterai:** Low-Battery Eco (≤ 20%) memangkas sedikit tanpa merusak scroll.
-5. **Efisiensi idle:** mode `Efficiency` / `ScreenOff` melepas boost, mempertahankan cap EAS.
-
-## 5. Konteks (pengganti "profil")
-
-`ContextEngine` hanya **mengklasifikasi situasi**, tidak memilih preset: `ScreenOff`, `Efficiency`, `Interactive`, `LaunchBurst`, `Gaming` (+ flag kamera/media). Kesimpulannya:
-
-- "Profil" lama (smooth, balanced, gaming, battery, per-app) sudah dilebur. Yang tersisa adalah **konteks terukur + skalar fisik**.
-- Kepribadian per-app datang dari **App DNA** (bias terpelajar), bukan dari pengaturan manual.
-- Perpindahan konteks berbasis sentuhan (tahan 750 ms di 60 Hz) memang cepat berganti. Itu disengaja agar responsif.
-
-## 6. Invarian yang tidak boleh dilanggar
-
-1. **Satu jalur tulis.** Semua penulisan node lewat `MutationCoordinator` → `BaselineStore` (CFJ4) dengan readback. Tidak ada tulis liar.
-2. **Selalu bisa kembali.** Nilai pabrik disimpan sebelum tulis pertama; "release-on-calm" mengembalikan saat tenang.
-3. **Satu pemilik per node.** Dua aktuator tidak boleh menulis node yang sama. Di v6.1.0-R, node cap `top-app`, `foreground`, `system-background`, `background` dipaksa berbeda (lihat commit `62cf513`).
-4. **Yield ke OEM.** Jika OEM menulis balik node yang sama, CoreFlow mundur dan mencatatnya (`oemYieldedPaths`), dan tidak berperang.
-5. **Penemuan dinamis.** Tidak ada path vendor yang di-hardcode; path ditemukan dari mountinfo/sysfs. Satu-satunya konvensi tetap adalah nama grup AOSP kanonik (`top-app`, `foreground`, `background`).
-6. **Jujur tentang yang tidak diketahui.** Fitur yang tidak ada di perangkat itu *absen*, tidak ditampilkan sebagai nonaktif. Status tidak boleh melaporkan sesuatu yang tidak diukur (contoh: `autonomousRegime=thermal_pacing` hanya jika baterai ≥ 38,5 °C atau skala < 0,88).
-
-## 7. Cara membaca perilaku di perangkat
-
-| Pertanyaan | Lihat di dump |
-|---|---|
-| Apakah CoreFlow sedang menekan? | `capacityScale` < 0,90, `autonomousRegime`, `easCappedGroups`, `easTopAppCapPct` |
-| Apa yang sebenarnya ditulis? | `journal.entries` (path, nilai pabrik, nilai aktif) |
-| Apakah OEM melawan? | `oemYieldedPaths`, `contendedPaths` |
-| Seberapa cepat memanas? | `thermalVelocityCpm` (sudah di-EWMA) |
-| Berapa daya yang berkelanjutan untuk 38 °C? | `thermalModel` (`valid`, `rThetaCPerW`, `tauSec`, `sustainablePowerMw`, `headroomMw`, `confidence`) |
-| Mengapa mode berganti? | `episodes` (ModeShift, LaunchBurst, ThermalRecovered) |
-| Apakah ada gangguan? | Self-Audit 6 cek, AVC denials |
-
-## 8. Celah jujur (belum selesai / belum terbukti)
-
-1. **Target 38 °C belum terbukti di perangkat.** Dump terakhir berumur 427 detik pasca-boot (fase panas boot). Butuh dump setelah 20–30 menit pemakaian.
-2. **Cap `top-app` tidak berlaku di dump terakhir.** Penyebab yang paling mungkin adalah salah resolusi grup (sudah diperbaiki di `62cf513`), tetapi ini belum dikonfirmasi di perangkat.
-3. **Node `background` kemungkinan diperebutkan OEM.** Belum diketahui apakah ini artefak bug yang sama atau OEM sungguhan.
-4. **Model termal per-perangkat sudah ada tetapi baru observe-only.** `rust/src/thermal_model.rs` mengidentifikasi \(R_\theta\), \(\tau\), dan suhu ambient secara online (RLS, langkah 10 detik, hanya saat discharging) dan melaporkan `thermalModel.sustainablePowerMw` untuk target 38 °C. Estimator menolak melapor (`valid=false`) tanpa eksitasi daya dan rentang suhu yang cukup. Ia **belum menggerakkan aktuator** sampai dump perangkat memvalidasi angkanya.
-5. **Tidak ada ukuran "mulus" end-to-end.** Jank dan fps hanya terukur saat sensor frame aktif; belum ada metrik tunggal (mis. persentil-99 frame time) yang menjadi tujuan optimasi resmi.
-
-## 9. Arah penyempurnaan (urutan usulan)
-
-1. Validasi di perangkat: dump 30 menit, konfirmasi cap `top-app` dan `background`, lalu merge PR #50.
-2. Validasi `thermalModel` dari dump (apakah `valid`, apakah \(R_\theta\), \(\tau\), dan `sustainablePowerMw` masuk akal), lalu jadikan `P_budget` input Controller.
-3. Satu metrik mulus (p99 frame time + jank) sebagai fungsi tujuan; kendali bisa melonggarkan cap bila mulus sudah terjamin dan mengetatkan bila ada ruang.
+1. No write without a valid captured baseline (`CFJ4` with `dev:ino` verification).
+2. No mutation without `VerifiedConstraints` classification, known semantics, unit, and range provenance.
+3. No grouped mutation without an explainable shared goal and verified dependency edge (`RequiredAnchor` before `RequiredDependent`).
+4. No two controllers or transactions may write conflicting domains concurrently (`CentralMutationCoordinator` lease arbitration).
+5. Every write must be followed by immediate readback verification.
+6. No rollback may overwrite an external OEM/Android modification (`OWNERSHIP_LOST` retires ownership cleanly).
+7. No repeated retries of neutral/regressed candidates in the same workload/thermal context without cooldown expiry and adaptive step-size reduction.
+8. No retention without a verified outcome above the noise floor and intact ownership.
+9. No performance claims or capability spoofing from unmeasured or unsupported hardware features.
+10. Validated Android/OEM thermal and power policies remain the supreme safety boundary.
+11. Durable journal write must precede mutation, and crash recovery must be idempotent across reboots.
+12. When safety, semantics, or ownership cannot be proven, the default action is no write.
 

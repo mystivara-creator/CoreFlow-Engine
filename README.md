@@ -177,6 +177,7 @@ Quick shortcuts to every technical document, specification, audit, and schema in
 | Document | Description |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | High-level system architecture and subsystem interactions |
+| [docs/ARCHITECTURE_UNIFIED.md](docs/ARCHITECTURE_UNIFIED.md) | v6.1.0-R unified runtime architecture: sense/understand/decide/act/guard/observe pipeline, physics, invariants, dump reading guide |
 | [docs/architecture/CFW2_ONNX_NEURAL_ENGINE.md](docs/architecture/CFW2_ONNX_NEURAL_ENGINE.md) | Hybrid 3-tier `CFW2` + ONNX Runtime spec, binary layout, Phase A/B & Colab guide |
 | [docs/DESIGN.md](docs/DESIGN.md) | Companion App & WebUI design language and Telemetry Honesty Contract |
 | [docs/EQUILIBRIUM_BLUEPRINT.md](docs/EQUILIBRIUM_BLUEPRINT.md) | Thermal equilibrium, PID dynamics, and headroom control blueprint |
