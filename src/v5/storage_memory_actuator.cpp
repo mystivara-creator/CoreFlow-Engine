@@ -319,12 +319,30 @@ void StorageMemoryActuator::apply(
         : raw_io_psi;
     const double mem_psi = std::isfinite(telemetry.mem_psi) ? std::clamp(telemetry.mem_psi, 0.0, 100.0) : 0.0;
     const double cpu_psi = std::isfinite(telemetry.cpu_psi) ? std::clamp(telemetry.cpu_psi, 0.0, 100.0) : 0.0;
+    const double thrashing = std::isfinite(telemetry.thrashing_pressure)
+        ? std::clamp(telemetry.thrashing_pressure, 0.0, 1.0)
+        : 0.0;
+    const double refault_file_ps = (std::isfinite(telemetry.refault_file_per_sec) && telemetry.refault_file_per_sec > 0.0)
+        ? telemetry.refault_file_per_sec
+        : 0.0;
+    const double direct_reclaim_ps = (std::isfinite(telemetry.direct_reclaim_per_sec) && telemetry.direct_reclaim_per_sec > 0.0)
+        ? telemetry.direct_reclaim_per_sec
+        : 0.0;
+    const double pswpin_ps = (std::isfinite(telemetry.pswpin_per_sec) && telemetry.pswpin_per_sec > 0.0)
+        ? telemetry.pswpin_per_sec
+        : 0.0;
+    const double starvation = (std::isfinite(telemetry.starvation_pressure) && telemetry.starvation_pressure >= 0.0)
+        ? std::clamp(telemetry.starvation_pressure, 0.0, 1.0)
+        : 0.0;
     const bool calm_mode = (ctx.mode == ContextMode::Efficiency || ctx.mode == ContextMode::ScreenOff);
 
     // 1. Demand-Driven UFS/eMMC Burst Readahead + Adaptive Background Isolation (Release-on-Calm)
     if (enable_storage_burst && ctx.mode != ContextMode::Excluded) {
-        const bool need_ra_burst = (ctx.mode == ContextMode::LaunchBurst) || (io_psi >= 5.0);
-        stats_.burst_active = (ctx.mode == ContextMode::LaunchBurst);
+        // Under severe page-cache thrashing (>= 0.45), hold read_ahead_kb at OEM baseline so
+        // speculative sequential I/O never evicts hot foreground working-set pages.
+        const bool need_ra_burst = (thrashing < 0.45) &&
+                                   ((ctx.mode == ContextMode::LaunchBurst) || (io_psi >= 5.0));
+        stats_.burst_active = (ctx.mode == ContextMode::LaunchBurst) && (thrashing < 0.45);
         uint64_t primary_ra = 0U;
         for (const auto& q : topo.storage_queues) {
             if (need_ra_burst) {
@@ -345,10 +363,12 @@ void StorageMemoryActuator::apply(
         }
         if (primary_ra > 0U) stats_.active_read_ahead_kb = primary_ra;
 
-        // Isolate background I/O during LaunchBurst, Gaming, or loaded Interactive (real PSI).
+        // Isolate background I/O & CPU during LaunchBurst, Gaming, loaded Interactive (PSI),
+        // or whenever schedstat detects real runqueue starvation on critical foreground threads.
         const bool isolate_bg_io = (ctx.mode == ContextMode::LaunchBurst ||
                                     ctx.mode == ContextMode::Gaming ||
-                                    (ctx.mode == ContextMode::Interactive && (cpu_psi >= 4.0 || io_psi >= 3.0)));
+                                    (ctx.mode == ContextMode::Interactive &&
+                                     (cpu_psi >= 4.0 || io_psi >= 3.0 || starvation >= 0.25)));
         // Pin background CPU to Little-core capacity during active foreground contention OR warm thermal pacing
         // so background jobs never wake Big cores and add C*V^2*f heat while the chassis is warm.
         const double scale = std::isfinite(telemetry.capacity_scale)
@@ -375,15 +395,16 @@ void StorageMemoryActuator::apply(
 
         if ((isolate_bg_io || warm_bg_pin) && !topo.cgroups.background_uclamp_max_path.empty()) {
             // Keep background pinned to Little cores without starving Binder/system helpers on Android 15+.
+            const double starv_trim = starvation >= 0.25 ? (starvation * 6.0) : 0.0;
             double adapted_pct = 40.0;
             if (warm_bg_pin) {
-                adapted_pct = std::clamp(little_pct * 0.78 - (telemetry.thermal_guard ? 4.0 : 0.0), 22.0, 35.0);
+                adapted_pct = std::clamp(little_pct * 0.78 - (telemetry.thermal_guard ? 4.0 : 0.0) - starv_trim * 0.5, 22.0, 35.0);
             } else if (ctx.mode == ContextMode::Gaming) {
-                adapted_pct = std::clamp(little_pct * 0.92 - (cpu_psi * 0.10), 30.0, 42.0);
+                adapted_pct = std::clamp(little_pct * 0.92 - (cpu_psi * 0.10) - starv_trim, 26.0, 42.0);
             } else if (ctx.mode == ContextMode::LaunchBurst) {
-                adapted_pct = std::clamp(little_pct * 0.96 - (cpu_psi * 0.10), 30.0, 44.0);
+                adapted_pct = std::clamp(little_pct * 0.96 - (cpu_psi * 0.10) - starv_trim, 26.0, 44.0);
             } else {
-                adapted_pct = std::clamp(little_pct * 1.05 - (cpu_psi * 0.12), 30.0, 48.0);
+                adapted_pct = std::clamp(little_pct * 1.05 - (cpu_psi * 0.12) - starv_trim, 26.0, 48.0);
             }
             if (topo.cgroups.uclamp_uses_percent) {
                 const std::string bg_cap = format_quantized_uclamp_pct(adapted_pct);
@@ -407,37 +428,50 @@ void StorageMemoryActuator::apply(
         rollback_managed_node(topo.cgroups.background_uclamp_max_path);
     }
 
-    // 2. Demand-Driven Anti-Stutter Memory Guard (Respect OEM MGLRU Policy + Release-on-Calm)
+    // 2. Demand-Driven Anti-Stutter Memory Guard (Respect OEM MGLRU Policy + Two-Regime Thrashing Defense)
     if (enable_memory_guard && ctx.mode != ContextMode::Excluded) {
         const double avail_ratio = telemetry.memory.valid ? telemetry.memory.available_ratio() : 0.45;
         const double mem_psi_norm = std::clamp(mem_psi / 100.0, 0.0, 1.0);
         const double zram_ratio = (topo.total_ram_bytes > 0U && topo.zram_active)
             ? std::clamp(static_cast<double>(topo.zram_bytes) / static_cast<double>(topo.total_ram_bytes), 0.0, 1.5)
             : 0.0;
+        const bool reclaim_storm = telemetry.direct_reclaim_storm ||
+                                   direct_reclaim_ps >= 64.0 ||
+                                   mem_psi >= 15.0 ||
+                                   avail_ratio < 0.18;
 
-        // Compute live Memory Health % (100 = plentiful unfragmented RAM, drops with RAM/swap/PSI pressure)
+        // Compute live Memory Health % (100 = plentiful unfragmented RAM, drops with RAM/swap/PSI/thrashing)
         const double swap_used = telemetry.memory.valid ? telemetry.memory.swap_used_ratio() : 0.0;
         const double health_raw = 100.0
             - std::clamp((0.45 - avail_ratio) / 0.35, 0.0, 1.0) * 35.0
             - std::clamp((swap_used - 0.35) / 0.55, 0.0, 1.0) * 25.0
-            - mem_psi_norm * 40.0;
+            - mem_psi_norm * 40.0
+            - thrashing * 30.0;
         stats_.memory_health_pct = static_cast<uint32_t>(std::clamp(std::lround(health_raw), 10L, 100L));
 
         // Respect OEM kernel MM policy: only tune MGLRU min_ttl_ms if the kernel/ROM already has
         // MGLRU enabled (never force-flip OEM 0x0000 on HyperOS 4 / custom mi_reclaim kernels).
+        // Two-regime thrashing physics:
+        //   - Regime A (early workingset_refault_file >= 250/s while RAM available & no direct reclaim):
+        //     raise min_ttl_ms up to 1200 ms to shield hot executable/UI file pages from early eviction.
+        //   - Regime B (direct_reclaim_storm / mem_psi >= 15% / avail < 18%):
+        //     drop min_ttl_ms immediately to 0 ms so kswapd/reclaim never deadlocks UI allocations.
         if (!topo.vm.mglru_min_ttl_path.empty() && topo.vm.mglru_oem_enabled) {
             if (calm_mode) {
                 rollback_managed_node(topo.vm.mglru_min_ttl_path);
             } else {
                 uint32_t ttl_ms = 0U;
-                // Release reclaim protection immediately under real memory pressure so kswapd/lmkd never stall.
-                if (mem_psi < 15.0 && avail_ratio >= 0.18) {
+                if (!reclaim_storm) {
                     const double urgency = (ctx.mode == ContextMode::Gaming || ctx.mode == ContextMode::LaunchBurst)
                         ? 1.15 : 1.00;
+                    const double refault_shield = refault_file_ps >= 250.0
+                        ? std::clamp((refault_file_ps - 250.0) / 1500.0, 0.0, 1.0) * 350.0
+                        : 0.0;
                     const double raw_ttl = 950.0 * std::clamp(avail_ratio * 2.0, 0.25, 1.0) *
-                                           (1.0 - mem_psi_norm * 0.70) * urgency;
+                                           (1.0 - mem_psi_norm * 0.70) * urgency + refault_shield;
+                    const long ttl_ceil = refault_shield > 0.0 ? 1200L : 1000L;
                     ttl_ms = static_cast<uint32_t>(
-                        std::clamp(std::lround(raw_ttl / 50.0) * 50L, 100L, 1000L));
+                        std::clamp(std::lround(raw_ttl / 50.0) * 50L, 100L, ttl_ceil));
                 }
                 const double ttl_deadband = (ttl_ms == 0U) ? 0.0 : 100.0;
                 (void)write_managed_node(topo.vm.mglru_min_ttl_path, std::to_string(ttl_ms), now_ms, 0.0, false, ttl_deadband);
@@ -455,14 +489,22 @@ void StorageMemoryActuator::apply(
         }
 
         if (!topo.vm.swappiness_path.empty()) {
-            // Demand-driven swappiness: release to OEM when calm and RAM is healthy;
-            // adapt dynamically only when active workload or memory scarcity warrants intervention.
-            const bool need_swap_adapt = !calm_mode || avail_ratio < 0.30 || mem_psi >= 5.0;
+            // Demand-driven directional swappiness:
+            // - High file refaults with low ZRAM swap-in -> nudge swappiness UP (+15) so cold anon
+            //   pages spill to fast ZRAM instead of evicting hot foreground executable file pages.
+            // - High pswpin (>= 500/s ZRAM ping-pong) -> nudge swappiness DOWN (-15) to curb swap storm.
+            const bool need_swap_adapt = !calm_mode || avail_ratio < 0.30 || mem_psi >= 5.0 || thrashing >= 0.20;
             if (need_swap_adapt) {
                 const double base_swap = topo.zram_active ? (45.0 + 25.0 * std::min(zram_ratio, 1.0)) : 35.0;
                 const double scarcity = std::clamp((0.40 - avail_ratio) / 0.30, 0.0, 1.0);
+                double thrash_delta = 0.0;
+                if (pswpin_ps >= 500.0) {
+                    thrash_delta = -std::clamp((pswpin_ps - 500.0) / 2000.0, 0.0, 1.0) * 15.0;
+                } else if (refault_file_ps >= 250.0 && topo.zram_active) {
+                    thrash_delta = std::clamp((refault_file_ps - 250.0) / 1500.0, 0.0, 1.0) * 15.0;
+                }
                 const double adapted_swap = base_swap + scarcity * (topo.zram_active ? 35.0 : 25.0) +
-                                            mem_psi_norm * 15.0;
+                                            mem_psi_norm * 15.0 + thrash_delta;
                 const uint32_t swap_val = static_cast<uint32_t>(
                     std::clamp(std::lround(adapted_swap / 5.0) * 5L, 30L, topo.zram_active ? 100L : 80L));
                 (void)write_managed_node(topo.vm.swappiness_path, std::to_string(swap_val), now_ms, 0.0, false, 5.0);
@@ -472,13 +514,13 @@ void StorageMemoryActuator::apply(
         }
 
         // Gentle, baseline-relative watermark headroom ONLY during active Gaming/Camera burst when
-        // RAM is plentiful and OEM baseline < 50; rollback to OEM on calm/pressure.
+        // RAM is plentiful, not thrashing, and OEM baseline < 50; rollback to OEM on calm/pressure.
         if (!topo.vm.watermark_scale_factor_path.empty()) {
             const uint32_t base_wm = topo.vm.baseline_watermark_scale_factor > 0U
                 ? topo.vm.baseline_watermark_scale_factor
                 : 10U;
             const bool active_dma_burst = (ctx.mode == ContextMode::Gaming || ctx.camera_boost_active);
-            const bool plentiful_ram = (avail_ratio >= 0.30 && mem_psi < 8.0);
+            const bool plentiful_ram = (avail_ratio >= 0.30 && mem_psi < 8.0 && thrashing < 0.25 && !reclaim_storm);
             if (active_dma_burst && plentiful_ram && base_wm < 50U) {
                 const uint32_t wm = std::min<uint32_t>(base_wm + 15U, 50U);
                 (void)write_managed_node(topo.vm.watermark_scale_factor_path, std::to_string(wm), now_ms, 0.0, false, 5.0);
@@ -498,9 +540,9 @@ void StorageMemoryActuator::apply(
         }
 
         // 3. Smart asynchronous UFS/eMMC page-cache pre-read on newly launched foreground app
-        //    Self-gated: skips prefetch under memory pressure so it never triggers kswapd churn.
+        //    Self-gated: skips prefetch under memory pressure or active page-cache thrashing.
         if (ctx.newly_launched_app && ctx.foreground_pid > 0 && !ctx.foreground_package.empty() &&
-            mem_psi < 10.0 && avail_ratio >= 0.15) {
+            mem_psi < 10.0 && avail_ratio >= 0.15 && thrashing < 0.25 && !reclaim_storm) {
             const uint64_t budget_basis = telemetry.memory.valid
                 ? telemetry.memory.available_bytes
                 : topo.total_ram_bytes;

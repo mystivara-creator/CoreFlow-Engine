@@ -26,6 +26,13 @@ struct StorageMemoryTelemetry {
     double capacity_scale{1.0};
     bool thermal_guard{false};
     bool low_battery_eco{false};
+    // Universal /proc/vmstat thrashing & schedstat runqueue starvation telemetry
+    double thrashing_pressure{0.0};
+    double refault_file_per_sec{0.0};
+    double direct_reclaim_per_sec{0.0};
+    double pswpin_per_sec{0.0};
+    bool direct_reclaim_storm{false};
+    double starvation_pressure{-1.0};
 };
 
 struct StorageMemoryStats {

@@ -116,7 +116,8 @@ impl ThermalTrendAnalyzer {
 }
 
 /// Dual-timescale thermal equilibrium planner separating fast CPU die transients
-/// from slow battery/chassis heat accumulation and charging/bypass thermal budgets.
+/// from slow battery/chassis heat accumulation, charging/bypass thermal budgets,
+/// and closed-loop online RC power-budget pacing (adaptive to room ambient & coolers).
 pub fn compute_thermal_equilibrium(
     input: crate::bridge::ffi::ThermalEquilibriumInput,
 ) -> crate::bridge::ffi::ThermalEquilibriumOutput {
@@ -147,14 +148,49 @@ pub fn compute_thermal_equilibrium(
         0.0
     };
 
+    let base_target =
+        if input.base_target_c.is_finite() && (34.0..=42.0).contains(&input.base_target_c) {
+            input.base_target_c
+        } else {
+            38.0
+        };
+
+    let ambient_valid = input.model_valid
+        && input.model_confidence >= 45
+        && input.model_ambient_c.is_finite()
+        && (5.0..=45.0).contains(&input.model_ambient_c);
+    // Ambient-adaptive chassis target:
+    // - Cool AC room / external cooler (Ta <= 31 C): stays locked at base_target (38.0 C) while
+    //   higher sustainable power P_sus unlocks extra Watt headroom.
+    // - Hot tropical ambient (Ta in 31..34.5 C): lifts target gently up to 41.5 C (strictly below
+    //   the 44.0 C THERMAL_GUARD ceiling) so idle phones never falsely enter Cool-Glide.
+    let effective_target_c = if ambient_valid {
+        base_target.max(input.model_ambient_c + 7.0).clamp(base_target, 41.5)
+    } else {
+        base_target
+    };
+    let onset_c = (effective_target_c - 0.5).clamp(37.5, 41.0);
+    let plateau_c = (effective_target_c + 0.5).clamp(38.5, 42.0);
+
+    let model_closed_loop = ambient_valid
+        && !input.charging
+        && input.model_r_theta.is_finite()
+        && (0.5..=30.0).contains(&input.model_r_theta)
+        && input.model_tau_s.is_finite()
+        && (60.0..=3600.0).contains(&input.model_tau_s)
+        && input.model_avg_power_w.is_finite()
+        && input.model_avg_power_w > 0.35;
+
     let mut scale = base_scale;
     let mut charging_damped = false;
     let mut equilibrium_guard = false;
+    let mut power_budget_w = -1.0;
+    let mut closed_loop_active = false;
 
     // 1. Slow chassis / battery thermal-power equilibrium loop:
-    // Proactively ease headroom smoothly when battery/chassis warms above 37.5 C so
+    // Proactively ease headroom smoothly when battery/chassis warms above adaptive onset_c so
     // Multi-Cgroup EAS cpu.uclamp.max pacing sheds excess C*V^2*f Watts well before
-    // hitting harsh THERMAL_GUARD (which remains at 44.0 C).
+    // hitting harsh THERMAL_GUARD (which remains unconditionally at 44.0 C).
     let chassis = if skin > 0.0 && batt > 0.0 {
         skin.max(batt)
     } else if skin > 0.0 {
@@ -163,18 +199,55 @@ pub fn compute_thermal_equilibrium(
         batt
     };
 
-    if chassis >= 37.5 {
-        let excess = (chassis - 37.5).clamp(0.0, 9.0);
-        let mut eq_cap = (1.0 - excess * 0.055).clamp(0.55, 1.0);
-        // Sustained warm-plateau nudge: if chassis >= 38.5 C and not actively cooling,
+    let mut eq_cap = 1.0;
+    if chassis >= onset_c {
+        let excess = (chassis - onset_c).clamp(0.0, 9.0);
+        eq_cap = (1.0 - excess * 0.055).clamp(0.55, 1.0);
+        // Sustained warm-plateau nudge: if chassis >= plateau_c and not actively cooling,
         // ease power draw further so steady-state silicon heat stays bounded.
-        if chassis >= 38.5 && vel >= -0.2 {
+        if chassis >= plateau_c && vel >= -0.2 {
             eq_cap = (eq_cap - 0.05).clamp(0.55, 1.0);
         }
-        scale = scale.min(eq_cap);
-        if chassis >= 44.0 {
-            equilibrium_guard = true;
+    }
+
+    if model_closed_loop && chassis > 0.0 {
+        // Exact 1-node RC receding-horizon power budget:
+        //   P_budget(t) = (T_target - Ta) / R_theta + (tau * (T_target - T_chassis)) / (R_theta * H)
+        let horizon_s = (0.40 * input.model_tau_s).clamp(120.0, 300.0);
+        let p_sus = ((effective_target_c - input.model_ambient_c) / input.model_r_theta).max(0.40);
+        let p_cap =
+            (input.model_tau_s * (effective_target_c - chassis)) / (input.model_r_theta * horizon_s);
+        let p_budget = (p_sus + p_cap).clamp(0.40, 18.0);
+        power_budget_w = p_budget;
+        closed_loop_active = true;
+
+        // Silicon dynamic power law P ~ s^gamma (gamma = 1.8) converts Watt ratio to capacity_scale.
+        let power_ratio = (p_budget / input.model_avg_power_w.max(0.50)).clamp(0.05, 4.0);
+        let s_power = power_ratio.powf(1.0 / 1.8).clamp(0.52, 1.0);
+        let conf_weight = ((f64::from(input.model_confidence) - 40.0) / 45.0).clamp(0.0, 1.0);
+
+        if chassis >= onset_c {
+            // Above onset: blend temperature curve with physical power budget.
+            // With an external cooler (s_power == 1.0), unnecessary temperature trimming relaxes;
+            // under heavy over-budget draw (s_power < eq_cap), pacing tightens cleanly by physics.
+            let blended = (1.0 - conf_weight) * eq_cap + conf_weight * s_power;
+            scale = scale.min(blended.clamp(0.52, 1.0));
+        } else if !input.is_launch_burst && s_power < 1.0 {
+            // Approaching equilibrium (within 3.5 C of target): smoothly engage proactive Watt pacing
+            // so sustained heavy load glides asymptotically into T_target without overshooting.
+            let approach = ((chassis - (effective_target_c - 3.5)) / 3.5).clamp(0.0, 1.0);
+            if approach > 0.0 {
+                let proactive_cap = 1.0 - (1.0 - s_power) * approach * conf_weight;
+                scale = scale.min(proactive_cap.clamp(0.58, 1.0));
+            }
         }
+    } else if chassis >= onset_c {
+        scale = scale.min(eq_cap);
+    }
+
+    if chassis >= 44.0 {
+        equilibrium_guard = true;
+        scale = scale.min(0.65);
     }
 
     // 2. Charging-aware vs Bypass-Charging-aware budget
@@ -190,9 +263,9 @@ pub fn compute_thermal_equilibrium(
     }
 
     // 3. Fast Die Guard: tolerate brief (< 2.5s) launch-burst die spikes up to 68 C when chassis
-    // is cool (< 38.5 C), but immediately damp sustained hot die (> 70 C or rapid heating).
+    // is cool (< plateau_c), but immediately damp sustained hot die (> 70 C or rapid heating).
     if soc > 0.0 {
-        let cool_chassis_burst = input.is_launch_burst && (chassis < 0.0 || chassis < 38.5);
+        let cool_chassis_burst = input.is_launch_burst && (chassis < 0.0 || chassis < plateau_c);
         if !cool_chassis_burst && soc >= 70.0 {
             let die_excess = (soc - 70.0).clamp(0.0, 15.0);
             let die_cap = (0.94 - die_excess * 0.030).clamp(0.45, 0.94);
@@ -207,12 +280,36 @@ pub fn compute_thermal_equilibrium(
         effective_scale: scale.clamp(0.25, 1.0),
         charging_damped,
         equilibrium_guard,
+        effective_target_c,
+        power_budget_w,
+        model_closed_loop_active: closed_loop_active,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bridge::ffi::ThermalEquilibriumInput;
+
+    fn fallback_eq_input(soc: f64, batt: f64, skin: f64, vel: f64) -> ThermalEquilibriumInput {
+        ThermalEquilibriumInput {
+            soc_temp_c: soc,
+            battery_temp_c: batt,
+            skin_temp_c: skin,
+            thermal_velocity_cpm: vel,
+            pid_capacity_scale: 1.0,
+            charging: false,
+            bypass_active: false,
+            is_launch_burst: false,
+            model_valid: false,
+            model_confidence: 0,
+            model_r_theta: -1.0,
+            model_tau_s: -1.0,
+            model_ambient_c: -1.0,
+            model_avg_power_w: 0.0,
+            base_target_c: 38.0,
+        }
+    }
 
     #[test]
     fn ols_detects_steady_heating_and_cooling_accurately() {
@@ -262,88 +359,98 @@ mod tests {
 
     #[test]
     fn dual_timescale_equilibrium_handles_burst_charging_and_bypass() {
-        use crate::bridge::ffi::ThermalEquilibriumInput;
-        let burst = compute_thermal_equilibrium(ThermalEquilibriumInput {
-            soc_temp_c: 64.0,
-            battery_temp_c: 36.0,
-            skin_temp_c: 36.5,
-            thermal_velocity_cpm: 4.0,
-            pid_capacity_scale: 1.0,
-            charging: false,
-            bypass_active: false,
-            is_launch_burst: true,
-        });
+        let mut burst_in = fallback_eq_input(64.0, 36.0, 36.5, 4.0);
+        burst_in.is_launch_burst = true;
+        let burst = compute_thermal_equilibrium(burst_in);
         assert!((burst.effective_scale - 1.0).abs() < 1e-9);
         assert!(!burst.equilibrium_guard);
+        assert!(!burst.model_closed_loop_active);
 
-        let hot_chg = compute_thermal_equilibrium(ThermalEquilibriumInput {
-            soc_temp_c: 55.0,
-            battery_temp_c: 41.0,
-            skin_temp_c: 40.0,
-            thermal_velocity_cpm: 1.0,
-            pid_capacity_scale: 1.0,
-            charging: true,
-            bypass_active: false,
-            is_launch_burst: false,
-        });
+        let mut chg_in = fallback_eq_input(55.0, 41.0, 40.0, 1.0);
+        chg_in.charging = true;
+        let hot_chg = compute_thermal_equilibrium(chg_in);
         assert!(hot_chg.charging_damped);
         assert!(hot_chg.effective_scale < 0.90);
 
-        let bypass = compute_thermal_equilibrium(ThermalEquilibriumInput {
-            soc_temp_c: 55.0,
-            battery_temp_c: 41.0,
-            skin_temp_c: 40.0,
-            thermal_velocity_cpm: 1.0,
-            pid_capacity_scale: 1.0,
-            charging: true,
-            bypass_active: true,
-            is_launch_burst: false,
-        });
+        let mut byp_in = fallback_eq_input(55.0, 41.0, 40.0, 1.0);
+        byp_in.charging = true;
+        byp_in.bypass_active = true;
+        let bypass = compute_thermal_equilibrium(byp_in);
         assert!(!bypass.charging_damped);
         assert!(bypass.effective_scale > hot_chg.effective_scale);
     }
 
     #[test]
     fn proactive_cool_glide_steers_41c_plateau_toward_38c_without_guard() {
-        use crate::bridge::ffi::ThermalEquilibriumInput;
-        let cool_37 = compute_thermal_equilibrium(ThermalEquilibriumInput {
-            soc_temp_c: 44.0,
-            battery_temp_c: 37.0,
-            skin_temp_c: 37.0,
-            thermal_velocity_cpm: 0.0,
-            pid_capacity_scale: 1.0,
-            charging: false,
-            bypass_active: false,
-            is_launch_burst: false,
-        });
+        let cool_37 = compute_thermal_equilibrium(fallback_eq_input(44.0, 37.0, 37.0, 0.0));
         assert!((cool_37.effective_scale - 1.0).abs() < 1e-9);
         assert!(!cool_37.equilibrium_guard);
 
-        let plateau_41 = compute_thermal_equilibrium(ThermalEquilibriumInput {
-            soc_temp_c: 47.0,
-            battery_temp_c: 41.0,
-            skin_temp_c: 41.0,
-            thermal_velocity_cpm: 0.1,
-            pid_capacity_scale: 1.0,
-            charging: false,
-            bypass_active: false,
-            is_launch_burst: false,
-        });
+        let plateau_41 = compute_thermal_equilibrium(fallback_eq_input(47.0, 41.0, 41.0, 0.1));
         // Actively trims headroom (~0.76) to cool 41 C plateau back toward ~38 C without false THERMAL_GUARD
         assert!(!plateau_41.equilibrium_guard);
         assert!(plateau_41.effective_scale <= 0.78 && plateau_41.effective_scale >= 0.70);
 
-        let cooling_39 = compute_thermal_equilibrium(ThermalEquilibriumInput {
-            soc_temp_c: 45.0,
-            battery_temp_c: 39.0,
-            skin_temp_c: 39.0,
-            thermal_velocity_cpm: -0.6,
+        let cooling_39 = compute_thermal_equilibrium(fallback_eq_input(45.0, 39.0, 39.0, -0.6));
+        assert!(!cooling_39.equilibrium_guard);
+        assert!(cooling_39.effective_scale > plateau_41.effective_scale + 0.10);
+    }
+
+    #[test]
+    fn closed_loop_model_adapts_to_tropical_ambient_cooler_and_power_budget() {
+        let make_model = |soc, batt, vel, conf, r, tau, ta, pwr| ThermalEquilibriumInput {
+            soc_temp_c: soc,
+            battery_temp_c: batt,
+            skin_temp_c: batt,
+            thermal_velocity_cpm: vel,
             pid_capacity_scale: 1.0,
             charging: false,
             bypass_active: false,
             is_launch_burst: false,
-        });
-        assert!(!cooling_39.equilibrium_guard);
-        assert!(cooling_39.effective_scale > plateau_41.effective_scale + 0.10);
+            model_valid: true,
+            model_confidence: conf,
+            model_r_theta: r,
+            model_tau_s: tau,
+            model_ambient_c: ta,
+            model_avg_power_w: pwr,
+            base_target_c: 38.0,
+        };
+
+        // 1. Tropical 34 C ambient: target lifts to 41.0 C (<= 41.5 C cap), so 38.5 C idle
+        //    with modest 1.1 W draw stays unthrottled (instead of falsely throttling at 37.5 C).
+        let out_trop = compute_thermal_equilibrium(make_model(45.0, 38.5, 0.0, 85, 5.5, 480.0, 34.0, 1.1));
+        assert!(out_trop.model_closed_loop_active);
+        assert!((out_trop.effective_target_c - 41.0).abs() < 1e-6);
+        assert!((out_trop.effective_scale - 1.0).abs() < 1e-6);
+        assert!(!out_trop.equilibrium_guard);
+
+        // Extreme 38 C ambient must stay strictly clamped at 41.5 C ceiling (< 44 C guard).
+        let out_ext = compute_thermal_equilibrium(make_model(45.0, 38.5, 0.0, 85, 5.5, 480.0, 38.0, 1.1));
+        assert!((out_ext.effective_target_c - 41.5).abs() < 1e-6);
+
+        // 2. External cooler (Ta = 18 C, R = 3.5 C/W): target locked at 38.0 C, huge P_budget (~5.6 W),
+        //    so a 4.0 W gaming draw at 38.5 C gets full unthrottled scale!
+        let out_cooler = compute_thermal_equilibrium(make_model(56.0, 38.5, -0.3, 90, 3.5, 320.0, 18.0, 4.0));
+        assert!(out_cooler.model_closed_loop_active);
+        assert!((out_cooler.effective_target_c - 38.0).abs() < 1e-6);
+        assert!(out_cooler.power_budget_w > 5.0);
+        assert!(out_cooler.effective_scale >= 0.99);
+
+        // 3. Over-budget draw in normal 28 C room (R = 6.0 -> Psus = 1.67 W) with 4.5 W draw
+        //    at 37.2 C (approaching 38 C): proactively paces smoothly BEFORE hitting 41 C.
+        let out_over = compute_thermal_equilibrium(make_model(58.0, 37.2, 0.8, 85, 6.0, 500.0, 28.0, 4.5));
+        assert!(out_over.model_closed_loop_active);
+        assert!(out_over.power_budget_w > 1.5 && out_over.power_budget_w < 3.0);
+        assert!(out_over.effective_scale < 0.85 && out_over.effective_scale >= 0.58);
+
+        // 4. Low confidence (< 45) falls back strictly to legacy curve (model_closed_loop_active = false).
+        let out_low = compute_thermal_equilibrium(make_model(58.0, 37.2, 0.8, 40, 6.0, 500.0, 28.0, 4.5));
+        assert!(!out_low.model_closed_loop_active);
+        assert!((out_low.effective_scale - 1.0).abs() < 1e-9);
+
+        // 5. Hard 44 C thermal guard ALWAYS wins regardless of cooler or model.
+        let out_guard = compute_thermal_equilibrium(make_model(56.0, 44.5, -0.3, 90, 3.5, 320.0, 18.0, 4.0));
+        assert!(out_guard.equilibrium_guard);
+        assert!(out_guard.effective_scale <= 0.65);
     }
 }

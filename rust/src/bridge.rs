@@ -54,6 +54,7 @@ pub mod ffi {
         app_uclamp_bias: f64,
         feedforward_freeze: bool,
         symbiotic_cpu_scale: f64,
+        starvation_pressure: f64,
     }
     struct UclampTarget {
         util_min: u32,
@@ -72,6 +73,7 @@ pub mod ffi {
         avail_ram_ratio: f64,
         capacity_scale: f64,
         thermal_guard: bool,
+        starvation_pressure: f64,
     }
     struct SymbioticPlan {
         regime: u8,
@@ -111,11 +113,21 @@ pub mod ffi {
         charging: bool,
         bypass_active: bool,
         is_launch_burst: bool,
+        model_valid: bool,
+        model_confidence: u32,
+        model_r_theta: f64,
+        model_tau_s: f64,
+        model_ambient_c: f64,
+        model_avg_power_w: f64,
+        base_target_c: f64,
     }
     struct ThermalEquilibriumOutput {
         effective_scale: f64,
         charging_damped: bool,
         equilibrium_guard: bool,
+        effective_target_c: f64,
+        power_budget_w: f64,
+        model_closed_loop_active: bool,
     }
     struct PreloadPrediction {
         has_prediction: bool,

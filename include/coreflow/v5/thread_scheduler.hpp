@@ -46,6 +46,7 @@ struct ThreadDemandContext {
     bool feedforward_freeze{false}; // Active during pre-emptive 500-800ms load spike / touch window
     double symbiotic_cpu_scale{1.0}; // Orthogonal Symbiotic Orchestrator CPU floor multiplier (0.88..1.10)
     double helper_uclamp_ratio{0.65}; // Cooperative Tier-2 helper ratio (0.65 default, up to 0.82 under hotspot spread)
+    double starvation_pressure{-1.0}; // Universal schedstat runqueue starvation pressure (0..1, -1 when unavailable)
 };
 
 class ThreadSchedulerActuator {

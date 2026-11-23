@@ -56,6 +56,8 @@ set(COREFLOW_V5_SOURCES
     src/v6/boot_calm_sanctuary.cpp
     src/v6/frame_pacing_sensor.cpp
     src/v6/app_dna_store.cpp
+    src/v6/schedstat_sensor.cpp
+    src/v6/vmstat_thrashing_sensor.cpp
     src/kernel/baseline_store.cpp
     src/kernel/mutation_coordinator.cpp
     src/kernel/mount_topology.cpp
@@ -166,6 +168,13 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_v6_closed_loop_intelligence PRIVATE pthread)
     endif()
     add_test(NAME V6ClosedLoopIntelligenceTest COMMAND test_v6_closed_loop_intelligence)
+
+    add_executable(test_v6_universal_sensors
+        tests/test_v6_universal_sensors.cpp
+        src/v6/schedstat_sensor.cpp
+        src/v6/vmstat_thrashing_sensor.cpp
+    )
+    add_test(NAME V6UniversalSensorsTest COMMAND test_v6_universal_sensors)
 
     # Foundational Infrastructure & Safety Tests
     add_executable(test_mount_topology

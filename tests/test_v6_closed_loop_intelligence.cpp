@@ -81,9 +81,75 @@ int main() {
     const auto s_static = sensor.sample(120U, 5000ULL, true, &bridge);
     assert(s_static.available);
     assert(s_static.jank_ratio < 0.0);
+
+    // Stale/inconsistent SDE payload (non-zero fps with frame_count: 0) -> treated as static (neutral -1.0)
+    write_file(sde_fps, "fps: 120.0 duration: 1000.0 frame_count: 0\n");
+    const auto s_stale = sensor.sample(120U, 6000ULL, true, &bridge);
+    assert(s_stale.available && s_stale.jank_ratio < 0.0);
     bridge.stop();
 
-    // 2. Universal VBlank IRQ Counter Fallback (custom kernels without vendor FPS sysfs)
+    // 2a. Non-LTPO Fixed-Hz Panel Quarantine (strict fail-closed probation on VBlank IRQ & generic panel/fps)
+    {
+        const fs::path nl_sys = root / "sys_nonltpo";
+        const fs::path nl_proc = root / "proc_nonltpo";
+        fs::create_directories(nl_sys);
+        const fs::path irq_file = nl_proc / "interrupts";
+        write_file(irq_file,
+                   "           CPU0       CPU1       CPU2       CPU3\n"
+                   "187:       1000        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+
+        HardwareProbe probe(nl_sys.string(), nl_proc.string());
+        const auto topo = probe.discover();
+        assert(topo.vblank_irq_token == "187:");
+
+        FramePacingSensor fixed_sensor;
+        fixed_sensor.discover(nl_sys.string(), nl_proc.string(), topo.vblank_irq_token);
+        assert(fixed_sensor.supported());
+        assert(!fixed_sensor.verified()); // Tier B starts unproven!
+
+        // While unproven, active workload at constant 120 Hz MUST stay fail-closed (never emit 0% jank!)
+        const auto p0 = fixed_sensor.sample(120U, 1000ULL, true, nullptr, false);
+        assert(!p0.available && p0.jank_ratio < 0.0);
+        write_file(irq_file, "187:       1120        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto p1 = fixed_sensor.sample(120U, 2000ULL, true, nullptr, false);
+        assert(!p1.available && p1.jank_ratio < 0.0 && !p1.verified_commit_source);
+
+        // 3 consecutive static-idle probes where VBlank remains pinned at 120 Hz -> permanent per-boot quarantine!
+        write_file(irq_file, "187:       1240        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto i1 = fixed_sensor.sample(120U, 3000ULL, false, nullptr, true);
+        assert(!i1.available && !i1.quarantined_fixed_hz);
+        write_file(irq_file, "187:       1360        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto i2 = fixed_sensor.sample(120U, 4000ULL, false, nullptr, true);
+        assert(!i2.available && !i2.quarantined_fixed_hz);
+        write_file(irq_file, "187:       1480        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto i3 = fixed_sensor.sample(120U, 5000ULL, false, nullptr, true);
+        assert(!i3.available && i3.quarantined_fixed_hz && i3.jank_ratio < 0.0);
+        assert(!fixed_sensor.supported() && fixed_sensor.quarantined_fixed_hz());
+        assert(fixed_sensor.active_source() == "fail_closed:fixed_hz_panel");
+
+        // Quarantine persists across reset() (ScreenOff/ScreenOn) for the entire boot session!
+        fixed_sensor.reset();
+        assert(fixed_sensor.quarantined_fixed_hz() && !fixed_sensor.supported());
+        write_file(irq_file, "187:       1600        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto after_q = fixed_sensor.sample(120U, 7000ULL, true, nullptr, false);
+        assert(!after_q.available && after_q.quarantined_fixed_hz && after_q.jank_ratio < 0.0);
+
+        // Generic Tier-B panel/panel/fps stuck at "120" is also quarantined fail-closed after 3 idle probes
+        const fs::path gp_sys = root / "sys_panel_fps";
+        const fs::path gp_proc = root / "proc_panel_fps";
+        fs::create_directories(gp_proc);
+        write_file(gp_sys / "class/panel/panel/fps", "120\n");
+        FramePacingSensor panel_sensor;
+        panel_sensor.discover(gp_sys.string(), gp_proc.string());
+        assert(!panel_sensor.verified());
+        assert(!panel_sensor.sample(120U, 1000ULL, true, nullptr, false).available);
+        assert(!panel_sensor.sample(120U, 2000ULL, false, nullptr, true).quarantined_fixed_hz);
+        assert(!panel_sensor.sample(120U, 3000ULL, false, nullptr, true).quarantined_fixed_hz);
+        const auto gp_q = panel_sensor.sample(120U, 4000ULL, false, nullptr, true);
+        assert(gp_q.quarantined_fixed_hz && !gp_q.available && gp_q.jank_ratio < 0.0);
+    }
+
+    // 2b. Proven Commit-Driven / Dynamic LTPO VBlank IRQ Fallback (drops on idle -> promoted to ProvenCommit)
     {
         const fs::path fb_sys = root / "sys_novendor";
         const fs::path fb_proc = root / "proc_novendor";
@@ -100,39 +166,43 @@ int main() {
 
         FramePacingSensor irq_sensor;
         irq_sensor.discover(fb_sys.string(), fb_proc.string(), topo.vblank_irq_token);
-        assert(irq_sensor.supported());
+        assert(irq_sensor.supported() && !irq_sensor.verified());
 
-        // First read establishes baseline -> neutral jank (-1.0)
-        const auto v0 = irq_sensor.sample(120U, 1000ULL, true, nullptr);
-        assert(v0.available && v0.jank_ratio < 0.0);
+        // Static-idle probation probe: baseline + drop to 4 Hz (< 18 Hz) proves commit-driven/LTPO panel!
+        const auto idle0 = irq_sensor.sample(120U, 1000ULL, false, nullptr, true);
+        assert(!idle0.available && !irq_sensor.verified());
+        write_file(irq_file, "187:       1004        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto idle1 = irq_sensor.sample(120U, 2000ULL, false, nullptr, true);
+        assert(!idle1.available && idle1.jank_ratio < 0.0);
+        assert(irq_sensor.verified());
         assert(irq_sensor.active_source() == "vblank_irq:187:");
 
-        // +120 IRQs over 1.0s -> smooth 120 Hz commit rate (jank ~ 0.0)
+        // Now active workload (+120 IRQs over 1.0s) -> verified smooth 120 Hz commit rate (jank ~ 0.0)
         write_file(irq_file,
                    "           CPU0       CPU1       CPU2       CPU3\n"
                    " 42:        200        200          0          0   GICv3  120 Level     arch_timer\n"
-                   "187:       1120        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
-        const auto v1 = irq_sensor.sample(120U, 2000ULL, true, nullptr);
-        assert(v1.available);
+                   "187:       1124        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto v1 = irq_sensor.sample(120U, 3000ULL, true, nullptr, false);
+        assert(v1.available && v1.verified_commit_source);
         assert(std::abs(v1.measured_fps - 120.0) < 0.5);
         assert(v1.jank_ratio >= 0.0 && v1.jank_ratio < 0.02);
 
         // Oscillating VBlank jitter (120 -> 78 -> 114 -> 76 Hz) raises jitter-penalized jank_ratio
         write_file(irq_file,
-                   "187:       1198        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
-        (void)irq_sensor.sample(120U, 3000ULL, true, nullptr);
+                   "187:       1202        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        (void)irq_sensor.sample(120U, 4000ULL, true, nullptr, false);
         write_file(irq_file,
-                   "187:       1312        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
-        (void)irq_sensor.sample(120U, 4000ULL, true, nullptr);
+                   "187:       1316        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        (void)irq_sensor.sample(120U, 5000ULL, true, nullptr, false);
         write_file(irq_file,
-                   "187:       1388        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
-        const auto v_jit = irq_sensor.sample(120U, 5000ULL, true, nullptr);
+                   "187:       1392        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto v_jit = irq_sensor.sample(120U, 6000ULL, true, nullptr, false);
         assert(v_jit.available && v_jit.jank_ratio > 0.08);
 
         // Static screen (< 12 Hz commit rate: +4 IRQs in 1s) -> neutral (-1.0), never false jank
         write_file(irq_file,
-                   "187:       1392        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
-        const auto v_idle = irq_sensor.sample(120U, 6000ULL, true, nullptr);
+                   "187:       1396        200          0          0   GICv3  245 Edge      mdss_vblank_dsi0\n");
+        const auto v_idle = irq_sensor.sample(120U, 7000ULL, true, nullptr, false);
         assert(v_idle.available && v_idle.jank_ratio < 0.0);
     }
 

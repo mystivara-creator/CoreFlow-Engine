@@ -245,6 +245,54 @@ int main() {
     assert(read_file(bg_uclamp) == "max");
     assert(!act.stats().background_isolated);
 
+    // 12. Two-regime /proc/vmstat thrashing defense & schedstat starvation isolation
+    {
+        // Regime A: Early file refaults (1500/s) while RAM plentiful & no direct reclaim storm
+        // -> MGLRU min_ttl_ms boosts up to 1200ms shield, swappiness nudges up, memory health reflects thrashing.
+        StorageMemoryTelemetry refault_tel = calm_tel;
+        refault_tel.thrashing_pressure = 0.55;
+        refault_tel.refault_file_per_sec = 1500.0;
+        refault_tel.direct_reclaim_per_sec = 0.0;
+        refault_tel.pswpin_per_sec = 40.0;
+        act.apply(topo, inter_ctx, PerformanceProfile::Balanced, true, true, 1000000, refault_tel);
+        const uint64_t refault_ttl = std::stoull(read_file(mglru));
+        const uint64_t refault_swap = std::stoull(read_file(swappiness));
+        assert(refault_ttl >= 1050U && refault_ttl <= 1200U);
+        assert(refault_swap > calm_swap);
+        assert(act.stats().memory_health_pct < 90U);
+
+        // ZRAM swap-in storm (pswpin >= 1800/s) trims swappiness down vs file-refault regime
+        StorageMemoryTelemetry swap_storm_tel = calm_tel;
+        swap_storm_tel.thrashing_pressure = 0.50;
+        swap_storm_tel.pswpin_per_sec = 1800.0;
+        act.apply(topo, inter_ctx, PerformanceProfile::Balanced, true, true, 1010000, swap_storm_tel);
+        const uint64_t swap_storm_swappiness = std::stoull(read_file(swappiness));
+        assert(swap_storm_swappiness < refault_swap);
+
+        // Regime B: Direct reclaim storm + severe thrashing -> MGLRU TTL immediately drops to 0,
+        // LaunchBurst read_ahead_kb burst is suppressed back to OEM baseline 128, and prefetch is gated off!
+        StorageMemoryTelemetry storm_tel = calm_tel;
+        storm_tel.thrashing_pressure = 0.80;
+        storm_tel.direct_reclaim_per_sec = 140.0;
+        storm_tel.direct_reclaim_storm = true;
+        ContextDecision storm_launch = launch_ctx;
+        storm_launch.foreground_package = "com.example.stormgame";
+        const uint64_t prereads_before = act.stats().preread_files_total;
+        act.apply(topo, storm_launch, PerformanceProfile::Balanced, true, true, 1020000, storm_tel);
+        assert(read_file(mglru) == "0");
+        assert(read_file(ra_path) == "128");
+        assert(!act.stats().burst_active);
+        assert(act.stats().preread_files_total == prereads_before);
+
+        // Schedstat runqueue starvation during calm Interactive (cpu_psi=0, io_psi=0) isolates background
+        StorageMemoryTelemetry starv_tel = calm_tel;
+        starv_tel.starvation_pressure = 0.72;
+        act.apply(topo, inter_ctx, PerformanceProfile::Balanced, true, true, 1030000, starv_tel);
+        assert(act.stats().background_isolated);
+        assert(read_file(bg_io) != "default 100");
+        assert(read_file(bg_uclamp) != "max");
+    }
+
     (void)baseline.rollback_all();
     assert(!baseline.has_active_mutations());
     assert(read_file(mglru_en) == "0x0007");
@@ -252,6 +300,6 @@ int main() {
     assert(read_file(ra_path) == "128");
     (void)::unsetenv("COREFLOW_TEST_STATE_DIR");
     fs::remove_all(root);
-    std::cout << "v5 StorageMemoryActuator tests passed\n";
+    std::cout << "v5 StorageMemoryActuator tests passed (including two-regime thrashing & starvation isolation)\n";
     return 0;
 }
