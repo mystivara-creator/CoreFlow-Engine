@@ -1688,7 +1688,10 @@ int main(int argc, char* argv[]) {
     live_status.conflicting_modules_json = read_conflicting_modules_json();
     live_status.session.started_steady_ms = steady_now_ms();
 
-    // Pillar 1: Sovereign Tamper Guard event listener (DecisionJournal + rate-limited IPC broadcast)
+    // Pillar 1: Sovereign Tamper Guard event listener (DecisionJournal + circuit-breaker IPC broadcast)
+    // One-off writes from OEM system daemons (e.g. perf-hal during app launch) are logged quietly in
+    // DecisionJournal without spamming Android notifications; IPC alerts fire only on repeated
+    // write-loop contention (circuit breaker open).
     std::unordered_map<std::string, uint64_t> last_tamper_ipc_ms;
     coordinator.set_tamper_listener([&](const TamperEvent& ev) {
         const auto slash = ev.node_path.find_last_of('/');
@@ -1697,15 +1700,18 @@ int main(int argc, char* argv[]) {
             epoch_now_ms(),
             "sovereign",
             ev.circuit_open ? "TamperCircuitOpen" : "TamperBlocked",
-            "Intervensi eksternal pada " + leaf + " (dicoba=" + ev.observed_value +
-                ", ditegakkan=" + ev.expected_value + ")" +
-                (ev.circuit_open ? " · Circuit breaker 30s aktif" : " · Direbut balik & dikunci 0444"),
+            "Perubahan eksternal pada " + leaf + " (nilai=" + ev.observed_value +
+                ", target=" + ev.expected_value + ")" +
+                (ev.circuit_open ? " - Circuit breaker 30d aktif" : " - Dicatat & dikembalikan"),
             ev.circuit_open ? "quarantined" : (ev.reclaimed ? "reclaimed" : "failed"),
             live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
-        emit_log(true, "[CFAE][SovereignGuard] External tamper on " + ev.node_path +
+        emit_log(true, "[CFAE][SovereignGuard] External write on " + ev.node_path +
                  " (observed=" + ev.observed_value + ", enforced=" + ev.expected_value +
                  ", reclaimed=" + (ev.reclaimed ? "yes" : "no") +
                  ", breaker=" + (ev.circuit_open ? "OPEN" : "closed") + ")");
+        if (!ev.circuit_open) {
+            return;
+        }
         const uint64_t now_ipc = steady_now_ms();
         const auto it = last_tamper_ipc_ms.find(ev.node_path);
         if (it == last_tamper_ipc_ms.end() || now_ipc >= it->second + 30'000ULL) {

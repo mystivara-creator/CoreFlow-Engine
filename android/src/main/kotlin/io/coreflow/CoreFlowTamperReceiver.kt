@@ -62,30 +62,30 @@ internal object SovereignTamperNotification {
         val notifId = notificationIdForNode(nodePath)
         val leaf = nodePath.substringAfterLast('/').ifBlank { nodePath }
 
-        val sovereignHeadline = "CFAE Sovereign Guard · Intervensi Diblokir"
+        val sovereignHeadline = "CoreFlow Guard · Konflik Node Kernel"
         val sovereignBody = buildString {
-            append("Intervensi eksternal terdeteksi pada [$leaf]. ")
-            append("Kamu mengganggu ritme kerjaku; cukup biar aku yang mengatasi keseimbangan sistem ini.\n\n")
+            append("Layanan sistem/OEM atau modul lain berulang kali mengubah [$leaf] ")
+            append("saat CoreFlow sedang mengaturnya.\n\n")
             append("• Node: $nodePath\n")
-            append("• Nilai dicoba: $observedValue → Ditegakkan CFAE: $expectedValue\n")
-            append("• Alasan: ${reason.ifBlank { "Keseimbangan termal & penjadwalan CFAE" }}\n")
+            append("• Nilai sistem/luar: $observedValue → Target CoreFlow: $expectedValue\n")
+            append("• Konteks: ${reason.ifBlank { "Keseimbangan termal & penjadwalan CoreFlow" }}\n")
             append(
                 if (circuitBreakerOpen) {
-                    "• Status: Circuit breaker 3x/5d aktif — node dikunci 0444 (karantina 30d anti write-loop)."
+                    "• Status: Circuit breaker 3x/5d aktif — dikarantina 30d agar tidak terjadi write-loop."
                 } else if (reclaimed) {
-                    "• Status: Direbut balik (Reclaim-First) & izin tulis dikunci read-only (0444)."
+                    "• Status: Nilai dipulihkan sementara & dicatat di Live Feed."
                 } else {
-                    "• Status: Dipantau ketat oleh CFAE Sovereign Guard."
+                    "• Status: Dipantau oleh CoreFlow Guard."
                 },
             )
-            append("\n\nBalas cepat: RESYNC / ENFORCE atau REPORT / WHY.")
+            append("\n\nBalas cepat (opsional): REPORT / WHY / RESYNC.")
         }
 
         // Tap notification -> open Companion App LiveFeedTab with forensic tamper context
         val contentIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(MainActivity.EXTRA_OPEN_TAB, 2)
-            putExtra(MainActivity.EXTRA_FORENSIC_PROMPT, "Laporan forensik intervensi node $nodePath")
+            putExtra(MainActivity.EXTRA_FORENSIC_PROMPT, "Laporan forensik konflik node $nodePath")
         }
         val contentPi = PendingIntent.getActivity(
             context,
@@ -94,7 +94,7 @@ internal object SovereignTamperNotification {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        // Action 1: "Tandai Dibaca" (confirms active CFAE protection, zero compromise)
+        // Action 1: "Tandai Dibaca"
         val dismissIntent = Intent(context, CoreFlowTamperActionReceiver::class.java).apply {
             action = ACTION_TAMPER_DISMISS
             putExtra(EXTRA_NOTIFICATION_ID, notifId)
@@ -109,7 +109,7 @@ internal object SovereignTamperNotification {
 
         // Action 2: Inline Reply (RemoteInput) supporting RESYNC / ENFORCE / REPORT / WHY only
         val remoteInput = RemoteInput.Builder(KEY_TAMPER_REPLY)
-            .setLabel("Kode CFAE: RESYNC, ENFORCE, REPORT, atau WHY")
+            .setLabel("Kode CFAE: REPORT, WHY, atau RESYNC")
             .build()
         val replyIntent = Intent(context, CoreFlowTamperActionReceiver::class.java).apply {
             action = ACTION_TAMPER_REPLY
@@ -132,17 +132,17 @@ internal object SovereignTamperNotification {
         )
         val replyAction = NotificationCompat.Action.Builder(
             R.drawable.ic_coreflow_tile,
-            "Balas Kode CFAE",
+            "Detail / Balas",
             replyPi,
         ).addRemoteInput(remoteInput).build()
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_coreflow_tile)
             .setContentTitle(sovereignHeadline)
-            .setContentText("Intervensi eksternal terdeteksi pada [$leaf]. Biar CFAE menjaga keseimbangan sistem.")
+            .setContentText("Konflik tulis berulang pada [$leaf]; CoreFlow mengaktifkan karantina anti write-loop.")
             .setStyle(NotificationCompat.BigTextStyle().bigText(sovereignBody))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setAutoCancel(true)
             .setContentIntent(contentPi)
             .addAction(0, "Tandai Dibaca", dismissPi)
