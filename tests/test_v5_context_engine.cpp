@@ -117,7 +117,8 @@ int main() {
     assert(dec.mode == ContextMode::Excluded);
     assert(dec.app_excluded);
 
-    // 6. Forced gaming app enters LaunchBurst then Gaming even without GPU sensor
+    // 6. Legacy manual gaming/smoothness/battery app buckets are parsed safely but ignored at runtime;
+    //    real-time telemetry + excluded_apps own mode decisions cleanly.
     sig.now_ms = 9000;
     sig.gpu_busy_pct = std::nullopt;
     sig.foreground_pid = 6666;
@@ -125,14 +126,15 @@ int main() {
     assert(engine.evaluate(sig).mode == ContextMode::LaunchBurst);
     sig.now_ms = 12000;
     dec = engine.evaluate(sig);
-    assert(dec.mode == ContextMode::Gaming && dec.app_forced_gaming);
+    assert(dec.mode == ContextMode::Efficiency && !dec.app_forced_gaming);
+    assert(dec.effective_profile == PerformanceProfile::Balanced);
 
     // 7. ScreenOff overrides everything
     sig.now_ms = 13000;
     sig.screen_off = true;
     assert(engine.evaluate(sig).mode == ContextMode::ScreenOff);
 
-    // 8. 4-profile per-app rules (smoothness_apps & battery_apps set effective_profile cleanly)
+    // 8. Low-Battery Auto-Eco (<= 20% discharging) & Refresh-Rate-Adaptive OverScroller Fling Hold
     engine.set_profile(PerformanceProfile::Balanced);
     engine.set_app_rules(
         {"com.example.forcedgame"},
@@ -141,16 +143,36 @@ int main() {
         {"com.whatsapp"});
     sig.screen_off = false;
     sig.now_ms = 14000;
+    sig.refresh_hz = 120;
+    sig.low_battery_eco = false;
     sig.foreground_pid = 7001;
     sig.foreground_package = "com.instagram.android";
     dec = engine.evaluate(sig);
-    assert(dec.effective_profile == PerformanceProfile::Smoothness);
+    assert(dec.effective_profile == PerformanceProfile::Balanced); // legacy smoothness_apps ignored
+    // Expire launch burst, then verify 120Hz fling hold keeps Interactive alive at +850ms (<= 950ms)
+    sig.now_ms = 16000;
+    assert(engine.evaluate(sig).mode == ContextMode::Efficiency);
+    engine.notify_touch(16100);
+    sig.now_ms = 16950; // +850ms on 120Hz panel -> still Interactive (hold = 950ms)
+    assert(engine.evaluate(sig).mode == ContextMode::Interactive);
+    sig.now_ms = 17100; // +1000ms -> back to Efficiency
+    assert(engine.evaluate(sig).mode == ContextMode::Efficiency);
 
-    sig.now_ms = 17000;
+    // Low-Battery Auto-Eco maps effective_profile to Battery (low_battery_eco) and trims fling hold to 500ms
+    sig.now_ms = 17500;
+    sig.low_battery_eco = true;
     sig.foreground_pid = 7002;
     sig.foreground_package = "com.whatsapp";
     dec = engine.evaluate(sig);
     assert(dec.effective_profile == PerformanceProfile::Battery);
+    sig.now_ms = 19000;
+    assert(engine.evaluate(sig).mode == ContextMode::Efficiency);
+    engine.notify_touch(19100);
+    sig.now_ms = 19550; // +450ms -> still Interactive (hold = 500ms)
+    assert(engine.evaluate(sig).mode == ContextMode::Interactive);
+    sig.now_ms = 19700; // +600ms -> relaxed to Efficiency
+    assert(engine.evaluate(sig).mode == ContextMode::Efficiency);
+    sig.low_battery_eco = false;
 
     // 9. GPU-less MediaTek/emulator auto-gaming via game engine thread + sustained CPU load
     assert(ContextEngine::is_game_engine_thread_name("EmuThread"));
@@ -232,16 +254,17 @@ int main() {
     fast_sig.now_ms = 54000;
     assert(engine.evaluate(fast_sig).mode == ContextMode::Gaming);     // streak 3 (>= 2s sustained)
 
-    // 13. Gaming profile uses hysteresis and does NOT flap EFFICIENCY <-> GAMING on a single 32% CPU tick
-    engine.set_profile(PerformanceProfile::Gaming);
+    // 13. Autonomous 3D Game thread uses 2-tick hysteresis without flapping on low CPU ticks
+    engine.set_profile(PerformanceProfile::Balanced);
     ContextSignalInput gprof{};
     gprof.foreground_pid = 8003;
-    gprof.foreground_package = "com.example.reader";
+    gprof.foreground_package = "com.example.unitygame";
+    gprof.has_game_thread = true;
     gprof.now_ms = 60000;
-    (void)engine.evaluate(gprof); // LaunchBurst
+    (void)engine.evaluate(gprof); // LaunchBurst (2000ms for HeavyGame3D)
     gprof.now_ms = 63000;
     gprof.gpu_busy_pct = 10.0;
-    gprof.cpu_util_pct = 33.0;
+    gprof.cpu_util_pct = 18.0; // idle menu -> Efficiency
     assert(engine.evaluate(gprof).mode == ContextMode::Efficiency);
     gprof.now_ms = 64000;
     gprof.cpu_util_pct = 45.0;

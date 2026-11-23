@@ -691,8 +691,8 @@ fun ControlHubTab(
                     },
                 )
                 ArrowPreference(
-                    title = "Pin Quick Settings Tile (Mode)",
-                    summary = "Cycle Balanced, Smoothness, Gaming & Battery from Control Center",
+                    title = "Pin Quick Settings Tile (Autonomous / Pause)",
+                    summary = "1-tap Autonomous ↔ Paused (Stock OEM A/B) toggle with live SoC temp & headroom",
                     onClick = {
                         val sbm = context.getSystemService(StatusBarManager::class.java) ?: return@ArrowPreference
                         sbm.requestAddTileService(
@@ -703,9 +703,9 @@ fun ControlHubTab(
                         ) { res ->
                             onMessage(
                                 if (res == StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED) {
-                                    "Mode Tile added to Control Center"
+                                    "Autonomous Tile added to Control Center"
                                 } else {
-                                    "Mode Tile already added or cancelled"
+                                    "Autonomous Tile already added or cancelled"
                                 },
                             )
                         }

@@ -266,6 +266,14 @@ object CoreFlowManager {
         val p95Ms: Int?,
     )
 
+    data class AppDnaSummary(
+        val packageName: String,
+        val uclampBias: Float = 1.0f,
+        val efficiencyWeight: Float = 1.0f,
+        val samples: Int = 0,
+        val launches: Int = 0,
+    )
+
     data class DaemonStatus(
         val version: String,
         val isRunning: Boolean,
@@ -273,6 +281,8 @@ object CoreFlowManager {
         val profile: Profile,
         val effectiveProfile: Profile,
         val mode: String,
+        val autonomousRegime: String = "idle_cool",
+        val lowBatteryEco: Boolean = false,
         val bootSettleActive: Boolean = false,
         val bootSettleDurationSec: Float = 0f,
         val bootSettleExitReason: String = "warm_daemon_restart",
@@ -287,6 +297,8 @@ object CoreFlowManager {
         val readAheadKb: Int,
         val prereadBytes: Long,
         val managedEnvelopeNodes: Int,
+        val easTopAppCapPct: Int = 100,
+        val easCappedGroups: Int = 0,
         val semanticKnobsDiscovered: Int = 0,
         val semanticKnobsActive: Int = 0,
         val memoryBusKnobs: Int = 0,
@@ -329,6 +341,7 @@ object CoreFlowManager {
         val history: List<HistorySample> = emptyList(),
         val session: SessionMetrics = SessionMetrics(),
         val apps: AppRules = AppRules(),
+        val appDnaEntries: Map<String, AppDnaSummary> = emptyMap(),
     ) {
         val activePillars: Int
             get() {
@@ -339,6 +352,21 @@ object CoreFlowManager {
                 if (managedEnvelopeNodes > 0 || thermalSource.isNotBlank()) count++
                 return count.coerceIn(0, 4)
             }
+
+        fun autonomousRegimeLabel(isIndonesian: Boolean): String = when (autonomousRegime) {
+            "paused_oem" -> if (isIndonesian) "Dijeda (OEM A/B)" else "Paused (OEM A/B)"
+            "thermal_emergency" -> if (isIndonesian) "Darurat Termal" else "Thermal Emergency"
+            "thermal_guard" -> "Thermal Guard"
+            "boot_settle" -> if (isIndonesian) "Tenang Pasca-Boot" else "Boot Settle"
+            "excluded_oem" -> if (isIndonesian) "Stock OEM (Dikecualikan)" else "Stock OEM (Excluded)"
+            "screen_off" -> if (isIndonesian) "Layar Mati" else "Screen Off"
+            "gaming_3d" -> if (isIndonesian) "3D Gaming Otomatis" else "Auto 3D Gaming"
+            "launch_burst" -> "Launch Burst"
+            "low_battery_eco" -> if (isIndonesian) "Hemat Baterai Otomatis (≤20%)" else "Low-Battery Auto-Eco (≤20%)"
+            "thermal_pacing", "cool_glide" -> if (isIndonesian) "Kendali Termal EAS" else "EAS Thermal Pacing"
+            "interactive_scroll" -> if (isIndonesian) "Scroll Responsif" else "Interactive Scroll"
+            else -> if (isIndonesian) "Tenang & Dingin" else "Idle Cool"
+        }
     }
 
     data class ProfileImportOutcome(
@@ -492,15 +520,36 @@ object CoreFlowManager {
                 }
             }
 
+            val appDnaMap = buildMap {
+                val arr = json.optJSONArray("appDnaEntries") ?: return@buildMap
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val pkg = obj.optString("pkg", "").trim()
+                    if (pkg.isEmpty()) continue
+                    put(
+                        pkg,
+                        AppDnaSummary(
+                            packageName = pkg,
+                            uclampBias = obj.optFiniteFloat("uclampBias", 1.0f),
+                            efficiencyWeight = obj.optFiniteFloat("efficiencyWeight", 1.0f),
+                            samples = obj.optInt("samples", 0),
+                            launches = obj.optInt("launches", 0),
+                        ),
+                    )
+                }
+            }
+
             DaemonStatus(
-                version = json.optString("version", "6.0.0-R"),
+                version = json.optString("version", "6.1.0-R"),
                 isRunning = json.optBoolean("running", false),
                 pid = json.optInt("pid", 0),
-                profile = Profile.fromConfigValue(json.optString("profile", "balanced")),
+                profile = Profile.fromConfigValue(json.optString("profile", "autonomous")),
                 effectiveProfile = Profile.fromConfigValue(
-                    json.optString("effectiveProfile", json.optString("profile", "balanced")),
+                    json.optString("effectiveProfile", json.optString("profile", "autonomous")),
                 ),
                 mode = json.optString("mode", "EFFICIENCY"),
+                autonomousRegime = json.optString("autonomousRegime", "idle_cool").ifBlank { "idle_cool" },
+                lowBatteryEco = json.optBoolean("lowBatteryEco", false),
                 bootSettleActive = json.optBoolean("bootSettleActive", false),
                 bootSettleDurationSec = json.optFiniteFloat("bootSettleDurationSec", 0f),
                 bootSettleExitReason = json.optString("bootSettleExitReason", "warm_daemon_restart"),
@@ -515,6 +564,8 @@ object CoreFlowManager {
                 readAheadKb = actuators?.optInt("readAheadKb", 0) ?: 0,
                 prereadBytes = actuators?.optLong("prereadBytes", 0L) ?: 0L,
                 managedEnvelopeNodes = actuators?.optInt("managedEnvelopeNodes", 0) ?: 0,
+                easTopAppCapPct = (actuators?.optInt("easTopAppCapPct", 100) ?: 100).coerceIn(20, 100),
+                easCappedGroups = (actuators?.optInt("easCappedGroups", 0) ?: 0).coerceAtLeast(0),
                 semanticKnobsDiscovered = actuators?.optInt("semanticKnobsDiscovered", 0) ?: 0,
                 semanticKnobsActive = actuators?.optInt("semanticKnobsActive", 0) ?: 0,
                 memoryBusKnobs = actuators?.optInt("memoryBusKnobs", 0) ?: 0,
@@ -641,7 +692,25 @@ object CoreFlowManager {
                     battery = appsJson?.optJSONArray("battery").toStringList(),
                     excluded = appsJson?.optJSONArray("excluded").toStringList(),
                 ),
+                appDnaEntries = appDnaMap,
             )
+        }
+    }
+
+    suspend fun setAppExcluded(
+        packageName: String,
+        excluded: Boolean,
+        currentExcluded: List<String>,
+    ): Result<List<String>> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(PACKAGE_REGEX.matches(packageName)) { "Invalid package name: $packageName" }
+            val next = currentExcluded.filterNot { it == packageName }.toMutableList()
+            if (excluded) next.add(packageName)
+            val updated = next.distinct().sorted()
+            if (updated != currentExcluded.distinct().sorted()) {
+                execRootCommand("$RESOLVE_DAEMON; \"\$BIN\" --set-config 'excluded_apps=${updated.joinToString(",")}'")
+            }
+            updated
         }
     }
 
@@ -782,7 +851,7 @@ object CoreFlowManager {
             put("version", status.version)
             put("sourceSoc", status.hardware.socModel)
             put("exportedAtMs", System.currentTimeMillis())
-            put("profile", status.profile.configValue)
+            put("profile", "autonomous")
             put(
                 "features",
                 JSONObject().apply {
@@ -806,9 +875,6 @@ object CoreFlowManager {
             put(
                 "apps",
                 JSONObject().apply {
-                    put("gaming_apps", JSONArray(status.apps.gaming))
-                    put("smoothness_apps", JSONArray(status.apps.smoothness))
-                    put("battery_apps", JSONArray(status.apps.battery))
                     put("excluded_apps", JSONArray(status.apps.excluded))
                 },
             )
@@ -831,8 +897,7 @@ object CoreFlowManager {
                 !sourceSoc.equals(currentSoc, ignoreCase = true)
 
             val updates = mutableListOf<String>()
-            val prof = Profile.fromConfigValue(root.optString("profile", "balanced"))
-            updates.add("profile=${prof.configValue}")
+            updates.add("profile=autonomous")
 
             root.optJSONObject("features")?.let { feat ->
                 for (key in ALLOWED_FEATURE_KEYS) {
@@ -851,14 +916,15 @@ object CoreFlowManager {
                 }
             }
             root.optJSONObject("apps")?.let { apps ->
-                for (key in listOf("gaming_apps", "smoothness_apps", "battery_apps", "excluded_apps")) {
-                    val arr = apps.optJSONArray(key) ?: continue
+                // Zero-Profile Autonomous: import only Stock OEM exclusions (ignore legacy manual buckets)
+                val arr = apps.optJSONArray("excluded_apps")
+                if (arr != null) {
                     val validPkgs = mutableListOf<String>()
                     for (i in 0 until arr.length()) {
                         val pkg = arr.optString(i, "").trim()
                         if (PACKAGE_REGEX.matches(pkg)) validPkgs.add(pkg)
                     }
-                    updates.add("$key=${validPkgs.distinct().joinToString(",")}")
+                    updates.add("excluded_apps=${validPkgs.distinct().joinToString(",")}")
                 }
             }
 

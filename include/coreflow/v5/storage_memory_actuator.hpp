@@ -23,6 +23,9 @@ struct StorageMemoryTelemetry {
     double cpu_psi{0.0};
     MemorySnapshot memory{};
     bool io_supply_boost{false};
+    double capacity_scale{1.0};
+    bool thermal_guard{false};
+    bool low_battery_eco{false};
 };
 
 struct StorageMemoryStats {

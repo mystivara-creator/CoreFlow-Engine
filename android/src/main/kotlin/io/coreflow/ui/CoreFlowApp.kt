@@ -365,10 +365,10 @@ fun CoreFlowApp(
             status?.let {
                 val hz = it.hardware.refreshHz
                 "v${it.version} · ${if (it.isRunning) "PID ${it.pid} · ${hz}Hz" else strings.statusStopped}"
-            } ?: "Autonomous Co-Pilot",
+            } ?: "Zero-Profile Autonomous",
             strings.subControl,
             strings.subLive,
-            "${status?.apps?.totalConfigured ?: 0} ${strings.activeOverridesSuffix}",
+            "${status?.apps?.excluded?.size ?: 0} ${strings.activeOverridesSuffix}",
             strings.subSettings,
         )
 
@@ -385,7 +385,7 @@ fun CoreFlowApp(
                 3,
                 MiuixIcons.ListView,
                 strings.tabApps,
-                badgeCount = if (navBadgesEnabled) (status?.apps?.totalConfigured ?: 0) else 0,
+                badgeCount = if (navBadgesEnabled) (status?.apps?.excluded?.size ?: 0) else 0,
             ),
             NavTabSpec(
                 4,
@@ -455,20 +455,6 @@ fun CoreFlowApp(
                         contentPadding = innerPadding,
                         scrollBehavior = scrollBehavior,
                         onRefresh = { triggerPullRefresh() },
-                        onSelectProfile = { profile ->
-                            scope.launch {
-                                busyAction = true
-                                CoreFlowManager.applyProfile(profile)
-                                    .onSuccess {
-                                        refreshStatus()
-                                        snackbarHostState.showSnackbar("Profile switched to ${profile.label}")
-                                    }
-                                    .onFailure { err ->
-                                        snackbarHostState.showSnackbar(err.message ?: "Failed to apply profile")
-                                    }
-                                busyAction = false
-                            }
-                        },
                         onTogglePause = { paused ->
                             scope.launch {
                                 busyAction = true
@@ -476,7 +462,7 @@ fun CoreFlowApp(
                                     .onSuccess {
                                         refreshStatus()
                                         snackbarHostState.showSnackbar(
-                                            if (paused) "CoreFlow paused (OEM A/B mode)" else "CoreFlow resumed",
+                                            if (paused) "CoreFlow paused (OEM A/B mode)" else "CoreFlow autonomous resumed",
                                         )
                                     }
                                     .onFailure { err ->
@@ -576,16 +562,18 @@ fun CoreFlowApp(
                         onRefresh = { triggerPullRefresh() },
                         pendingPrompt = activeDialoguePrompt,
                         onConsumePrompt = { activeDialoguePrompt = null },
-                        onSelectProfile = { profile ->
+                        onTogglePause = { paused ->
                             scope.launch {
                                 busyAction = true
-                                CoreFlowManager.applyProfile(profile)
+                                CoreFlowManager.setPaused(paused)
                                     .onSuccess {
                                         refreshStatus()
-                                        snackbarHostState.showSnackbar("CFAE context -> ${profile.label}")
+                                        snackbarHostState.showSnackbar(
+                                            if (paused) "CoreFlow paused (OEM A/B mode)" else "CoreFlow autonomous resumed",
+                                        )
                                     }
                                     .onFailure { err ->
-                                        snackbarHostState.showSnackbar(err.message ?: "Failed to shift context")
+                                        snackbarHostState.showSnackbar(err.message ?: "Failed to toggle pause")
                                     }
                                 busyAction = false
                             }
@@ -610,9 +598,9 @@ fun CoreFlowApp(
                         strings = strings,
                         apps = installedApps,
                         loading = appsLoading,
-                        globalProfile = status?.profile ?: CoreFlowManager.Profile.BALANCED,
                         bypassOnGaming = status?.powerConfig?.bypassOnGaming == true,
-                        rules = status?.apps ?: CoreFlowManager.AppRules(),
+                        excludedApps = status?.apps?.excluded.orEmpty(),
+                        appDnaEntries = status?.appDnaEntries.orEmpty(),
                         isRefreshing = isManualRefreshing,
                         contentPadding = innerPadding,
                         scrollBehavior = scrollBehavior,
@@ -624,16 +612,18 @@ fun CoreFlowApp(
                                 appsLoading = false
                             }
                         },
-                        onAssignBucket = { pkg, bucket ->
-                            val currentRules = status?.apps ?: CoreFlowManager.AppRules()
+                        onToggleExcluded = { pkg, excluded ->
+                            val currentExcluded = status?.apps?.excluded.orEmpty()
                             scope.launch {
-                                CoreFlowManager.setAppRule(pkg, bucket, currentRules)
+                                CoreFlowManager.setAppExcluded(pkg, excluded, currentExcluded)
                                     .onSuccess {
                                         refreshStatus()
-                                        snackbarHostState.showSnackbar("$pkg -> ${bucket.label}")
+                                        snackbarHostState.showSnackbar(
+                                            if (excluded) "$pkg -> Stock OEM (Excluded)" else "$pkg -> Autonomous",
+                                        )
                                     }
                                     .onFailure { err ->
-                                        snackbarHostState.showSnackbar(err.message ?: "Failed to save app rule")
+                                        snackbarHostState.showSnackbar(err.message ?: "Failed to update exclusion")
                                     }
                             }
                         },

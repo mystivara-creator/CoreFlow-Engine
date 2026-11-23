@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief CFAE System Framework / CoreFlow Engine v6.0.0-R — Sovereign Rebuild Daemon.
+ * @brief CFAE System Framework / CoreFlow Engine v6.1.0-R — Unified Zero-Profile Autonomous Daemon.
  *
  * Pillars:
  *  1. Sovereign Tamper Guard (0444 lease lock, Reclaim-First + 3x/5s circuit breaker, IPC broadcast)
@@ -72,7 +72,7 @@ namespace {
 
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
-constexpr char kVersion[] = "6.0.0-R";
+constexpr char kVersion[] = "6.1.0-R";
 
 void emit_log(bool is_error, const std::string& message) {
     if (is_error) std::cerr << message << "\n";
@@ -642,6 +642,8 @@ struct RuntimeStatusData {
     double cpu_util_pct{0.0};
     double render_pressure{0.0};
     double thermal_velocity_cpm{0.0};
+    // Observe-only online RC chassis model (see rust/src/thermal_model.rs). Never actuates.
+    engine::ThermalModelResult thermal_model{};
     std::optional<double> gpu_busy_pct{};
     std::optional<double> cpu_psi{};
     std::optional<double> mem_psi{};
@@ -693,8 +695,55 @@ struct RuntimeStatusData {
     double ai_jank_risk{0.0};
     std::string ai_workload_class{"balanced"};
     std::string ai_backend{"embedded-rls-mlp"};
+    // Unified Zero-Profile Autonomous Engine telemetry
+    bool low_battery_eco{false};
+    std::string autonomous_regime{"idle_cool"};
+    std::vector<v6::AppDnaEntry> app_dna_entries{};
     std::vector<HistoryPoint> history{};
 };
+
+bool compute_low_battery_eco(const BatteryPowerTelemetry& b) noexcept {
+    return !b.charging && b.battery_capacity_pct > 0 && b.battery_capacity_pct <= 20;
+}
+
+// Chassis (battery/skin node) temperature the user wants sustained; used only to report the
+// sustainable-power budget from the identified RC model. Observe-only until validated on device.
+constexpr double kChassisTargetCelsius = 38.0;
+
+std::string compute_autonomous_regime(const RuntimeStatusData& s) {
+    if (s.config.inspection_mode) return "paused_oem";
+    if (s.thermal_emergency) return "thermal_emergency";
+    if (s.thermal_guard) return "thermal_guard";
+    if (s.boot_settle_active) return "boot_settle";
+    if (s.ctx.mode == ContextMode::Excluded) return "excluded_oem";
+    if (s.ctx.mode == ContextMode::ScreenOff) return "screen_off";
+    if (s.ctx.mode == ContextMode::Gaming) return "gaming_3d";
+    if (s.ctx.mode == ContextMode::LaunchBurst) return "launch_burst";
+    if (s.low_battery_eco) return "low_battery_eco";
+    if ((std::isfinite(s.battery_temp) && s.battery_temp >= 38.5) ||
+        s.capacity_scale < 0.88) {
+        return "thermal_pacing";
+    }
+    if (s.ctx.mode == ContextMode::Interactive) return "interactive_scroll";
+    return "idle_cool";
+}
+
+std::string serialize_app_dna_entries(const std::vector<v6::AppDnaEntry>& entries) {
+    std::ostringstream out;
+    out << '[';
+    const size_t limit = std::min<size_t>(entries.size(), 48U);
+    for (size_t i = 0; i < limit; ++i) {
+        if (i != 0U) out << ',';
+        const auto& e = entries[i];
+        out << "{\"pkg\":" << json_str(e.package_name)
+            << ",\"uclampBias\":" << safe_num(e.uclamp_bias, 1.0)
+            << ",\"efficiencyWeight\":" << safe_num(e.efficiency_weight, 1.0)
+            << ",\"samples\":" << e.sample_count
+            << ",\"launches\":" << e.launch_count << '}';
+    }
+    out << ']';
+    return out.str();
+}
 
 std::string serialize_string_array(const std::vector<std::string>& items) {
     std::ostringstream out;
@@ -856,6 +905,8 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"pid\":" << s.pid
         << ",\"profile\":" << json_str(s.config.profile)
         << ",\"effectiveProfile\":" << json_str(ContextEngine::profile_name(s.ctx.effective_profile))
+        << ",\"autonomousRegime\":" << json_str(s.autonomous_regime.empty() ? compute_autonomous_regime(s) : s.autonomous_regime)
+        << ",\"lowBatteryEco\":" << (s.low_battery_eco ? "true" : "false")
         << ",\"inspectionMode\":" << (s.config.inspection_mode ? "true" : "false")
         << ",\"mode\":" << json_str(s.thermal_emergency ? "THERMAL_EMERGENCY"
                                     : s.thermal_guard ? "THERMAL_GUARD"
@@ -873,6 +924,18 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"batteryTempCelsius\":" << (std::isfinite(s.battery_temp) && s.battery_temp >= 0.0 ? std::to_string(s.battery_temp) : "null")
         << ",\"thermalPressure\":" << safe_num(s.thermal_pressure)
         << ",\"thermalVelocityCpm\":" << safe_num(s.thermal_velocity_cpm)
+        << ",\"thermalModel\":{"
+        << "\"valid\":" << (s.thermal_model.valid ? "true" : "false")
+        << ",\"confidence\":" << s.thermal_model.confidence
+        << ",\"steps\":" << s.thermal_model.steps
+        << ",\"targetCelsius\":" << safe_num(kChassisTargetCelsius)
+        << ",\"rThetaCPerW\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.r_theta_c_per_w)) : "null")
+        << ",\"tauSec\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.tau_s)) : "null")
+        << ",\"ambientCelsius\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.ambient_c)) : "null")
+        << ",\"sustainablePowerMw\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.sustainable_w * 1000.0)) : "null")
+        << ",\"avgPowerMw\":" << safe_num(s.thermal_model.avg_power_w * 1000.0)
+        << ",\"headroomMw\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.headroom_w * 1000.0)) : "null")
+        << "}"
         << ",\"thermalSource\":" << json_str(s.thermal_source)
         << ",\"cpuUtilPct\":" << safe_num(s.cpu_util_pct)
         << ",\"renderPressure\":" << safe_num(s.render_pressure)
@@ -924,6 +987,7 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"battery\":" << serialize_string_array(battery_list)
         << ",\"excluded\":" << serialize_string_array(excluded_list)
         << "}"
+        << ",\"appDnaEntries\":" << serialize_app_dna_entries(s.app_dna_entries)
         << ",\"actuators\":{"
         << "\"perThreadUclampSupported\":" << (s.thread_stats.supported ? "true" : "false")
         << ",\"boostedTids\":" << s.thread_stats.active_boosted_tids
@@ -935,6 +999,8 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"prereadFiles\":" << s.storage_stats.preread_files_total
         << ",\"prereadBytes\":" << s.storage_stats.preread_bytes_total
         << ",\"managedEnvelopeNodes\":" << s.envelope_stats.managed_nodes
+        << ",\"easTopAppCapPct\":" << s.envelope_stats.eas_top_app_cap_pct
+        << ",\"easCappedGroups\":" << s.envelope_stats.eas_capped_groups
         << ",\"semanticKnobsDiscovered\":" << s.semantic_stats.discovered_total
         << ",\"semanticKnobsActive\":" << s.semantic_stats.active_managed
         << ",\"memoryBusKnobs\":" << s.semantic_stats.memory_bus_knobs
@@ -1070,6 +1136,8 @@ std::string build_readonly_status_json() {
     data.mem_psi = probe.read_psi_avg10("memory");
     data.io_psi = probe.read_psi_avg10("io");
     data.battery = HardwareLongevityManager::probe_battery_telemetry();
+    data.low_battery_eco = compute_low_battery_eco(data.battery);
+    data.autonomous_regime = compute_autonomous_regime(data);
     data.baseline_nodes = count_journal_entries();
     data.recovery_pending = !journal_clear();
     data.conflicting_modules_json = read_conflicting_modules_json();
@@ -1611,14 +1679,19 @@ int main(int argc, char* argv[]) {
     live_status.topo = topo;
     live_status.thread_stats = thread_scheduler.stats();
     live_status.battery = longevity.sample_battery_telemetry();
+    live_status.low_battery_eco = compute_low_battery_eco(live_status.battery);
     live_status.frame_pacing_available = frame_pacing.supported();
     live_status.app_dna_learned = app_dna.learned_count();
     live_status.app_dna_flush_count = app_dna.flush_count();
+    live_status.app_dna_entries = app_dna.snapshot_entries();
     live_status.ai_backend = std::string(neural.last_prediction().backend);
     live_status.conflicting_modules_json = read_conflicting_modules_json();
     live_status.session.started_steady_ms = steady_now_ms();
 
-    // Pillar 1: Sovereign Tamper Guard event listener (DecisionJournal + rate-limited IPC broadcast)
+    // Pillar 1: Sovereign Tamper Guard event listener (DecisionJournal + circuit-breaker IPC broadcast)
+    // One-off writes from OEM system daemons (e.g. perf-hal during app launch) are logged quietly in
+    // DecisionJournal without spamming Android notifications; IPC alerts fire only on repeated
+    // write-loop contention (circuit breaker open).
     std::unordered_map<std::string, uint64_t> last_tamper_ipc_ms;
     coordinator.set_tamper_listener([&](const TamperEvent& ev) {
         const auto slash = ev.node_path.find_last_of('/');
@@ -1627,15 +1700,18 @@ int main(int argc, char* argv[]) {
             epoch_now_ms(),
             "sovereign",
             ev.circuit_open ? "TamperCircuitOpen" : "TamperBlocked",
-            "Intervensi eksternal pada " + leaf + " (dicoba=" + ev.observed_value +
-                ", ditegakkan=" + ev.expected_value + ")" +
-                (ev.circuit_open ? " · Circuit breaker 30s aktif" : " · Direbut balik & dikunci 0444"),
+            "Perubahan eksternal pada " + leaf + " (nilai=" + ev.observed_value +
+                ", target=" + ev.expected_value + ")" +
+                (ev.circuit_open ? " - Circuit breaker 30d aktif" : " - Dicatat & dikembalikan"),
             ev.circuit_open ? "quarantined" : (ev.reclaimed ? "reclaimed" : "failed"),
             live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
-        emit_log(true, "[CFAE][SovereignGuard] External tamper on " + ev.node_path +
+        emit_log(true, "[CFAE][SovereignGuard] External write on " + ev.node_path +
                  " (observed=" + ev.observed_value + ", enforced=" + ev.expected_value +
                  ", reclaimed=" + (ev.reclaimed ? "yes" : "no") +
                  ", breaker=" + (ev.circuit_open ? "OPEN" : "closed") + ")");
+        if (!ev.circuit_open) {
+            return;
+        }
         const uint64_t now_ipc = steady_now_ms();
         const auto it = last_tamper_ipc_ms.find(ev.node_path);
         if (it == last_tamper_ipc_ms.end() || now_ipc >= it->second + 30'000ULL) {
@@ -1664,6 +1740,7 @@ int main(int argc, char* argv[]) {
     live_status.boot_settle_duration_sec = boot_dec.settle_duration_sec;
     live_status.boot_settle_exit_reason = boot_dec.exit_reason;
     live_status.boot_ramp_progress = boot_dec.ramp_alpha;
+    live_status.autonomous_regime = compute_autonomous_regime(live_status);
     bool prev_bypass_active = false;
     size_t prev_contended_count = 0U;
     ForegroundAppInfo last_fg{};
@@ -1672,8 +1749,8 @@ int main(int argc, char* argv[]) {
     decision_journal.record(
         epoch_now_ms(), "context", "Boot",
         boot_dec.boot_settle_active
-            ? ("CFAE System Framework v6.0.0-R initialized in BOOT_SETTLE sanctuary (profile=" + config.profile + ")")
-            : ("CFAE System Framework v6.0.0-R initialized (profile=" + config.profile + ")"),
+            ? "CFAE System Framework v6.1.0-R initialized in BOOT_SETTLE sanctuary (Zero-Profile Autonomous)"
+            : "CFAE System Framework v6.1.0-R initialized (Zero-Profile Autonomous)",
         "verified", -1.0, 0.0, 1.0);
     live_status.episodes = decision_journal.recent(16U);
     uint64_t last_sysfs_active_ms = 0U;
@@ -1718,6 +1795,8 @@ int main(int argc, char* argv[]) {
     };
 
     auto thermal_trend = engine::new_thermal_trend_analyzer();
+    auto thermal_model = engine::new_thermal_model_estimator();
+    double thermal_trend_ewma_c = -1.0;
     auto preloader = engine::new_app_preloader();
     std::unordered_map<uint64_t, std::string> preloader_pkg_map;
     load_preloader_state(*preloader, preloader_pkg_map);
@@ -1790,6 +1869,9 @@ int main(int argc, char* argv[]) {
         t.cpu_psi = live_status.cpu_psi.value_or(0.0);
         t.memory = mem;
         t.io_supply_boost = symbiotic_plan.io_supply_boost || symbiotic_plan.boost_gpu_memory_supply;
+        t.capacity_scale = live_status.capacity_scale;
+        t.thermal_guard = live_status.thermal_guard;
+        t.low_battery_eco = live_status.low_battery_eco;
         return t;
     };
     const auto build_symbiotic_hints = [&]() noexcept {
@@ -1818,6 +1900,8 @@ int main(int argc, char* argv[]) {
         e.passive_media_only = is_passive_media_only(live_status.ctx);
         e.scheduler_responsiveness_scale = symbiotic_plan.scheduler_responsiveness_scale;
         e.thermal_stepdown_lead = symbiotic_plan.thermal_stepdown_lead;
+        e.jank_ratio = live_status.jank_ratio;
+        e.low_battery_eco = live_status.low_battery_eco;
         return e;
     };
 
@@ -1879,7 +1963,10 @@ int main(int argc, char* argv[]) {
                 sig.has_game_thread = last_fg.has_game_thread;
                 sig.is_camera_app = config.enable_camera_boost && last_fg.is_camera_app;
                 sig.has_media_thread = last_fg.has_media_thread;
+                sig.refresh_hz = topo.refresh_hz;
+                sig.low_battery_eco = live_status.low_battery_eco;
                 live_status.ctx = context_engine.evaluate(sig);
+                live_status.autonomous_regime = compute_autonomous_regime(live_status);
                 const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
                 const auto chain_tids = build_fg_chain_tids(last_fg, live_status.ctx.camera_boost_active);
                 thread_scheduler.apply(
@@ -1983,6 +2070,7 @@ int main(int argc, char* argv[]) {
                     live_status.semantic_knob_leaves = collect_semantic_leaves();
                     live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
                     live_status.ctx.effective_profile = context_engine.profile();
+                    live_status.autonomous_regime = compute_autonomous_regime(live_status);
                     const uint32_t ms = std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u);
                     itimerspec ts{};
                     ts.it_interval.tv_sec = ms / 1000;
@@ -1991,12 +2079,12 @@ int main(int argc, char* argv[]) {
                     ts.it_value.tv_sec = 0;
                     ts.it_value.tv_nsec = 50'000'000L;
                     if (thermal_timer_fd >= 0) (void)::timerfd_settime(thermal_timer_fd, 0, &ts, nullptr);
-                    emit_log(false, "[CoreFlow] Configuration reloaded (profile=" + config.profile +
-                             ", paused=" + (config.inspection_mode ? "yes" : "no") + ").");
+                    emit_log(false, std::string("[CoreFlow] Configuration reloaded (mode=autonomous, paused=") +
+                             (config.inspection_mode ? "yes" : "no") + ").");
                     decision_journal.record(
                         epoch_now_ms(), "context", "ConfigReload",
                         config.inspection_mode ? "Paused (OEM A/B inspection mode)"
-                                               : ("Profile=" + config.profile +
+                                               : (std::string("Zero-Profile Autonomous") +
                                                   (config.bypass_charging ? " · Bypass ON" : "")),
                         "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
                     live_status.episodes = decision_journal.recent(16U);
@@ -2038,11 +2126,14 @@ int main(int argc, char* argv[]) {
         sig.has_game_thread = fg.has_game_thread;
         sig.is_camera_app = config.enable_camera_boost && fg.is_camera_app;
         sig.has_media_thread = fg.has_media_thread;
+        sig.refresh_hz = topo.refresh_hz;
+        sig.low_battery_eco = live_status.low_battery_eco;
         const ContextMode prev_mode = live_status.ctx.mode;
         live_status.ctx = context_engine.evaluate(sig);
+        live_status.autonomous_regime = compute_autonomous_regime(live_status);
         const bool is_launcher = ContextEngine::is_system_launcher_package(fg.package_name);
         if (boot_dec.allow_learning && !is_launcher && live_status.ctx.newly_launched_app &&
-            (fg.has_render_thread || live_status.ctx.app_forced_gaming)) {
+            (fg.has_render_thread || fg.has_game_thread)) {
             ++live_status.session.launch_bursts;
             if (config.enable_predictive_preload) {
                 record_preloader_launch(fg.package_name);
@@ -2240,6 +2331,9 @@ int main(int argc, char* argv[]) {
 
         const auto record_history_and_publish = [&]() {
             live_status.battery = longevity.sample_battery_telemetry();
+            live_status.low_battery_eco = compute_low_battery_eco(live_status.battery);
+            live_status.autonomous_regime = compute_autonomous_regime(live_status);
+            live_status.app_dna_entries = app_dna.snapshot_entries();
             live_status.contended_paths = collect_contended_paths();
             live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
             if (live_status.contended_paths.size() > prev_contended_count) {
@@ -2300,14 +2394,48 @@ int main(int argc, char* argv[]) {
                 live_status.history.erase(live_status.history.begin());
             }
             // Compute jitter-free thermal rise/cool velocity (°C/min) via Rust OLS ring buffer
-            // using monotonic steady_clock timestamps so NTP/NITZ wall-clock jumps never skew the slope.
-            const double die_trip_c = std::clamp(
-                static_cast<double>(config.thermal_trip_celsius) + 30.0, 72.0, 82.0);
+            // using monotonic steady_clock timestamps and an EWMA-damped composite chassis+die
+            // temperature (tau = 15s) so 1-second CPU die bursts never trigger fake ±25°/m swings.
+            double raw_trend_c = -1.0;
+            const double slow_chassis_c =
+                (std::isfinite(batt_temp) && batt_temp > 0.0f) ? static_cast<double>(batt_temp)
+                : (std::isfinite(skin_temp) && skin_temp > 0.0) ? skin_temp
+                : -1.0;
+            if (slow_chassis_c > 0.0 && std::isfinite(soc_temp) && soc_temp > 0.0f) {
+                raw_trend_c = 0.65 * slow_chassis_c + 0.35 * static_cast<double>(soc_temp);
+            } else if (slow_chassis_c > 0.0) {
+                raw_trend_c = slow_chassis_c;
+            } else if (std::isfinite(soc_temp) && soc_temp > 0.0f) {
+                raw_trend_c = static_cast<double>(soc_temp);
+            }
+            if (raw_trend_c > 0.0 && std::isfinite(raw_trend_c)) {
+                if (thermal_trend_ewma_c <= 0.0 || !std::isfinite(thermal_trend_ewma_c)) {
+                    thermal_trend_ewma_c = raw_trend_c;
+                } else {
+                    const double alpha = 1.0 - std::exp(-std::clamp(elapsed, 0.1, 30.0) / 15.0);
+                    thermal_trend_ewma_c += alpha * (raw_trend_c - thermal_trend_ewma_c);
+                }
+            }
+            const double trip_c = slow_chassis_c > 0.0
+                ? std::clamp(static_cast<double>(config.thermal_trip_celsius), 40.0, 52.0)
+                : std::clamp(static_cast<double>(config.thermal_trip_celsius) + 30.0, 72.0, 82.0);
             const auto trend = thermal_trend->push_sample(
                 now_ms,
-                static_cast<double>(soc_temp),
-                die_trip_c);
+                thermal_trend_ewma_c,
+                trip_c);
             live_status.thermal_velocity_cpm = trend.velocity_cpm;
+            // Observe-only RC chassis identification: total system power (discharging only) vs the
+            // slow chassis node. Charging/unknown power poisons the step instead of fabricating data.
+            {
+                const bool power_ok = live_status.battery.available && !live_status.battery.charging &&
+                                      std::isfinite(live_status.battery.power_mw) &&
+                                      live_status.battery.power_mw > 0.0;
+                const double model_temp = slow_chassis_c > 0.0 ? slow_chassis_c : -1.0;
+                live_status.thermal_model = thermal_model->push_sample(
+                    now_ms, model_temp,
+                    power_ok ? live_status.battery.power_mw / 1000.0 : -1.0,
+                    kChassisTargetCelsius);
+            }
             (void)write_status_snapshot(build_status_json(live_status));
         };
 
@@ -2549,11 +2677,14 @@ int main(int argc, char* argv[]) {
         sig.has_game_thread = !screen_off && last_fg.has_game_thread;
         sig.is_camera_app = !screen_off && config.enable_camera_boost && last_fg.is_camera_app;
         sig.has_media_thread = !screen_off && last_fg.has_media_thread;
+        sig.refresh_hz = topo.refresh_hz;
+        sig.low_battery_eco = live_status.low_battery_eco;
         const ContextMode prev_mode = live_status.ctx.mode;
         live_status.ctx = context_engine.evaluate(sig);
+        live_status.autonomous_regime = compute_autonomous_regime(live_status);
         const bool fg_is_launcher = ContextEngine::is_system_launcher_package(last_fg.package_name);
         if (boot_dec.allow_learning && !fg_is_launcher && live_status.ctx.newly_launched_app &&
-            (last_fg.has_render_thread || live_status.ctx.app_forced_gaming)) {
+            (last_fg.has_render_thread || last_fg.has_game_thread)) {
             ++live_status.session.launch_bursts;
             if (config.enable_predictive_preload) {
                 record_preloader_launch(last_fg.package_name);
@@ -2756,8 +2887,8 @@ int main(int argc, char* argv[]) {
     });
 
     (void)write_status_snapshot(build_status_json(live_status));
-    emit_log(false, "[CFAE] CoreFlow Engine v6.0.0-R Sovereign Daemon started (profile=" + config.profile +
-             ", storage=" + HardwareProbe::storage_type_name(topo.primary_storage) +
+    emit_log(false, "[CFAE] CoreFlow Engine v6.1.0-R Unified Autonomous Daemon started (mode=autonomous" +
+             std::string(", storage=") + HardwareProbe::storage_type_name(topo.primary_storage) +
              ", hz=" + std::to_string(topo.refresh_hz) +
              ", framePacing=" + (frame_pacing.supported() ? "yes" : "no") +
              ", appDna=" + std::to_string(app_dna.learned_count()) +
@@ -2786,6 +2917,6 @@ int main(int argc, char* argv[]) {
     live_status.locked_nodes = baseline.locked_node_count();
     (void)write_status_snapshot(build_status_json(live_status));
     clear_pid(pid_lock);
-    emit_log(false, "[CFAE] CoreFlow Engine v6.0.0-R Sovereign Daemon stopped; OEM baseline restored.");
+    emit_log(false, "[CFAE] CoreFlow Engine v6.1.0-R Unified Autonomous Daemon stopped; OEM baseline restored.");
     return 0;
 }

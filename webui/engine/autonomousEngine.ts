@@ -1,9 +1,17 @@
 /**
- * CFAE System Framework / CoreFlow Engine v6.0.0-R — Sovereign Rebuild WebUI Data Contract, Validators & Preview Simulator.
+ * CFAE System Framework / CoreFlow Engine v6.1.0-R — Unified Zero-Profile Autonomous WebUI Data Contract, Validators & Preview Simulator.
  */
 
-export type PerformanceProfile = 'balanced' | 'smoothness' | 'battery' | 'gaming';
+export type PerformanceProfile = 'autonomous' | 'balanced' | 'smoothness' | 'battery' | 'gaming';
 export type AppRuleCategory = 'default' | 'gaming' | 'smoothness' | 'battery' | 'excluded';
+
+export interface AppDnaEntrySummary {
+  pkg: string;
+  uclampBias: number;
+  efficiencyWeight: number;
+  samples: number;
+  launches: number;
+}
 
 export type ContextModeName =
   | 'BOOT_SETTLE'
@@ -84,6 +92,8 @@ export interface CoreFlowActuatorStats {
   prereadFiles: number;
   prereadBytes: number;
   managedEnvelopeNodes: number;
+  easTopAppCapPct: number;
+  easCappedGroups: number;
   semanticKnobsDiscovered: number;
   semanticKnobsActive: number;
   memoryBusKnobs: number;
@@ -184,6 +194,8 @@ export interface CoreFlowV5Status {
   pid: number;
   profile: PerformanceProfile;
   effectiveProfile: PerformanceProfile;
+  autonomousRegime: string;
+  lowBatteryEco: boolean;
   inspectionMode: boolean;
   mode: ContextModeName;
   bootSettleActive: boolean;
@@ -216,6 +228,7 @@ export interface CoreFlowV5Status {
   conflictingModules: string[];
   powerConfig: CoreFlowPowerConfig;
   apps: CoreFlowAppRules;
+  appDnaEntries: AppDnaEntrySummary[];
   actuators: CoreFlowActuatorStats;
   hardware: CoreFlowHardwareInfo;
   memory: MemorySnapshot;
@@ -242,14 +255,49 @@ export interface PillarReadinessItem {
   detail: string;
 }
 
+export function formatAutonomousRegime(regime: string, isId: boolean): string {
+  switch (regime) {
+    case 'paused_oem':
+      return isId ? 'Dijeda (OEM A/B)' : 'Paused (OEM A/B)';
+    case 'thermal_emergency':
+      return isId ? 'Darurat Termal' : 'Thermal Emergency';
+    case 'thermal_guard':
+      return 'Thermal Guard';
+    case 'boot_settle':
+      return isId ? 'Tenang Pasca-Boot' : 'Boot Settle';
+    case 'excluded_oem':
+      return isId ? 'Stock OEM (Dikecualikan)' : 'Stock OEM (Excluded)';
+    case 'screen_off':
+      return isId ? 'Layar Mati' : 'Screen Off';
+    case 'gaming_3d':
+      return isId ? '3D Gaming Otomatis' : 'Auto 3D Gaming';
+    case 'launch_burst':
+      return 'Launch Burst';
+    case 'low_battery_eco':
+      return isId ? 'Hemat Baterai Otomatis (≤20%)' : 'Low-Battery Auto-Eco (≤20%)';
+    case 'thermal_pacing':
+    case 'cool_glide':
+      return isId ? 'Kendali Termal EAS' : 'EAS Thermal Pacing';
+    case 'interactive_scroll':
+      return isId ? 'Scroll Responsif' : 'Interactive Scroll';
+    default:
+      return isId ? 'Tenang & Dingin' : 'Idle Cool';
+  }
+}
+
 export const PROFILE_META: Record<
   PerformanceProfile,
   { label: string; tagline: string; taglineId: string }
 > = {
+  autonomous: {
+    label: 'Autonomous',
+    tagline: '100% Zero-Profile unified real-time engine',
+    taglineId: 'Mesin otonom murni 100% tanpa profil manual',
+  },
   balanced: {
-    label: 'Balanced',
-    tagline: 'Smart daily speed, 120Hz fluidity & cool battery',
-    taglineId: 'Seimbang: mulus 120Hz, buka cepat & baterai adem',
+    label: 'Autonomous',
+    tagline: 'Smart daily speed, fluidity & cool battery',
+    taglineId: 'Seimbang: mulus, buka cepat & baterai adem',
   },
   smoothness: {
     label: 'Smoothness',
@@ -257,12 +305,12 @@ export const PROFILE_META: Record<
     taglineId: 'Floor UI & SurfaceFlinger lebih tinggi untuk scroll mulus',
   },
   battery: {
-    label: 'Battery',
+    label: 'Auto-Eco',
     tagline: 'Lean launch burst & rapid core sleep for max SOT',
     taglineId: 'Efisiensi maksimum & suhu dingin untuk daya tahan harian',
   },
   gaming: {
-    label: 'Gaming',
+    label: 'Auto 3D Gaming',
     tagline: 'Sustained frame pacing, I/O isolation & PID thermal guard',
     taglineId: 'Frame stabil, isolasi background & penjaga termal PID',
   },
@@ -438,7 +486,7 @@ const APP_LIST_KEYS = new Set(['gaming_apps', 'smoothness_apps', 'battery_apps',
 export function buildSafeSetConfigArg(key: string, value: string): string | null {
   if (!ALLOWED_SET_CONFIG_KEYS.has(key)) return null;
   if (key === 'profile') {
-    if (!['balanced', 'smoothness', 'battery', 'gaming'].includes(value)) return null;
+    if (!['autonomous', 'balanced', 'smoothness', 'battery', 'gaming'].includes(value)) return null;
   } else if (key === 'charge_limit_pct') {
     if (!/^\d{1,3}$/.test(value)) return null;
     const num = Number(value);
@@ -456,7 +504,7 @@ export function buildSafeSetConfigArg(key: string, value: string): string | null
 }
 
 const parseProfile = (raw: unknown): PerformanceProfile =>
-  raw === 'smoothness' || raw === 'battery' || raw === 'gaming' ? raw : 'balanced';
+  raw === 'autonomous' || raw === 'smoothness' || raw === 'battery' || raw === 'gaming' ? raw : 'autonomous';
 
 export function parseV5Status(raw: unknown): CoreFlowV5Status {
   if (!isRecord(raw)) throw new Error('Invalid status JSON root');
@@ -490,13 +538,18 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
   const clustersRaw = Array.isArray(raw.cpuClusters) ? raw.cpuClusters : [];
   const zonesRaw = Array.isArray(raw.thermalZones) ? raw.thermalZones : [];
   const episodesRaw = Array.isArray(raw.episodes) ? raw.episodes : [];
+  const appDnaRaw = Array.isArray(raw.appDnaEntries) ? raw.appDnaEntries : [];
 
   return {
-    version: typeof raw.version === 'string' ? raw.version : '6.0.0-R',
+    version: typeof raw.version === 'string' ? raw.version : '6.1.0-R',
     running: raw.running,
     pid: raw.pid,
     profile,
     effectiveProfile,
+    autonomousRegime: typeof raw.autonomousRegime === 'string' && raw.autonomousRegime.length > 0
+      ? raw.autonomousRegime
+      : 'idle_cool',
+    lowBatteryEco: raw.lowBatteryEco === true,
     inspectionMode: raw.inspectionMode === true,
     mode: (raw.mode as ContextModeName) ?? 'EFFICIENCY',
     bootSettleActive: raw.bootSettleActive === true,
@@ -579,6 +632,15 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
       battery: Array.isArray(apps.battery) ? apps.battery.filter((x): x is string => typeof x === 'string') : [],
       excluded: Array.isArray(apps.excluded) ? apps.excluded.filter((x): x is string => typeof x === 'string') : [],
     },
+    appDnaEntries: appDnaRaw
+      .filter((d): d is Record<string, unknown> => isRecord(d) && typeof d.pkg === 'string' && d.pkg.length > 0)
+      .map((d) => ({
+        pkg: d.pkg as string,
+        uclampBias: isFiniteNum(d.uclampBias) ? d.uclampBias : 1.0,
+        efficiencyWeight: isFiniteNum(d.efficiencyWeight) ? d.efficiencyWeight : 1.0,
+        samples: isFiniteNum(d.samples) ? d.samples : 0,
+        launches: isFiniteNum(d.launches) ? d.launches : 0,
+      })),
     actuators: {
       perThreadUclampSupported: actuators.perThreadUclampSupported === true,
       boostedTids: isFiniteNum(actuators.boostedTids) ? actuators.boostedTids : 0,
@@ -590,6 +652,8 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
       prereadFiles: isFiniteNum(actuators.prereadFiles) ? actuators.prereadFiles : 0,
       prereadBytes: isFiniteNum(actuators.prereadBytes) ? actuators.prereadBytes : 0,
       managedEnvelopeNodes: isFiniteNum(actuators.managedEnvelopeNodes) ? actuators.managedEnvelopeNodes : 0,
+      easTopAppCapPct: isFiniteNum(actuators.easTopAppCapPct) ? Math.min(100, Math.max(20, Math.round(actuators.easTopAppCapPct))) : 100,
+      easCappedGroups: isFiniteNum(actuators.easCappedGroups) ? Math.max(0, Math.round(actuators.easCappedGroups)) : 0,
       semanticKnobsDiscovered: isFiniteNum(actuators.semanticKnobsDiscovered) ? actuators.semanticKnobsDiscovered : 0,
       semanticKnobsActive: isFiniteNum(actuators.semanticKnobsActive) ? actuators.semanticKnobsActive : 0,
       memoryBusKnobs: isFiniteNum(actuators.memoryBusKnobs) ? actuators.memoryBusKnobs : 0,
@@ -717,11 +781,13 @@ export const PREVIEW_INSTALLED_PACKAGES: string[] = [
 export function createPreviewStatus(): CoreFlowV5Status {
   const now = Date.now();
   return {
-    version: '6.0.0-R',
+    version: '6.1.0-R',
     running: true,
     pid: 1428,
-    profile: 'balanced',
-    effectiveProfile: 'balanced',
+    profile: 'autonomous',
+    effectiveProfile: 'autonomous',
+    autonomousRegime: 'interactive_scroll',
+    lowBatteryEco: false,
     inspectionMode: false,
     mode: 'INTERACTIVE',
     bootSettleActive: false,
@@ -794,11 +860,16 @@ export function createPreviewStatus(): CoreFlowV5Status {
       chargeLimitPct: 85,
     },
     apps: {
-      gaming: ['com.miHoYo.GenshinImpact'],
-      smoothness: ['com.instagram.android'],
-      battery: ['com.whatsapp'],
+      gaming: [],
+      smoothness: [],
+      battery: [],
       excluded: ['com.android.camera'],
     },
+    appDnaEntries: [
+      { pkg: 'com.miHoYo.GenshinImpact', uclampBias: 1.12, efficiencyWeight: 0.96, samples: 18, launches: 4 },
+      { pkg: 'com.instagram.android', uclampBias: 0.98, efficiencyWeight: 1.05, samples: 24, launches: 11 },
+      { pkg: 'com.android.chrome', uclampBias: 0.94, efficiencyWeight: 1.04, samples: 15, launches: 7 },
+    ],
     actuators: {
       perThreadUclampSupported: true,
       boostedTids: 4,
@@ -810,6 +881,8 @@ export function createPreviewStatus(): CoreFlowV5Status {
       prereadFiles: 18,
       prereadBytes: 42 * 1024 * 1024,
       managedEnvelopeNodes: 8,
+      easTopAppCapPct: 100,
+      easCappedGroups: 0,
       semanticKnobsDiscovered: 25,
       semanticKnobsActive: 6,
       memoryBusKnobs: 2,
@@ -926,11 +999,23 @@ export function stepPreviewStatus(prev: CoreFlowV5Status, tick: number): CoreFlo
   const pressure = Number((nextMode === 'GAMING' ? 62 : nextMode === 'LAUNCH_BURST' ? 48 : 34).toFixed(1));
   const scale = nextMode === 'GAMING' ? 0.91 : 0.98;
   const cpu = Number((nextMode === 'GAMING' ? 54 : nextMode === 'LAUNCH_BURST' ? 42 : 16).toFixed(1));
+  const nextRegime = prev.inspectionMode
+    ? 'paused_oem'
+    : nextMode === 'GAMING'
+      ? 'gaming_3d'
+      : nextMode === 'LAUNCH_BURST'
+        ? 'launch_burst'
+        : scale < 0.88
+          ? 'thermal_pacing'
+          : nextMode === 'INTERACTIVE'
+            ? 'interactive_scroll'
+            : 'idle_cool';
   const nextPoint: HistorySample = { ts: Date.now(), temp, pressure, cpu, scale, mode: nextMode };
   return {
     ...prev,
     mode: nextMode,
-    effectiveProfile: nextMode === 'GAMING' ? 'gaming' : prev.profile,
+    effectiveProfile: 'autonomous',
+    autonomousRegime: nextRegime,
     foregroundPackage:
       nextMode === 'GAMING' ? 'com.miHoYo.GenshinImpact' :
       nextMode === 'LAUNCH_BURST' ? 'com.instagram.android' : 'com.android.chrome',

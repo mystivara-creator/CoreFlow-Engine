@@ -179,11 +179,85 @@ int main() {
     assert(act.stats().managed_nodes == 0U);
     assert(read_file(hispeed) == "1190000");
 
-    act.apply(topo, ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, {}, 44000);
+    // 8. Multi-Cgroup EAS Thermal-Power Pacing (top-app, foreground, system-background):
+    //    Reproduces warm PARROTPRO (battery 40C, scale=0.73), verifying real multi-cgroup capping,
+    //    LaunchBurst/jank instant lift to OEM max, warm-calm capping with boosted-node rollback,
+    //    and clean Release-on-Calm once cool.
+    const fs::path ta_uclamp = root / "cg/top-app/cpu.uclamp.max";
+    const fs::path fg_uclamp = root / "cg/foreground/cpu.uclamp.max";
+    const fs::path sbg_uclamp = root / "cg/system-background/cpu.uclamp.max";
+    write_file(ta_uclamp, "max\n");
+    write_file(fg_uclamp, "max\n");
+    write_file(sbg_uclamp, "max\n");
+    topo.little_capacity = 384U;
+    topo.cgroups.top_app_uclamp_max_path = ta_uclamp.string();
+    topo.cgroups.foreground_uclamp_max_path = fg_uclamp.string();
+    topo.cgroups.system_background_uclamp_max_path = sbg_uclamp.string();
+    topo.cgroups.uclamp_uses_percent = true;
+
+    // 8a. Warm Interactive (scale=0.73, jank-free) -> all 3 cgroups capped smoothly below voltage knee
+    EnvelopeTelemetry warm_tel{10.0, 20.0, 0.20, false, 1.0, 0.0, 0.0, false};
+    act.apply(topo, ContextMode::Interactive, PerformanceProfile::Balanced, 0.73, false, true, warm_tel, 45000);
+    assert(read_file(ta_uclamp) != "max");
+    assert(read_file(fg_uclamp) != "max");
+    assert(read_file(sbg_uclamp) != "max");
+    const double warm_ta = std::stod(read_file(ta_uclamp));
+    const double warm_fg = std::stod(read_file(fg_uclamp));
+    const double warm_sbg = std::stod(read_file(sbg_uclamp));
+    assert(warm_ta >= 70.0 && warm_ta <= 82.0);
+    assert(warm_fg >= 65.0 && warm_fg <= 78.0);
+    assert(warm_sbg >= 48.0 && warm_sbg <= 58.0);
+    assert(act.stats().eas_top_app_cap_pct < 100U);
+    assert(act.stats().eas_capped_groups == 3U);
+
+    // 8b. Warm Efficiency (scale=0.73) -> boosted CPU governor nodes release to OEM baseline,
+    //     while EAS cgroups stay capped deeper to genuinely shed Watts while reading/idling
+    act.apply(topo, ContextMode::Efficiency, PerformanceProfile::Balanced, 0.73, false, true, warm_tel, 46000);
+    assert(read_file(hispeed) == "1190000");
+    const double calm_warm_ta = std::stod(read_file(ta_uclamp));
+    assert(calm_warm_ta < warm_ta && calm_warm_ta >= 55.0 && calm_warm_ta <= 68.0);
+    assert(act.stats().eas_capped_groups == 3U);
+
+    // 8c. LaunchBurst while warm (no thermal_guard) -> top-app lifts immediately to OEM "max"
+    act.apply(topo, ContextMode::LaunchBurst, PerformanceProfile::Balanced, 0.73, false, true, warm_tel, 47000);
+    assert(read_file(ta_uclamp) == "max");
+    assert(act.stats().eas_top_app_cap_pct == 100U);
+    assert(read_file(sbg_uclamp) != "max");
+
+    // 8d. Active jank >= 3% while warm Interactive -> top-app lifts immediately to OEM "max"
+    act.apply(topo, ContextMode::Interactive, PerformanceProfile::Balanced, 0.73, false, true, warm_tel, 48000);
+    assert(read_file(ta_uclamp) != "max");
+    EnvelopeTelemetry jank_tel = warm_tel;
+    jank_tel.jank_ratio = 0.05;
+    act.apply(topo, ContextMode::Interactive, PerformanceProfile::Balanced, 0.73, false, true, jank_tel, 49000);
+    assert(read_file(ta_uclamp) == "max");
+    assert(act.stats().eas_top_app_cap_pct == 100U);
+
+    // 9. WALT 0 us up_rate_limit_us cleanup: thermal_guard uses meaningful >= 3000 us rate-limit,
+    //    and clearing thermal_guard rolls up_rate_limit_us back to OEM "0" (no stale 909 us artifact)
+    topo.cpu_clusters[0].governor = "walt";
+    topo.cpu_clusters[0].baseline_up_rate_limit_us = 0U;
+    topo.cpu_clusters[0].has_baseline_up_rate_limit = true;
+    write_file(up_rate, "0\n");
+    baseline.reinitialize();
+    assert(baseline.recover_pending());
+    act.reset_contention();
+    act.apply(topo, ContextMode::Interactive, PerformanceProfile::Balanced, 0.65, true, true, warm_tel, 50000);
+    assert(std::stoull(read_file(up_rate)) >= 3000U);
+    act.apply(topo, ContextMode::Interactive, PerformanceProfile::Balanced, 0.75, false, true, warm_tel, 51000);
+    assert(read_file(up_rate) == "0");
+
+    // Final cool Release-on-Calm -> ALL nodes including EAS cgroups restore cleanly to OEM baseline
+    act.apply(topo, ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, {}, 52000);
+    assert(read_file(ta_uclamp) == "max");
+    assert(read_file(fg_uclamp) == "max");
+    assert(read_file(sbg_uclamp) == "max");
+    assert(act.stats().eas_top_app_cap_pct == 100U);
+    assert(act.stats().eas_capped_groups == 0U);
     assert(!baseline.has_active_mutations());
     assert(baseline.verify_and_persist_clear_state());
     (void)::unsetenv("COREFLOW_TEST_STATE_DIR");
     fs::remove_all(root);
-    std::cout << "v5/v6.0.0-R Coupled ThermalEnvelopeActuator tests passed\n";
+    std::cout << "v5/v6.1 Multi-Cgroup EAS ThermalEnvelopeActuator tests passed\n";
     return 0;
 }

@@ -33,10 +33,11 @@ object CoreFlowOnnxNlu {
     const val ANOMALY_INPUT_DIM = 8
 
     private val INTENT_ORDER = listOf(
-        CoreFlowDialogueEngine.DialogueIntent.CONTEXT_SHIFT_GAMING,
-        CoreFlowDialogueEngine.DialogueIntent.CONTEXT_SHIFT_BATTERY,
-        CoreFlowDialogueEngine.DialogueIntent.CONTEXT_SHIFT_SMOOTHNESS,
-        CoreFlowDialogueEngine.DialogueIntent.CONTEXT_SHIFT_BALANCED,
+        CoreFlowDialogueEngine.DialogueIntent.EXPLAIN_GAMING_AUTONOMY,
+        CoreFlowDialogueEngine.DialogueIntent.EXPLAIN_BATTERY_COOLING,
+        CoreFlowDialogueEngine.DialogueIntent.EXPLAIN_SMOOTHNESS_AUTONOMY,
+        CoreFlowDialogueEngine.DialogueIntent.PAUSE_AB_COMPARE,
+        CoreFlowDialogueEngine.DialogueIntent.RESUME_AUTONOMOUS,
         CoreFlowDialogueEngine.DialogueIntent.TAMPER_RESYNC,
         CoreFlowDialogueEngine.DialogueIntent.DIAGNOSE_STUTTER,
         CoreFlowDialogueEngine.DialogueIntent.DIAGNOSE_THERMAL_LOAD,

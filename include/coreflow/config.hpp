@@ -30,8 +30,8 @@ namespace coreflow {
 
 struct DaemonConfig {
     // [general]
-    std::string version{"6.0.0-R"};
-    std::string profile{"balanced"}; // balanced | smoothness | battery | gaming
+    std::string version{"6.1.0-R"};
+    std::string profile{"autonomous"}; // unified zero-profile autonomous (legacy names accepted safely)
     std::string log_level{"info"};
     bool zero_polling_mode{true};
     bool enable_cgroups_v2{true};
@@ -289,8 +289,9 @@ struct DaemonConfig {
             if (key == "version") cfg.version = val;
             else if (key == "profile") {
                 const auto p = to_lower_ascii(val);
-                if (p == "balanced" || p == "smoothness" || p == "battery" || p == "gaming") {
-                    cfg.profile = p;
+                if (p == "autonomous" || p == "auto" ||
+                    p == "balanced" || p == "smoothness" || p == "battery" || p == "gaming") {
+                    cfg.profile = "autonomous";
                 }
             }
             else if (key == "inspection_mode") cfg.inspection_mode = parse_bool(val);

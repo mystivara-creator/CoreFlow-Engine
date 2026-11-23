@@ -1,4 +1,4 @@
-# CFAE System Framework / CoreFlow Engine v6.0.0-R Security Model
+# CFAE System Framework / CoreFlow Engine v6.1.0-R Security Model
 
 CoreFlow Engine (`coreflowd`, C++23 + Rust) is a privileged Android 13+ (API 33+) daemon. It operates strictly on allowlisted, verified kernel interfaces.
 

@@ -34,18 +34,14 @@ test('isValidPackageName and sanitizePackageList accept real Android packages an
   );
 });
 
-test('buildSafeSetConfigArg allowlists only v5.1 keys and safe single-quoted values', () => {
+test('buildSafeSetConfigArg allowlists only safe keys and single-quoted values', () => {
+  assert.equal(buildSafeSetConfigArg('profile', 'autonomous'), "'profile=autonomous'");
   assert.equal(buildSafeSetConfigArg('profile', 'smoothness'), "'profile=smoothness'");
   assert.equal(buildSafeSetConfigArg('profile', 'extreme_hack'), null);
   assert.equal(buildSafeSetConfigArg('enable_frame_smoothness', 'true'), "'enable_frame_smoothness=true'");
   assert.equal(buildSafeSetConfigArg('enable_frame_smoothness', '1;id'), null);
-  assert.equal(buildSafeSetConfigArg('gaming_apps', ''), "'gaming_apps='");
-  assert.equal(buildSafeSetConfigArg('smoothness_apps', 'com.instagram.android'), "'smoothness_apps=com.instagram.android'");
-  assert.equal(buildSafeSetConfigArg('battery_apps', 'com.whatsapp'), "'battery_apps=com.whatsapp'");
-  assert.equal(
-    buildSafeSetConfigArg('gaming_apps', 'com.tencent.ig, com.miHoYo.GenshinImpact'),
-    "'gaming_apps=com.tencent.ig,com.miHoYo.GenshinImpact'"
-  );
+  assert.equal(buildSafeSetConfigArg('excluded_apps', ''), "'excluded_apps='");
+  assert.equal(buildSafeSetConfigArg('excluded_apps', 'com.android.camera'), "'excluded_apps=com.android.camera'");
   assert.equal(buildSafeSetConfigArg('gaming_apps', 'com.app$(whoami)'), null);
   assert.equal(buildSafeSetConfigArg('bypass_charging', 'true'), "'bypass_charging=true'");
   assert.equal(buildSafeSetConfigArg('bypass_on_gaming', 'false'), "'bypass_on_gaming=false'");
@@ -62,9 +58,12 @@ test('buildSafeSetConfigArg allowlists only v5.1 keys and safe single-quoted val
 test('parseV5Status parses live daemon payload and rejects malformed schema', () => {
   const sample = createPreviewStatus();
   const parsed = parseV5Status(sample);
-  assert.equal(parsed.version, '6.0.0-R');
-  assert.equal(parsed.profile, 'balanced');
-  assert.equal(parsed.effectiveProfile, 'balanced');
+  assert.equal(parsed.version, '6.1.0-R');
+  assert.equal(parsed.profile, 'autonomous');
+  assert.equal(parsed.effectiveProfile, 'autonomous');
+  assert.equal(parsed.autonomousRegime, 'interactive_scroll');
+  assert.equal(parsed.lowBatteryEco, false);
+  assert.ok(Array.isArray(parsed.appDnaEntries) && parsed.appDnaEntries.length > 0);
   assert.equal(parsed.hardware.storageType, 'UFS');
   assert.equal(parsed.actuators.perThreadUclampSupported, true);
   assert.equal(parsed.actuators.semanticKnobsDiscovered, 25);
@@ -79,8 +78,7 @@ test('parseV5Status parses live daemon payload and rejects malformed schema', ()
   assert.equal(parsed.batteryPower.bypassSupported, true);
   assert.ok(parsed.cpuClusters.length > 0);
   assert.ok(parsed.episodes.length > 0);
-  assert.deepEqual(parsed.apps.smoothness, ['com.instagram.android']);
-  assert.deepEqual(parsed.apps.battery, ['com.whatsapp']);
+  assert.deepEqual(parsed.apps.excluded, ['com.android.camera']);
   assert.equal(parsed.session.launchBursts, 14);
   assert.equal(parsed.bootSettleActive, false);
   assert.equal(parsed.bootSettleExitReason, 'warm_daemon_restart');
@@ -88,12 +86,14 @@ test('parseV5Status parses live daemon payload and rejects malformed schema', ()
   const settling = parseV5Status({
     ...sample,
     mode: 'BOOT_SETTLE',
+    autonomousRegime: 'boot_settle',
     bootSettleActive: true,
     bootSettleDurationSec: 22.5,
     bootSettleExitReason: 'settling',
     bootRampProgress: 0.0,
   });
   assert.equal(settling.mode, 'BOOT_SETTLE');
+  assert.equal(settling.autonomousRegime, 'boot_settle');
   assert.equal(settling.bootSettleActive, true);
   assert.equal(settling.bootSettleDurationSec, 22.5);
   assert.equal(settling.bootRampProgress, 0.0);
@@ -101,12 +101,12 @@ test('parseV5Status parses live daemon payload and rejects malformed schema', ()
   assert.throws(() => parseV5Status({ running: true }));
 });
 
-test('per-app rule assignment is mutually exclusive across all 4 buckets and parses pm output safely', () => {
+test('per-app Stock OEM exclusion toggle and pm output parsing work safely', () => {
   let rules = createPreviewStatus().apps;
-  assert.equal(getPackageRuleCategory(rules, 'com.miHoYo.GenshinImpact'), 'gaming');
-  rules = assignPackageRule(rules, 'com.miHoYo.GenshinImpact', 'smoothness');
-  assert.equal(getPackageRuleCategory(rules, 'com.miHoYo.GenshinImpact'), 'smoothness');
-  assert.equal(rules.gaming.includes('com.miHoYo.GenshinImpact'), false);
+  assert.equal(getPackageRuleCategory(rules, 'com.android.camera'), 'excluded');
+  assert.equal(getPackageRuleCategory(rules, 'com.miHoYo.GenshinImpact'), 'default');
+  rules = assignPackageRule(rules, 'com.miHoYo.GenshinImpact', 'excluded');
+  assert.equal(getPackageRuleCategory(rules, 'com.miHoYo.GenshinImpact'), 'excluded');
   rules = assignPackageRule(rules, 'com.miHoYo.GenshinImpact', 'default');
   assert.equal(getPackageRuleCategory(rules, 'com.miHoYo.GenshinImpact'), 'default');
 

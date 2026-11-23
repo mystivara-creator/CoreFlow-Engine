@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace coreflow::v6 {
 
@@ -96,6 +97,7 @@ public:
 
     [[nodiscard]] size_t learned_count() const noexcept { return entries_.size(); }
     [[nodiscard]] uint64_t flush_count() const noexcept { return flush_count_; }
+    [[nodiscard]] std::vector<AppDnaEntry> snapshot_entries() const;
 
 private:
     void evict_lru_if_needed() noexcept;

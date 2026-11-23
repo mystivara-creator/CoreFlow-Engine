@@ -166,18 +166,14 @@ void ContextEngine::notify_touch(uint64_t now_ms) noexcept {
 
 PerformanceProfile ContextEngine::parse_profile(std::string_view text) noexcept {
     const std::string lower = to_lower_copy(text);
-    if (lower == "smoothness" || lower == "smooth") return PerformanceProfile::Smoothness;
-    if (lower == "battery" || lower == "efficiency" || lower == "powersave") return PerformanceProfile::Battery;
-    if (lower == "gaming" || lower == "performance") return PerformanceProfile::Gaming;
+    if (lower == "low_battery_eco") return PerformanceProfile::Battery;
     return PerformanceProfile::Balanced;
 }
 
 const char* ContextEngine::profile_name(PerformanceProfile profile) noexcept {
     switch (profile) {
-        case PerformanceProfile::Smoothness: return "smoothness";
-        case PerformanceProfile::Battery: return "battery";
-        case PerformanceProfile::Gaming: return "gaming";
-        default: return "balanced";
+        case PerformanceProfile::Battery: return "low_battery_eco";
+        default: return "autonomous";
     }
 }
 
@@ -367,20 +363,18 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
 
     const std::string pkg_lower = to_lower_copy(input.foreground_package);
     out.app_excluded = !pkg_lower.empty() && excluded_apps_.contains(pkg_lower);
-    out.app_forced_gaming = !pkg_lower.empty() && gaming_apps_.contains(pkg_lower);
+    // v6.1.0-R Pure Zero-Profile Autonomous: ignore legacy manual app buckets at runtime.
+    // Only excluded_apps (Stock OEM bypass) overrides autonomous context classification.
+    out.app_forced_gaming = false;
     const bool is_cam = !out.app_excluded &&
         (input.is_camera_app || is_camera_package(input.foreground_package));
     out.camera_boost_active = is_cam && !input.screen_off;
     out.media_pipeline_active = !out.app_excluded && !input.screen_off && input.has_media_thread;
 
-    PerformanceProfile eff_profile = profile_;
-    if (out.app_forced_gaming) {
-        eff_profile = PerformanceProfile::Gaming;
-    } else if (!pkg_lower.empty() && smoothness_apps_.contains(pkg_lower)) {
-        eff_profile = PerformanceProfile::Smoothness;
-    } else if (!pkg_lower.empty() && battery_apps_.contains(pkg_lower)) {
-        eff_profile = PerformanceProfile::Battery;
-    }
+    // Low-Battery Auto-Eco (<= 20% discharging) applies smooth ~15% efficiency scaling automatically.
+    const PerformanceProfile eff_profile = input.low_battery_eco
+        ? PerformanceProfile::Battery
+        : PerformanceProfile::Balanced;
     out.effective_profile = eff_profile;
 
     // Detect foreground app switch -> trigger LaunchBurst (except for excluded apps or screen-off)
@@ -397,8 +391,8 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
         last_gaming_eval_ms_ = 0;
         if (!input.screen_off && !out.app_excluded) {
             const uint64_t burst_ms = is_cam ? 2400ULL :
-                eff_profile == PerformanceProfile::Battery ? 1200ULL :
-                eff_profile == PerformanceProfile::Smoothness ? 2000ULL : 1600ULL;
+                input.low_battery_eco ? 1200ULL :
+                input.has_game_thread ? 2000ULL : 1600ULL;
             launch_burst_until_ms_ = input.now_ms + burst_ms;
             out.newly_launched_app = true;
         }
@@ -419,28 +413,25 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
         return out;
     }
 
-    // Hysteretic Gaming detection (rate-limited to >= 800 ms per sample so 200 ms fast-path
-    // evaluations sharing one cached GPU sample cannot falsely latch Gaming in 600 ms):
-    //  - Balanced/Smoothness/Battery: GPU >= 48% (or >= 35% + CPU >= 55%) for 3 ticks; exit < 25% for 5 ticks.
-    //  - Gaming profile: lower entry threshold (GPU >= 32% or CPU >= 42%) for 2 ticks; exit GPU < 20% && CPU < 22% for 5 ticks
-    //    so Gaming profile stays steady instead of flapping EFFICIENCY <-> GAMING every second.
-    //  - Fallback (non-Qualcomm / CPU-bound emulators without GPU busy node):
-    //    active game-engine thread (UnityMain/GameThread/EmuThread/etc.) + CPU >= 50% for 3 ticks.
+    // Autonomous Hysteretic 3D Gaming Detection (rate-limited to >= 800 ms per sample):
+    //  - Verified 3D engine thread (UnityMain/GameThread/VulkanThread/EmuThread/GLThread):
+    //    faster 2-tick latch (GPU >= 35% or CPU >= 45%), smooth 5-tick exit (GPU < 20% && CPU < 25%).
+    //  - Generic heavy GPU workload: 3-tick latch (GPU >= 48% or GPU >= 35% + CPU >= 55%), 5-tick exit (< 25%).
     const bool streak_tick_ready =
         (last_gaming_eval_ms_ == 0U) ||
         (input.now_ms >= last_gaming_eval_ms_ + 800ULL) ||
         (input.now_ms < last_gaming_eval_ms_);
     if (streak_tick_ready) {
-        const bool gaming_prof = (eff_profile == PerformanceProfile::Gaming);
-        const uint32_t enter_ticks = gaming_prof ? 2U : 3U;
+        const bool fast_3d = input.has_game_thread;
+        const uint32_t enter_ticks = fast_3d ? 2U : 3U;
         if (input.gpu_busy_pct.has_value()) {
             last_gaming_eval_ms_ = input.now_ms;
             const double gpu = *input.gpu_busy_pct;
-            const bool high_load = gaming_prof
-                ? (gpu >= 32.0 || input.cpu_util_pct >= 42.0)
+            const bool high_load = fast_3d
+                ? (gpu >= 35.0 || input.cpu_util_pct >= 45.0)
                 : (gpu >= 48.0 || (gpu >= 35.0 && input.cpu_util_pct >= 55.0));
-            const bool low_load = gaming_prof
-                ? (gpu < 20.0 && input.cpu_util_pct < 22.0)
+            const bool low_load = fast_3d
+                ? (gpu < 20.0 && input.cpu_util_pct < 25.0)
                 : (gpu < 25.0);
             if (high_load) {
                 ++gpu_high_streak_;
@@ -451,15 +442,13 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
                 gpu_high_streak_ = 0;
                 if (gpu_low_streak_ >= 5U) gaming_latched_ = false;
             }
-        } else if (input.has_game_thread || gaming_prof) {
+        } else if (input.has_game_thread) {
             last_gaming_eval_ms_ = input.now_ms;
-            const double enter_cpu = gaming_prof ? 42.0 : 50.0;
-            const double exit_cpu = gaming_prof ? 22.0 : 25.0;
-            if (input.cpu_util_pct >= enter_cpu) {
+            if (input.cpu_util_pct >= 45.0) {
                 ++gpu_high_streak_;
                 gpu_low_streak_ = 0;
                 if (gpu_high_streak_ >= enter_ticks) gaming_latched_ = true;
-            } else if (input.cpu_util_pct < exit_cpu) {
+            } else if (input.cpu_util_pct < 25.0) {
                 ++gpu_low_streak_;
                 gpu_high_streak_ = 0;
                 if (gpu_low_streak_ >= 5U) gaming_latched_ = false;
@@ -467,12 +456,11 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
         }
     }
 
-    // Aligned with Android OverScroller kinetic fling deceleration so UI threads never
-    // drop from Interactive -> Efficiency mid-scroll while warm Little-cluster steering keeps power cool.
+    // Refresh-rate-adaptive OverScroller kinetic fling hold (shortened to 500 ms during Low-Battery Eco).
     const uint64_t touch_hold_ms =
-        eff_profile == PerformanceProfile::Smoothness ? 1100ULL :
-        eff_profile == PerformanceProfile::Battery ? 450ULL :
-        eff_profile == PerformanceProfile::Gaming ? 800ULL : 750ULL;
+        input.low_battery_eco ? 500ULL :
+        input.refresh_hz >= 115U ? 950ULL :
+        input.refresh_hz >= 85U ? 850ULL : 750ULL;
 
     if (launch_burst_until_ms_ > input.now_ms) {
         out.launch_burst_remaining_ms = launch_burst_until_ms_ - input.now_ms;
@@ -484,7 +472,7 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
 
     if (out.launch_burst_remaining_ms > 0U) {
         out.mode = ContextMode::LaunchBurst;
-    } else if (out.app_forced_gaming || gaming_latched_) {
+    } else if (gaming_latched_) {
         out.mode = ContextMode::Gaming;
     } else if (out.touch_hold_remaining_ms > 0U || input.cpu_util_pct >= 55.0 ||
                out.camera_boost_active || out.media_pipeline_active) {

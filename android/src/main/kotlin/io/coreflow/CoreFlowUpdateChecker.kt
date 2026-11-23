@@ -130,9 +130,9 @@ object CoreFlowUpdateChecker {
                 val minor = match.groupValues[2].toIntOrNull() ?: 0
                 val patch = match.groupValues[3].toIntOrNull() ?: 0
                 val suffix = match.groupValues[4]
-                val isSovereignRebuild = major == 6 && minor == 0 && suffix.equals("R", ignoreCase = true)
+                val isSovereignRebuild = major == 6 && suffix.equals("R", ignoreCase = true)
                 val semverCode = if (isSovereignRebuild) {
-                    63000 + patch * 100
+                    63000 + minor * 1000 + patch * 100
                 } else {
                     major * 10000 + minor * 1000 + patch * 100
                 }

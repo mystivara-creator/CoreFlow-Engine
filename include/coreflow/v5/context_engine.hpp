@@ -58,6 +58,8 @@ struct ContextSignalInput {
     bool has_game_thread{false};
     bool is_camera_app{false};
     bool has_media_thread{false};
+    uint32_t refresh_hz{60};
+    bool low_battery_eco{false};
 };
 
 struct ContextDecision {

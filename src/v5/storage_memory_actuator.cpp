@@ -185,9 +185,7 @@ uint64_t StorageMemoryActuator::compute_read_ahead_kb(
         : (q.type == StorageType::eMMC ? 0.85 : 1.00);
     const double psi_scale = 1.0 + std::clamp(io_psi / 50.0, 0.0, 0.60);
     const double profile_scale =
-        profile == PerformanceProfile::Battery ? 0.70 :
-        profile == PerformanceProfile::Smoothness ? 1.15 :
-        profile == PerformanceProfile::Gaming ? 1.15 : 1.00;
+        profile == PerformanceProfile::Battery ? 0.85 : 1.00;
 
     if (mode == ContextMode::LaunchBurst) {
         // Sequential APK / OAT / asset loading burst scaled to hardware queue ceiling.
@@ -347,44 +345,60 @@ void StorageMemoryActuator::apply(
         }
         if (primary_ra > 0U) stats_.active_read_ahead_kb = primary_ra;
 
-        // Isolate background cgroup ONLY during LaunchBurst, Gaming, or loaded Interactive (real PSI).
-        const bool isolate_bg = (ctx.mode == ContextMode::LaunchBurst ||
-                                 ctx.mode == ContextMode::Gaming ||
-                                 (ctx.mode == ContextMode::Interactive && (cpu_psi >= 4.0 || io_psi >= 3.0)));
-        if (isolate_bg) {
-            bool any_bg = false;
-            if (!topo.cgroups.background_io_weight_path.empty()) {
-                // Scale background I/O weight inversely with live io_psi & foreground urgency,
-                // keeping a safe floor (>= 20) so synchronous SystemUI/Binder helpers never starve.
-                const double base_w = (ctx.mode == ContextMode::LaunchBurst) ? 28.0 :
-                                      (ctx.mode == ContextMode::Gaming) ? 32.0 : 45.0;
-                const uint32_t weight_val = static_cast<uint32_t>(
-                    std::clamp(std::lround(base_w * (1.0 - std::clamp(io_psi / 160.0, 0.0, 0.35))), 20L, 60L));
-                any_bg = write_managed_node(topo.cgroups.background_io_weight_path,
-                                            "default " + std::to_string(weight_val), now_ms) || any_bg;
-            }
-            if (!topo.cgroups.background_uclamp_max_path.empty()) {
-                // Keep background isolated without starving Binder/system helpers on HyperOS/Android 15+.
-                const double base_pct = (ctx.mode == ContextMode::Gaming) ? 37.50 :
-                                        (ctx.mode == ContextMode::LaunchBurst) ? 40.00 : 50.00;
-                const double adapted_pct = std::clamp(base_pct - (cpu_psi * 0.12), 30.0, 60.0);
-                if (topo.cgroups.uclamp_uses_percent) {
-                    const std::string bg_cap = format_quantized_uclamp_pct(adapted_pct);
-                    any_bg = write_managed_node(topo.cgroups.background_uclamp_max_path, bg_cap, now_ms, 0.6, false, 2.5) || any_bg;
-                } else {
-                    const uint32_t raw_cap = static_cast<uint32_t>(
-                        std::clamp(std::lround(adapted_pct * 10.24), 307L, 614L));
-                    any_bg = write_managed_node(topo.cgroups.background_uclamp_max_path,
-                                                std::to_string(raw_cap), now_ms, 4.0, false, 24.0) || any_bg;
-                }
-            }
-            stats_.background_isolated = any_bg;
+        // Isolate background I/O during LaunchBurst, Gaming, or loaded Interactive (real PSI).
+        const bool isolate_bg_io = (ctx.mode == ContextMode::LaunchBurst ||
+                                    ctx.mode == ContextMode::Gaming ||
+                                    (ctx.mode == ContextMode::Interactive && (cpu_psi >= 4.0 || io_psi >= 3.0)));
+        // Pin background CPU to Little-core capacity during active foreground contention OR warm thermal pacing
+        // so background jobs never wake Big cores and add C*V^2*f heat while the chassis is warm.
+        const double scale = std::isfinite(telemetry.capacity_scale)
+            ? std::clamp(telemetry.capacity_scale, 0.25, 1.0)
+            : 1.0;
+        const bool warm_bg_pin = telemetry.thermal_guard || scale < 0.90 || telemetry.low_battery_eco;
+        const double little_pct = topo.little_capacity > 0U
+            ? std::clamp((static_cast<double>(topo.little_capacity) / 1024.0) * 100.0, 24.0, 48.0)
+            : 38.0;
+
+        bool any_bg = false;
+        if (isolate_bg_io && !topo.cgroups.background_io_weight_path.empty()) {
+            // Scale background I/O weight inversely with live io_psi & foreground urgency,
+            // keeping a safe floor (>= 20) so synchronous SystemUI/Binder helpers never starve.
+            const double base_w = (ctx.mode == ContextMode::LaunchBurst) ? 28.0 :
+                                  (ctx.mode == ContextMode::Gaming) ? 32.0 : 45.0;
+            const uint32_t weight_val = static_cast<uint32_t>(
+                std::clamp(std::lround(base_w * (1.0 - std::clamp(io_psi / 160.0, 0.0, 0.35))), 20L, 60L));
+            any_bg = write_managed_node(topo.cgroups.background_io_weight_path,
+                                        "default " + std::to_string(weight_val), now_ms) || any_bg;
         } else {
-            // Release-on-Calm: let background syncs and Android maintenance run cleanly at OEM defaults.
             rollback_managed_node(topo.cgroups.background_io_weight_path);
-            rollback_managed_node(topo.cgroups.background_uclamp_max_path);
-            stats_.background_isolated = false;
         }
+
+        if ((isolate_bg_io || warm_bg_pin) && !topo.cgroups.background_uclamp_max_path.empty()) {
+            // Keep background pinned to Little cores without starving Binder/system helpers on Android 15+.
+            double adapted_pct = 40.0;
+            if (warm_bg_pin) {
+                adapted_pct = std::clamp(little_pct * 0.78 - (telemetry.thermal_guard ? 4.0 : 0.0), 22.0, 35.0);
+            } else if (ctx.mode == ContextMode::Gaming) {
+                adapted_pct = std::clamp(little_pct * 0.92 - (cpu_psi * 0.10), 30.0, 42.0);
+            } else if (ctx.mode == ContextMode::LaunchBurst) {
+                adapted_pct = std::clamp(little_pct * 0.96 - (cpu_psi * 0.10), 30.0, 44.0);
+            } else {
+                adapted_pct = std::clamp(little_pct * 1.05 - (cpu_psi * 0.12), 30.0, 48.0);
+            }
+            if (topo.cgroups.uclamp_uses_percent) {
+                const std::string bg_cap = format_quantized_uclamp_pct(adapted_pct);
+                any_bg = write_managed_node(topo.cgroups.background_uclamp_max_path, bg_cap, now_ms, 0.6, false, 2.5) || any_bg;
+            } else {
+                const uint32_t raw_cap = static_cast<uint32_t>(
+                    std::clamp(std::lround(adapted_pct * 10.24), 225L, 512L));
+                any_bg = write_managed_node(topo.cgroups.background_uclamp_max_path,
+                                            std::to_string(raw_cap), now_ms, 4.0, false, 24.0) || any_bg;
+            }
+        } else {
+            // Release-on-Calm: let background syncs and Android maintenance run cleanly at OEM defaults when cool.
+            rollback_managed_node(topo.cgroups.background_uclamp_max_path);
+        }
+        stats_.background_isolated = any_bg;
     } else {
         stats_.burst_active = false;
         stats_.background_isolated = false;

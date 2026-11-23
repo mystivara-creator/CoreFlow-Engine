@@ -64,10 +64,12 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
         0.0
     };
 
+    // Unified Zero-Profile bias: PROFILE_BATTERY represents automatic Low-Battery Eco (<= 20% discharging)
+    // applying a smooth ~15% trim while preserving full jank rescue when frames drop.
     let profile_bias = match input.profile {
         PROFILE_SMOOTHNESS => 1.18,
         PROFILE_GAMING => 1.15,
-        PROFILE_BATTERY => 0.78,
+        PROFILE_BATTERY => 0.85,
         _ => 1.00,
     };
 
@@ -95,7 +97,7 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
     // - Verified zero/near-zero jank (< 1.5% missed frames) -> gently trim floor to save power & heat,
     //   UNLESS feedforward_freeze is active (sudden GPU/PSI derivative spike or active touch window),
     //   which freezes trimming pre-emptively before frames can miss T_budget = 1000 / Hz ms.
-    // - Measured jank (>= 5% missed frames) -> inject proportional rescue headroom.
+    // - Measured jank (>= 3% missed frames) -> inject proportional rescue headroom immediately.
     let jank_factor = if input.jank_ratio.is_finite() && input.jank_ratio >= 0.0 {
         if input.jank_ratio < 0.015 && input.mode != MODE_LAUNCH_BURST {
             if input.feedforward_freeze {
@@ -105,9 +107,9 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
             } else {
                 0.84
             }
-        } else if input.jank_ratio >= 0.05 {
-            let sev = ((input.jank_ratio - 0.05) / 0.25).clamp(0.0, 1.0);
-            1.0 + sev * 0.18
+        } else if input.jank_ratio >= 0.03 {
+            let sev = ((input.jank_ratio - 0.03) / 0.25).clamp(0.0, 1.0);
+            1.0 + sev * 0.20
         } else {
             1.0
         }
@@ -153,7 +155,7 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
     // light Interactive scrolling/browsing (render < 0.35, no jank), trim floor smoothly so
     // routine UI work stays on cool Little cores instead of waking hot Big cores — even during
     // active touch windows (feedforward_freeze guards jank_factor only, never overrides thermal physics).
-    let jank_rescue = input.jank_ratio.is_finite() && input.jank_ratio >= 0.05;
+    let jank_rescue = input.jank_ratio.is_finite() && input.jank_ratio >= 0.03;
     let warm_efficiency = if input.mode == MODE_INTERACTIVE
         && bounded_scale < 0.92
         && render_norm < 0.35
@@ -324,5 +326,28 @@ mod tests {
 
         assert!(t_light_warm.util_min < (t_cool.util_min * 75) / 100);
         assert!(t_heavy_warm.util_min > t_light_warm.util_min + 60);
+    }
+
+    #[test]
+    fn low_battery_eco_trims_smoothly_and_preserves_jank_rescue() {
+        let mut normal = base_input(MODE_INTERACTIVE);
+        normal.profile = 0; // unified autonomous
+        normal.jank_ratio = -1.0;
+
+        let mut eco = base_input(MODE_INTERACTIVE);
+        eco.profile = PROFILE_BATTERY; // dynamic Low-Battery Auto-Eco (<= 20% discharging)
+        eco.jank_ratio = -1.0;
+
+        let mut eco_jank = base_input(MODE_INTERACTIVE);
+        eco_jank.profile = PROFILE_BATTERY;
+        eco_jank.jank_ratio = 0.08; // 8% frame drops -> rescue must still lift floor
+
+        let t_norm = compute_uclamp_target(normal);
+        let t_eco = compute_uclamp_target(eco);
+        let t_eco_jank = compute_uclamp_target(eco_jank);
+
+        assert!(t_eco.util_min < t_norm.util_min);
+        assert!(t_eco.util_min >= (t_norm.util_min * 78) / 100);
+        assert!(t_eco_jank.util_min > t_eco.util_min);
     }
 }

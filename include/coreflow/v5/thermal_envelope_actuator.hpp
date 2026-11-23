@@ -21,6 +21,8 @@ struct ThermalEnvelopeStats {
     uint32_t managed_nodes{0};
     uint32_t contended_nodes{0};
     double last_capacity_scale{1.0};
+    uint32_t eas_top_app_cap_pct{100};
+    uint32_t eas_capped_groups{0};
 };
 
 struct EnvelopeTelemetry {
@@ -30,6 +32,8 @@ struct EnvelopeTelemetry {
     bool passive_media_only{false};
     double scheduler_responsiveness_scale{1.0}; // 0.70..1.00 (tightens up_rate_limit_us under render pressure)
     double thermal_stepdown_lead{0.0};          // 0.00..0.15 (shifts thermal envelope step-down earlier)
+    double jank_ratio{-1.0};                    // live frame drop ratio (0..1); >=0.03 lifts top-app cap
+    bool low_battery_eco{false};                // battery <=20% off-charger automatic eco pacing
 };
 
 class ThermalEnvelopeActuator {
@@ -78,6 +82,16 @@ private:
                             const std::string& target,
                             uint64_t now_ms,
                             uint64_t deadband = 0U) noexcept;
+    bool write_uclamp_max_node(const std::string& path,
+                               double target_pct,
+                               bool uses_percent,
+                               uint64_t now_ms) noexcept;
+    void apply_cgroup_eas_caps(const HardwareTopology& topo,
+                               ContextMode mode,
+                               double effective_scale,
+                               bool thermal_guard,
+                               const EnvelopeTelemetry& telemetry,
+                               uint64_t now_ms) noexcept;
     void rollback_managed_node(const std::string& path) noexcept;
     void rollback_all_managed() noexcept;
 

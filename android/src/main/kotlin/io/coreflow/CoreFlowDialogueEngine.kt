@@ -10,10 +10,11 @@ import java.util.Locale
 object CoreFlowDialogueEngine {
 
     enum class DialogueIntent {
-        CONTEXT_SHIFT_GAMING,
-        CONTEXT_SHIFT_BATTERY,
-        CONTEXT_SHIFT_SMOOTHNESS,
-        CONTEXT_SHIFT_BALANCED,
+        EXPLAIN_GAMING_AUTONOMY,
+        EXPLAIN_BATTERY_COOLING,
+        EXPLAIN_SMOOTHNESS_AUTONOMY,
+        PAUSE_AB_COMPARE,
+        RESUME_AUTONOMOUS,
         TAMPER_RESYNC,
         DIAGNOSE_STUTTER,
         DIAGNOSE_THERMAL_LOAD,
@@ -26,7 +27,7 @@ object CoreFlowDialogueEngine {
     data class DialogueResolution(
         val intent: DialogueIntent,
         val reply: String,
-        val requestedProfile: CoreFlowManager.Profile? = null,
+        val requestedInspectionMode: Boolean? = null,
         val requestedTamperResyncNode: String? = null,
         val telemetryTags: List<String> = emptyList(),
     )
@@ -37,9 +38,10 @@ object CoreFlowDialogueEngine {
             "Status suhu & beban sekarang?",
             "Ada konflik modul atau intervensi?",
             "Apa yang udah dipelajari di HP ini?",
-            "Aku mau push rank / gaming berat",
-            "Mode hemat baterai, HP lagi panas",
-            "Balik ke mode otomatis seimbang",
+            "Siap buat gaming berat sekarang?",
+            "Kendali termal EAS & baterai gimana?",
+            "Pause dulu untuk bandingkan OEM",
+            "Lanjutkan CoreFlow otonom",
         )
     } else {
         listOf(
@@ -47,9 +49,10 @@ object CoreFlowDialogueEngine {
             "Current thermal & load status?",
             "Any conflicting modules or tampering?",
             "What has CFAE learned on this device?",
-            "Switch to heavy gaming mode",
-            "Battery saver mode, phone feels warm",
-            "Return to balanced automatic mode",
+            "Is autonomous 3D gaming ready?",
+            "How are EAS thermal pacing & battery eco?",
+            "Pause CoreFlow for OEM A/B compare",
+            "Resume autonomous engine",
         )
     }
 
@@ -73,14 +76,16 @@ object CoreFlowDialogueEngine {
         val deterministicIntent: DialogueIntent? = when {
             containsAny(q, "resync", "enforce", "kunci ulang", "sinkron ulang", "reclaim") ->
                 DialogueIntent.TAMPER_RESYNC
-            containsAny(q, "push rank", "gaming berat", "mode game", "main game", "heavy gaming", "gaming mode", "switch to gaming") ->
-                DialogueIntent.CONTEXT_SHIFT_GAMING
-            containsAny(q, "hemat baterai", "mode hemat", "baterai awet", "lagi panas", "battery saver", "battery mode", "cool down", "phone feels warm") ->
-                DialogueIntent.CONTEXT_SHIFT_BATTERY
-            containsAny(q, "mode halus", "anti patah", "scroll halus", "smoothness", "fluid ui") ->
-                DialogueIntent.CONTEXT_SHIFT_SMOOTHNESS
-            containsAny(q, "otomatis", "seimbang", "balanced", "balik normal", "mode normal", "auto mode", "default mode") ->
-                DialogueIntent.CONTEXT_SHIFT_BALANCED
+            containsAny(q, "pause", "jeda", "bandingkan oem", "banding oem", "ab compare", "a/b compare", "istirahatkan") ->
+                DialogueIntent.PAUSE_AB_COMPARE
+            containsAny(q, "lanjutkan", "aktifkan lagi", "resume", "unpause", "jalan lagi", "exit pause") ->
+                DialogueIntent.RESUME_AUTONOMOUS
+            containsAny(q, "push rank", "gaming berat", "mode game", "main game", "heavy gaming", "gaming mode", "3d gaming") ->
+                DialogueIntent.EXPLAIN_GAMING_AUTONOMY
+            containsAny(q, "hemat baterai", "mode hemat", "baterai awet", "lagi panas", "battery saver", "battery mode", "cool down", "phone feels warm", "cool-glide", "cool glide", "kendali termal", "eas cap", "thermal pacing") ->
+                DialogueIntent.EXPLAIN_BATTERY_COOLING
+            containsAny(q, "mode halus", "anti patah", "scroll halus", "smoothness", "fluid ui", "scrolling halus") ->
+                DialogueIntent.EXPLAIN_SMOOTHNESS_AUTONOMY
             containsAny(q, "patah", "stutter", "frame drop", "jank", "lemot", "drop frame", "ngelag", "nge-lag", "lagging") ||
                 containsWord(q, "lag") || containsWord(q, "fps") ->
                 DialogueIntent.DIAGNOSE_STUTTER
@@ -120,14 +125,14 @@ object CoreFlowDialogueEngine {
         val base = when (intent) {
             DialogueIntent.REJECT_MANUAL_TWEAK -> {
                 val reply = if (isIndonesian) {
-                    "Permintaan ditolak oleh CFAE System Framework. CoreFlow dirancang sebagai penjaga sistem berdaulat — bukan alat tweaking manual. Slider frekuensi manual dan celah kompromi YIELD tidak tersedia karena dapat merusak keseimbangan termal, kurva PID, serta penjadwalan lintas-domain."
+                    "Permintaan ditolak oleh CFAE System Framework. CoreFlow v6.1 beroperasi sebagai mesin otonom murni tanpa profil manual maupun slider frekuensi. Celah kompromi YIELD juga ditiadakan demi menjaga kendali daya EAS multi-cgroup dan penjadwalan lintas-domain."
                 } else {
-                    "Request rejected by CFAE System Framework. CoreFlow operates as a sovereign autonomous guardian—never a manual tweaking tool. Manual frequency sliders and YIELD compromises are intentionally absent to protect thermal and scheduling equilibrium."
+                    "Request rejected by CFAE System Framework. CoreFlow v6.1 runs as a pure Zero-Profile autonomous guardian—never a manual tweaking tool. Manual frequency sliders and YIELD compromises are intentionally absent to protect multi-cgroup EAS thermal-power pacing."
                 }
                 DialogueResolution(
                     intent = DialogueIntent.REJECT_MANUAL_TWEAK,
                     reply = reply,
-                    telemetryTags = listOf("CFAE Sovereign", "Zero Compromise"),
+                    telemetryTags = listOf("CFAE Sovereign", "Zero-Profile"),
                 )
             }
             DialogueIntent.TAMPER_RESYNC -> {
@@ -144,59 +149,102 @@ object CoreFlowDialogueEngine {
                     telemetryTags = listOf("RESYNC", "0444 Lock"),
                 )
             }
-            DialogueIntent.CONTEXT_SHIFT_GAMING -> {
-                val tempStr = status?.socTempCelsius?.takeIf { it >= 0f }?.let { String.format(Locale.US, "%.1f°C", it) } ?: "--"
+            DialogueIntent.PAUSE_AB_COMPARE -> {
+                val reply = if (isIndonesian) {
+                    "CoreFlow dijeda ke mode Perbandingan OEM (A/B Compare). Seluruh node kernel dan lantai UClamp dilepas bersih kembali ke bawaan pabrik agar Anda bisa membandingkan rasa layar & suhu secara objektif. Kirim \"Lanjutkan\" kapan saja untuk mengaktifkan mesin otonom lagi."
+                } else {
+                    "CoreFlow paused for Stock OEM A/B Comparison. All kernel nodes and UClamp floors are cleanly rolled back to factory defaults so you can compare smoothness and thermals objectively. Send \"Resume\" anytime to re-engage the autonomous loop."
+                }
+                DialogueResolution(
+                    intent = DialogueIntent.PAUSE_AB_COMPARE,
+                    reply = reply,
+                    requestedInspectionMode = true,
+                    telemetryTags = listOf("Paused · OEM A/B", "Baseline Restored"),
+                )
+            }
+            DialogueIntent.RESUME_AUTONOMOUS -> {
+                val reply = if (isIndonesian) {
+                    "Mesin Otonom CoreFlow diaktifkan kembali. Deteksi 3D Gaming otomatis, Kendali Termal EAS multi-cgroup, sentuhan <5ms, dan App DNA kembali mengendalikan perangkat secara real-time."
+                } else {
+                    "CoreFlow Unified Autonomous Engine resumed. Automatic 3D Gaming detection, multi-cgroup EAS thermal pacing, <5ms touch response, and App DNA are actively pacing the device in real time."
+                }
+                DialogueResolution(
+                    intent = DialogueIntent.RESUME_AUTONOMOUS,
+                    reply = reply,
+                    requestedInspectionMode = false,
+                    telemetryTags = listOf("Autonomous Active", "EAS Pacing"),
+                )
+            }
+            DialogueIntent.EXPLAIN_GAMING_AUTONOMY -> {
+                val tempStr = formatTemp(status?.socTempCelsius ?: -1f)
+                val scalePct = ((status?.capacityScale ?: 1f) * 100f).toInt().coerceIn(0, 100)
                 val busNodes = status?.coupledOrchestration?.memoryBusNodes ?: 0
+                val bypassNote = if (status?.batteryPower?.bypassSupported == true) {
+                    if (isIndonesian) {
+                        if (status.powerConfig.bypassOnGaming || status.batteryPower.bypassActive) " · Bypass Charging siap/aktif"
+                        else " · Bypass Charging tersedia di tab Sistem"
+                    } else {
+                        if (status.powerConfig.bypassOnGaming || status.batteryPower.bypassActive) " · Bypass Charging armed/active"
+                        else " · Bypass Charging available in System tab"
+                    }
+                } else ""
                 val reply = if (isIndonesian) {
-                    "Siap. Konteks CFAE dialihkan ke profil Gaming. Lantai UClamp per-TID, respons penjadwal, dan bus memori ($busNodes node devfreq) disiagakan untuk frame pacing stabil. Thermal Guard tetap terkunci penuh (suhu SoC saat ini $tempStr)."
+                    "Tidak perlu pindah profil manual — CoreFlow v6.1 otomatis mendeteksi game 3D dari thread engine (UnityMain/GameThread/Vulkan) dan beban GPU. Lantai UClamp per-TID serta bus memori ($busNodes node) langsung naik otomatis saat game berjalan, sementara Kendali Termal EAS & Thermal Guard menjaga suhu stabil (SoC $tempStr · Headroom $scalePct%$bypassNote)."
                 } else {
-                    "Confirmed. CFAE context shifted to Gaming profile. Per-TID UClamp floor, scheduler responsiveness, and coupled memory bus ($busNodes devfreq nodes) are armed for steady frame pacing. Thermal Guard remains strictly locked (SoC currently $tempStr)."
+                    "No manual profile switch needed—CoreFlow v6.1 automatically detects 3D games from engine threads (UnityMain/GameThread/Vulkan) and sustained GPU load. Per-TID UClamp and coupled memory bus ($busNodes nodes) scale up automatically while EAS Thermal Pacing & Thermal Guard protect thermals (SoC $tempStr · Headroom $scalePct%$bypassNote)."
                 }
                 DialogueResolution(
-                    intent = DialogueIntent.CONTEXT_SHIFT_GAMING,
+                    intent = DialogueIntent.EXPLAIN_GAMING_AUTONOMY,
                     reply = reply,
-                    requestedProfile = CoreFlowManager.Profile.GAMING,
-                    telemetryTags = listOf("Profile -> Gaming", "Thermal Guard Locked"),
+                    telemetryTags = listOf("Auto 3D Gaming", "Headroom $scalePct%", "SoC $tempStr"),
                 )
             }
-            DialogueIntent.CONTEXT_SHIFT_BATTERY -> {
-                val tempStr = status?.socTempCelsius?.takeIf { it >= 0f }?.let { String.format(Locale.US, "%.1f°C", it) } ?: "--"
+            DialogueIntent.EXPLAIN_BATTERY_COOLING -> {
+                val tempStr = formatTemp(status?.socTempCelsius ?: -1f)
+                val battTempStr = formatTemp(status?.batteryTempCelsius ?: -1f)
+                val battPct = status?.batteryPower?.capacityPct
+                val ecoActive = status?.lowBatteryEco == true
+                val easCap = (status?.easTopAppCapPct ?: 100).coerceIn(20, 100)
+                val easCapStr = if (easCap < 100) "$easCap%" else "Max"
+                val scalePct = ((status?.capacityScale ?: 1f) * 100f).toInt().coerceIn(0, 100)
                 val reply = if (isIndonesian) {
-                    "Konteks CFAE dialihkan ke profil Battery. Ceiling termal & lantai UClamp diperketat agar SoC ($tempStr) segera mendingin dengan konsumsi daya minimal tanpa mengorbankan kestabilan sentuhan."
+                    val ecoStatus = if (ecoActive) {
+                        "Low-Battery Auto-Eco sedang AKTIF (baterai ${battPct ?: "--"}%): memangkas lonjakan daya puncak & hold fling 500ms namun scroll tetap mulus."
+                    } else {
+                        "Low-Battery Auto-Eco otomatis aktif saat baterai ≤20% tanpa charger (saat ini ${battPct ?: "--"}%)."
+                    }
+                    "CoreFlow menggunakan Kendali Termal EAS multi-cgroup nyata (tanpa profil manual): saat suhu bodi menghangat (baterai $battTempStr · SoC $tempStr), CoreFlow membatasi puncak tegangan Big-core via cpu.uclamp.max (EAS Cap $easCapStr · Headroom $scalePct%) dan mengunci background di klaster Little, lalu langsung melepas batas saat buka app atau terjadi jank. $ecoStatus"
                 } else {
-                    "CFAE context shifted to Battery profile. Thermal ceiling and UClamp floors are tightened so SoC ($tempStr) cools rapidly with minimal power draw while keeping touch response steady."
+                    val ecoStatus = if (ecoActive) {
+                        "Low-Battery Auto-Eco is ACTIVE (battery ${battPct ?: "--"}%): trimming peak voltage spikes with 500ms fling hold while keeping scrolling smooth."
+                    } else {
+                        "Low-Battery Auto-Eco engages automatically whenever battery ≤20% off-charger (currently ${battPct ?: "--"}%)."
+                    }
+                    "CoreFlow runs real multi-cgroup EAS thermal-power pacing (no manual battery profile): when the chassis warms (battery $battTempStr · SoC $tempStr), CoreFlow trims the steep Big-core voltage knee via cpu.uclamp.max (EAS Cap $easCapStr · Headroom $scalePct%) and pins background tasks to Little cores, lifting immediately on app launch or jank. $ecoStatus"
                 }
                 DialogueResolution(
-                    intent = DialogueIntent.CONTEXT_SHIFT_BATTERY,
+                    intent = DialogueIntent.EXPLAIN_BATTERY_COOLING,
                     reply = reply,
-                    requestedProfile = CoreFlowManager.Profile.BATTERY,
-                    telemetryTags = listOf("Profile -> Battery", "Thermal Cool"),
+                    telemetryTags = listOf(if (ecoActive) "Auto-Eco Active" else "EAS Cap $easCapStr", "Batt $battTempStr"),
                 )
             }
-            DialogueIntent.CONTEXT_SHIFT_SMOOTHNESS -> {
+            DialogueIntent.EXPLAIN_SMOOTHNESS_AUTONOMY -> {
+                val hz = status?.hardware?.refreshHz ?: 60
+                val holdMs = when {
+                    status?.lowBatteryEco == true -> 500
+                    hz >= 115 -> 950
+                    hz >= 85 -> 850
+                    else -> 750
+                }
                 val reply = if (isIndonesian) {
-                    "Konteks CFAE dialihkan ke profil Smoothness. Prioritas utama diberikan pada RenderThread, SurfaceFlinger, dan respons penjadwal untuk navigasi antarmuka yang mulus, dengan Thermal Guard tetap aktif."
+                    "Kehalusan layar aktif otomatis 100% tanpa perlu profil Smoothness. Jalur sentuh <5ms langsung mengangkat RenderThread & SurfaceFlinger dengan OverScroller fling hold adaptif ${holdMs}ms (panel ${hz}Hz) serta Jank Rescue otomatis jika frame drop ≥3%."
                 } else {
-                    "CFAE context shifted to Smoothness profile. RenderThread, SurfaceFlinger, and scheduler responsiveness are prioritized for fluid UI scrolling with Thermal Guard active."
+                    "UI fluidity runs autonomously 100% of the time—no manual Smoothness profile needed. The <5ms touch path boosts RenderThread & SurfaceFlinger with refresh-adaptive ${holdMs}ms OverScroller fling hold (${hz}Hz panel) plus automatic Jank Rescue at ≥3% frame drops."
                 }
                 DialogueResolution(
-                    intent = DialogueIntent.CONTEXT_SHIFT_SMOOTHNESS,
+                    intent = DialogueIntent.EXPLAIN_SMOOTHNESS_AUTONOMY,
                     reply = reply,
-                    requestedProfile = CoreFlowManager.Profile.SMOOTHNESS,
-                    telemetryTags = listOf("Profile -> Smoothness", "UI Priority"),
-                )
-            }
-            DialogueIntent.CONTEXT_SHIFT_BALANCED -> {
-                val reply = if (isIndonesian) {
-                    "Konteks CFAE dikembalikan ke profil Balanced (otomatis seimbang). Orkestrasi lintas-domain akan menyesuaikan headroom secara dinamis mengikuti beban real-time dan suhu perangkat."
-                } else {
-                    "CFAE context restored to Balanced automatic profile. Coupled multi-domain orchestration will modulate headroom dynamically based on live load and thermals."
-                }
-                DialogueResolution(
-                    intent = DialogueIntent.CONTEXT_SHIFT_BALANCED,
-                    reply = reply,
-                    requestedProfile = CoreFlowManager.Profile.BALANCED,
-                    telemetryTags = listOf("Profile -> Balanced", "Autonomous"),
+                    telemetryTags = listOf("<5ms Touch", "${hz}Hz · ${holdMs}ms Fling"),
                 )
             }
             DialogueIntent.DIAGNOSE_STUTTER -> buildStutterDiagnosis(status, isIndonesian)
@@ -301,9 +349,10 @@ object CoreFlowDialogueEngine {
         val leadStr = "${(co.thermalStepdownLead * 100f).toInt()}%"
         val jankPct = (status.aiJankRisk * 100f).toInt().coerceIn(0, 100)
 
+        val regimeLabel = status.autonomousRegimeLabel(isIndonesian)
         val reply = if (isIndonesian) {
             buildString {
-                append("Ringkasan Termal & Beban Live (${status.mode} · ${status.effectiveProfile.label}):\n")
+                append("Ringkasan Termal & Beban Live (${status.mode} · $regimeLabel):\n")
                 append("• Suhu SoC: ${formatTemp(status.socTempCelsius)} (${formatVel(status.thermalVelocityCpm)}) · Baterai: ${formatTemp(status.batteryTempCelsius)}\n")
                 append("• Beban: CPU ${status.cpuUtilPct.toInt()}% · GPU $gpuStr · Render ${(status.renderPressure * 100f).toInt()}% · Kelas: ${status.aiWorkloadClass}\n")
                 append("• Headroom PID: $scalePct% · Prediksi 10d: ${status.aiPredicted10s.toInt()}% (akurasi ${(status.aiConfidence * 100f).toInt()}%, Jank Risk $jankPct%)\n")
@@ -311,7 +360,7 @@ object CoreFlowDialogueEngine {
             }
         } else {
             buildString {
-                append("Live Thermal & Load Report (${status.mode} · ${status.effectiveProfile.label}):\n")
+                append("Live Thermal & Load Report (${status.mode} · $regimeLabel):\n")
                 append("• SoC Temp: ${formatTemp(status.socTempCelsius)} (${formatVel(status.thermalVelocityCpm)}) · Battery: ${formatTemp(status.batteryTempCelsius)}\n")
                 append("• Utilization: CPU ${status.cpuUtilPct.toInt()}% · GPU $gpuStr · Render ${(status.renderPressure * 100f).toInt()}% · Workload: ${status.aiWorkloadClass}\n")
                 append("• PID Headroom: $scalePct% · 10s Forecast: ${status.aiPredicted10s.toInt()}% (conf ${(status.aiConfidence * 100f).toInt()}%, Jank Risk $jankPct%)\n")
@@ -426,19 +475,19 @@ object CoreFlowDialogueEngine {
         isIndonesian: Boolean,
         journalEntryCount: Int?,
     ): DialogueResolution {
-        val ver = status?.version ?: "6.0.0-R"
-        val mode = status?.mode ?: "OFFLINE"
+        val ver = status?.version ?: "6.1.0-R"
+        val regime = status?.autonomousRegimeLabel(isIndonesian) ?: if (isIndonesian) "Offline" else "Offline"
         val temp = formatTemp(status?.socTempCelsius ?: -1f)
         val journalPart = journalEntryCount?.let { " · CFJ4: $it node" }.orEmpty()
         val reply = if (isIndonesian) {
-            "CFAE System Framework v$ver siap ($mode · SoC $temp$journalPart). Tanyakan bebas dalam Bahasa Indonesia/Inggris soal stutter, suhu/beban, konflik modul, CFDNA2/AI, atau minta pindah konteks (Gaming / Battery / Smoothness / Balanced)."
+            "CFAE System Framework v$ver siap ($regime · SoC $temp$journalPart). Semua berjalan 100% otonom tanpa profil manual. Tanyakan soal stutter, suhu/beban, konflik modul, App DNA, atau ketik \"Pause\" / \"Lanjutkan\" untuk perbandingan OEM."
         } else {
-            "CFAE System Framework v$ver ready ($mode · SoC $temp$journalPart). Ask freely about frame drops, thermal/load status, conflicts/tampering, CFDNA2/AI engine, or request a safe context shift (Gaming / Battery / Smoothness / Balanced)."
+            "CFAE System Framework v$ver ready ($regime · SoC $temp$journalPart). Running 100% Zero-Profile autonomous. Ask about frame drops, thermals/load, conflicts/tampering, App DNA, or type \"Pause\" / \"Resume\" for Stock OEM A/B compare."
         }
         return DialogueResolution(
             intent = DialogueIntent.GENERAL_SUMMARY,
             reply = reply,
-            telemetryTags = listOf("v$ver", mode),
+            telemetryTags = listOf("v$ver", regime),
         )
     }
 

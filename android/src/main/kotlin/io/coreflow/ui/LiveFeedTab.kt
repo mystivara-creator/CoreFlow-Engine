@@ -89,7 +89,7 @@ fun LiveFeedTab(
     onRefresh: () -> Unit,
     pendingPrompt: String? = null,
     onConsumePrompt: () -> Unit = {},
-    onSelectProfile: (CoreFlowManager.Profile) -> Unit = {},
+    onTogglePause: (Boolean) -> Unit = {},
     onResolveTamper: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -171,7 +171,7 @@ fun LiveFeedTab(
             while (messages.size > 16) {
                 messages.removeAt(0)
             }
-            res.requestedProfile?.let { onSelectProfile(it) }
+            res.requestedInspectionMode?.let { onTogglePause(it) }
             res.requestedTamperResyncNode?.let { onResolveTamper(it) }
         }
     }
@@ -433,8 +433,8 @@ fun LiveFeedTab(
                 }
                 val vel = status?.thermalVelocityCpm ?: 0f
                 val trendColor = when {
-                    vel >= 0.6f -> Color(0xFFEF4444)
-                    vel <= -0.6f -> Color(0xFF38BDF8)
+                    vel >= 0.25f -> Color(0xFFEF4444)
+                    vel <= -0.25f -> Color(0xFF38BDF8)
                     else -> Color(0xFF22C55E)
                 }
 
@@ -471,7 +471,7 @@ fun LiveFeedTab(
                         )
                         Text(
                             text = status?.let {
-                                "${strings.humanizeMode(it.mode)} · ${it.effectiveProfile.label}"
+                                "${it.autonomousRegimeLabel(strings.isIndonesian)} · ${strings.humanizeMode(it.mode)}"
                             } ?: "Offline",
                             style = MiuixTheme.textStyles.headline1,
                             fontWeight = FontWeight.SemiBold,
