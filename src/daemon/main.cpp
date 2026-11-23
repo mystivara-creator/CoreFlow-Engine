@@ -2137,16 +2137,22 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (!thermal.available && (tb.profile.total_valid_sensors > 0 || soc_temp >= 0.0f)) {
-            const double rec = static_cast<double>(config.thermal_recover_celsius);
-            const double trip = static_cast<double>(config.thermal_trip_celsius);
-            const double norm = std::clamp((static_cast<double>(soc_temp) - rec) / std::max(1.0, trip - rec), 0.0, 3.0);
-            thermal.available = true;
-            thermal.fallback_active = true;
-            thermal.pressure = std::clamp(65.0 + norm * 20.0, 0.0, 130.0);
-            thermal.source = "generic_fallback";
-            if (soc_temp >= config.thermal_trip_celsius + config.thermal_emergency_margin_celsius) {
-                thermal.emergency = true;
+        if (!thermal.available && (tb.profile.total_valid_sensors > 0 || soc_temp >= 0.0f || skin_temp > 0.0 || batt_temp > 0.0f)) {
+            const auto fallback = evaluate_generic_thermal_fallback({
+                .soc_temp_celsius = soc_temp,
+                .skin_temp_celsius = skin_temp > 0.0 ? static_cast<float>(skin_temp) : tb.skin_celsius,
+                .battery_temp_celsius = batt_temp,
+                .chassis_recover_celsius = config.thermal_recover_celsius,
+                .chassis_trip_celsius = config.thermal_trip_celsius,
+                .emergency_margin_celsius = config.thermal_emergency_margin_celsius,
+            });
+            if (fallback.available) {
+                thermal.available = fallback.available;
+                thermal.fallback_active = fallback.fallback_active;
+                thermal.pressure = fallback.pressure;
+                thermal.source = fallback.source;
+                thermal.sensor = fallback.sensor;
+                thermal.emergency = fallback.emergency;
             }
         }
         if (!pid_initialized || pid_target_fallback != thermal.fallback_active) {
@@ -2295,10 +2301,12 @@ int main(int argc, char* argv[]) {
             }
             // Compute jitter-free thermal rise/cool velocity (°C/min) via Rust OLS ring buffer
             // using monotonic steady_clock timestamps so NTP/NITZ wall-clock jumps never skew the slope.
+            const double die_trip_c = std::clamp(
+                static_cast<double>(config.thermal_trip_celsius) + 30.0, 72.0, 82.0);
             const auto trend = thermal_trend->push_sample(
                 now_ms,
                 static_cast<double>(soc_temp),
-                static_cast<double>(config.thermal_trip_celsius));
+                die_trip_c);
             live_status.thermal_velocity_cpm = trend.velocity_cpm;
             (void)write_status_snapshot(build_status_json(live_status));
         };
@@ -2330,11 +2338,11 @@ int main(int argc, char* argv[]) {
         }
         live_status.thermal_emergency = false;
 
-        const bool thermal_guard = !thermal.fallback_active
-            ? (thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0 ||
-               (live_status.thermal_guard && thermal.pressure > 65.0))
-            : (thermal.emergency || soc_temp >= config.thermal_trip_celsius ||
-               (live_status.thermal_guard && soc_temp > config.thermal_recover_celsius));
+        // Both OEM thermal policy and dual-domain generic_fallback emit normalized 0..130 pressure
+        // (65 = recovery threshold, 85 = thermal guard trip across chassis OR CPU silicon die).
+        const bool thermal_guard =
+            thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0 ||
+            (live_status.thermal_guard && thermal.pressure > 65.0);
         if (thermal_guard && !live_status.session.prev_thermal_guard) {
             ++live_status.session.thermal_guard_events;
             decision_journal.record(

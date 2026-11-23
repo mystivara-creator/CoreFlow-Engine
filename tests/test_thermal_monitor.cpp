@@ -306,7 +306,86 @@ int main() {
     assert(std::fabs(sibling_mon.battery_celsius() - 34.5f) < 0.01f);
     assert(std::fabs(sibling_mon.hottest_celsius() - 41.0f) < 0.01f);
 
+    // Dual-domain generic_fallback regression tests (reproducing PARROTPRO real telemetry):
+    // 1. Normal Snapdragon idle/light load (CPU die 43.67 C, skin 41.36 C, battery 39.0 C)
+    //    must NEVER falsely trip THERMAL_GUARD (pressure >= 85) or pin pressure at >= 83%.
+    {
+        const auto parrot_idle = evaluate_generic_thermal_fallback({
+            .soc_temp_celsius = 43.67f,
+            .skin_temp_celsius = 41.358f,
+            .battery_temp_celsius = 39.0f,
+            .chassis_recover_celsius = 40.0f,
+            .chassis_trip_celsius = 44.0f,
+            .emergency_margin_celsius = 12.0f,
+        });
+        assert(parrot_idle.available && parrot_idle.fallback_active);
+        assert(parrot_idle.source == "generic_fallback");
+        assert(!parrot_idle.emergency);
+        assert(parrot_idle.pressure > 65.0 && parrot_idle.pressure < 75.0);
+    }
+    // 2. Brief app-launch CPU silicon die spike to 60.2 C while chassis is warm-normal (41 C)
+    //    must NEVER trigger emergency or THERMAL_GUARD.
+    {
+        const auto launch_spike = evaluate_generic_thermal_fallback({
+            .soc_temp_celsius = 60.2f,
+            .skin_temp_celsius = 41.0f,
+            .battery_temp_celsius = 38.5f,
+            .chassis_recover_celsius = 40.0f,
+            .chassis_trip_celsius = 44.0f,
+            .emergency_margin_celsius = 12.0f,
+        });
+        assert(launch_spike.available && !launch_spike.emergency);
+        assert(launch_spike.pressure < 75.0);
+    }
+    // 3. Cool idle must scale cleanly below 65% (no artificial 65% floor).
+    {
+        const auto cool_idle = evaluate_generic_thermal_fallback({
+            .soc_temp_celsius = 42.0f,
+            .skin_temp_celsius = 35.0f,
+            .battery_temp_celsius = 34.0f,
+            .chassis_recover_celsius = 40.0f,
+            .chassis_trip_celsius = 44.0f,
+            .emergency_margin_celsius = 12.0f,
+        });
+        assert(cool_idle.available && !cool_idle.emergency);
+        assert(cool_idle.pressure > 35.0 && cool_idle.pressure < 50.0);
+    }
+    // 4. Genuine chassis overheat (skin 44.5 C) and genuine CPU die overheat (74.5 C)
+    //    must cleanly engage THERMAL_GUARD (pressure >= 85.0), and 90 C die must set emergency.
+    {
+        const auto hot_chassis = evaluate_generic_thermal_fallback({
+            .soc_temp_celsius = 55.0f,
+            .skin_temp_celsius = 44.5f,
+            .battery_temp_celsius = 42.0f,
+            .chassis_recover_celsius = 40.0f,
+            .chassis_trip_celsius = 44.0f,
+            .emergency_margin_celsius = 12.0f,
+        });
+        assert(hot_chassis.available && !hot_chassis.emergency && hot_chassis.pressure >= 85.0);
+
+        const auto hot_die_only = evaluate_generic_thermal_fallback({
+            .soc_temp_celsius = 74.5f,
+            .skin_temp_celsius = -1.0f,
+            .battery_temp_celsius = -1.0f,
+            .chassis_recover_celsius = 40.0f,
+            .chassis_trip_celsius = 44.0f,
+            .emergency_margin_celsius = 12.0f,
+        });
+        assert(hot_die_only.available && !hot_die_only.emergency && hot_die_only.pressure >= 85.0);
+        assert(hot_die_only.sensor == "soc-die-fallback");
+
+        const auto die_emerg = evaluate_generic_thermal_fallback({
+            .soc_temp_celsius = 90.0f,
+            .skin_temp_celsius = 41.0f,
+            .battery_temp_celsius = 38.0f,
+            .chassis_recover_celsius = 40.0f,
+            .chassis_trip_celsius = 44.0f,
+            .emergency_margin_celsius = 12.0f,
+        });
+        assert(die_emerg.available && die_emerg.emergency && die_emerg.pressure >= 120.0);
+    }
+
     std::filesystem::remove_all(root);
-    std::cout << "ThermalMonitor cluster discovery, fusion, headroom, hwmon, and TemperatureTrendTracker PASS\n";
+    std::cout << "ThermalMonitor cluster discovery, fusion, headroom, hwmon, dual-domain fallback, and TemperatureTrendTracker PASS\n";
     return 0;
 }

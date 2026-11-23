@@ -604,6 +604,76 @@ ThermalAssessment fuse_thermal_assessments(ThermalAssessment platform, ThermalAs
     return result;
 }
 
+ThermalAssessment evaluate_generic_thermal_fallback(
+    const GenericThermalFallbackInput& input) noexcept {
+    const auto normalize_domain = [](double temp, double cool_floor, double rec, double trip) noexcept {
+        if (!std::isfinite(temp) || temp <= 0.0) return -1.0;
+        const double span = std::max(1.0, trip - rec);
+        if (temp <= rec) {
+            const double low_span = std::max(1.0, rec - cool_floor);
+            return std::clamp(((temp - cool_floor) / low_span) * 65.0, 0.0, 65.0);
+        }
+        return std::clamp(65.0 + ((temp - rec) / span) * 20.0, 65.0, 130.0);
+    };
+
+    const double chassis_trip = std::isfinite(input.chassis_trip_celsius)
+        ? std::clamp(static_cast<double>(input.chassis_trip_celsius), 35.0, 80.0)
+        : 44.0;
+    const double chassis_rec = std::isfinite(input.chassis_recover_celsius)
+        ? std::clamp(static_cast<double>(input.chassis_recover_celsius), 25.0, chassis_trip - 1.0)
+        : std::max(25.0, chassis_trip - 4.0);
+    const double emergency_margin = std::isfinite(input.emergency_margin_celsius)
+        ? std::clamp(static_cast<double>(input.emergency_margin_celsius), 4.0, 30.0)
+        : 12.0;
+
+    // CPU silicon junction temperatures run ~25-35 C hotter than chassis/skin temperatures.
+    // Never compare raw CPU die readings against 40-44 C skin thresholds.
+    const double die_trip = std::clamp(chassis_trip + 30.0, 72.0, 82.0);
+    const double die_rec = std::max(60.0, die_trip - 8.0);
+    const double die_emergency = std::min(92.0, die_trip + 14.0);
+
+    const double skin = (std::isfinite(input.skin_temp_celsius) &&
+                         input.skin_temp_celsius > 0.0f && input.skin_temp_celsius < 100.0f)
+        ? static_cast<double>(input.skin_temp_celsius)
+        : -1.0;
+    const double batt = (std::isfinite(input.battery_temp_celsius) &&
+                         input.battery_temp_celsius > 0.0f && input.battery_temp_celsius < 100.0f)
+        ? static_cast<double>(input.battery_temp_celsius)
+        : -1.0;
+    const double chassis = (skin > 0.0 && batt > 0.0) ? std::max(skin, batt)
+        : (skin > 0.0 ? skin : batt);
+    const double soc = (std::isfinite(input.soc_temp_celsius) &&
+                        input.soc_temp_celsius > 0.0f && input.soc_temp_celsius < 130.0f)
+        ? static_cast<double>(input.soc_temp_celsius)
+        : -1.0;
+
+    const double chassis_cool_floor = std::min(25.0, chassis_rec - 10.0);
+    const double chassis_pressure = normalize_domain(chassis, chassis_cool_floor, chassis_rec, chassis_trip);
+    const double die_pressure = normalize_domain(soc, 30.0, die_rec, die_trip);
+    if (chassis_pressure < 0.0 && die_pressure < 0.0) {
+        return {};
+    }
+
+    ThermalAssessment out{};
+    out.available = true;
+    out.fallback_active = true;
+    out.source = "generic_fallback";
+    if (chassis_pressure >= die_pressure && chassis_pressure >= 0.0) {
+        out.pressure = chassis_pressure;
+        out.sensor = "chassis-fallback";
+    } else {
+        out.pressure = die_pressure;
+        out.sensor = "soc-die-fallback";
+    }
+    const bool chassis_emerg = chassis > 0.0 && chassis >= chassis_trip + emergency_margin;
+    const bool die_emerg = soc > 0.0 && soc >= die_emergency;
+    out.emergency = chassis_emerg || die_emerg;
+    if (out.emergency) {
+        out.pressure = std::max(out.pressure, 120.0);
+    }
+    return out;
+}
+
 ThermalBundle ThermalMonitor::sample_bundle_locked(bool use_headroom) const {
     ThermalAssessment platform;
 
@@ -611,35 +681,52 @@ ThermalBundle ThermalMonitor::sample_bundle_locked(bool use_headroom) const {
     if (sysfs_root_ == "/sys/class/thermal") {
         // Public NDK thermal API, resolved optionally for standalone root daemons.
         // A severity is OEM policy, not a universal absolute temperature.
+        // Retry manager acquisition on a 10s cooldown so early-boot or system_server
+        // restarts never permanently trap the daemon in generic_fallback.
         struct AThermalManager;
         using Acquire = AThermalManager* (*)();
+        using Release = void (*)(AThermalManager*);
         using Status = int (*)(AThermalManager*);
         using Headroom = float (*)(AThermalManager*, int);
         static void* library = ::dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
         static auto acquire = library ? reinterpret_cast<Acquire>(::dlsym(library, "AThermal_acquireManager")) : nullptr;
+        static auto release = library ? reinterpret_cast<Release>(::dlsym(library, "AThermal_releaseManager")) : nullptr;
         static auto status = library ? reinterpret_cast<Status>(::dlsym(library, "AThermal_getCurrentThermalStatus")) : nullptr;
         static auto headroom = library ? reinterpret_cast<Headroom>(::dlsym(library, "AThermal_getThermalHeadroom")) : nullptr;
-        static auto manager = acquire && status ? acquire() : nullptr;
-        if (manager) {
-            const int severity = status(manager);
-            if (severity >= 0 && severity <= 6) {
-                auto result = assessment_from_android_severity(severity);
-                if (use_headroom && headroom) {
-                    // The cache is shared by every ThermalMonitor instance; protect it
-                    // with a process-wide function-local mutex, not the per-instance
-                    // monitor_mutex_.
-                    static std::mutex headroom_cache_mutex;
-                    static auto last = std::chrono::steady_clock::time_point::min();
-                    static float cached = -1;
-                    std::lock_guard<std::mutex> cache_lock(headroom_cache_mutex);
-                    const auto now = std::chrono::steady_clock::now();
-                    if (last == std::chrono::steady_clock::time_point::min() || now - last >= std::chrono::seconds(10)) {
-                        cached = headroom(manager, 0);
-                        last = now;
+        static std::mutex android_thermal_mutex;
+        static AThermalManager* manager = nullptr;
+        static auto last_acquire_attempt = std::chrono::steady_clock::time_point::min();
+        static auto last_headroom_sample = std::chrono::steady_clock::time_point::min();
+        static float cached_headroom = -1.0f;
+
+        if (acquire && status) {
+            std::lock_guard<std::mutex> thermal_lock(android_thermal_mutex);
+            const auto now = std::chrono::steady_clock::now();
+            if (manager == nullptr &&
+                (last_acquire_attempt == std::chrono::steady_clock::time_point::min() ||
+                 now - last_acquire_attempt >= std::chrono::seconds(10))) {
+                last_acquire_attempt = now;
+                manager = acquire();
+            }
+            if (manager != nullptr) {
+                const int severity = status(manager);
+                if (severity >= 0 && severity <= 6) {
+                    auto result = assessment_from_android_severity(severity);
+                    if (use_headroom && headroom) {
+                        if (last_headroom_sample == std::chrono::steady_clock::time_point::min() ||
+                            now - last_headroom_sample >= std::chrono::seconds(10)) {
+                            cached_headroom = headroom(manager, 0);
+                            last_headroom_sample = now;
+                        }
+                        result = apply_android_headroom(std::move(result), cached_headroom);
                     }
-                    result = apply_android_headroom(std::move(result), cached);
+                    platform = std::move(result);
+                } else {
+                    if (release) release(manager);
+                    manager = nullptr;
+                    last_headroom_sample = std::chrono::steady_clock::time_point::min();
+                    cached_headroom = -1.0f;
                 }
-                platform = result;
             }
         }
     }

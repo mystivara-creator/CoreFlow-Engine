@@ -130,9 +130,20 @@ struct ThermalBundle {
     float skin_celsius{-1.0f};
 };
 
+struct GenericThermalFallbackInput {
+    float soc_temp_celsius{-1.0f};
+    float skin_temp_celsius{-1.0f};
+    float battery_temp_celsius{-1.0f};
+    float chassis_recover_celsius{40.0f};
+    float chassis_trip_celsius{44.0f};
+    float emergency_margin_celsius{12.0f};
+};
+
 [[nodiscard]] ThermalAssessment assessment_from_android_severity(int severity);
 [[nodiscard]] ThermalAssessment apply_android_headroom(ThermalAssessment base, float headroom);
 [[nodiscard]] ThermalAssessment fuse_thermal_assessments(ThermalAssessment platform, ThermalAssessment sensors);
+[[nodiscard]] ThermalAssessment evaluate_generic_thermal_fallback(
+    const GenericThermalFallbackInput& input) noexcept;
 
 class ThermalMonitor {
 public:
