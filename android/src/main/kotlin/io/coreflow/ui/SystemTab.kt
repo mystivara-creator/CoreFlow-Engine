@@ -340,15 +340,16 @@ fun SystemTab(
             // Persistent OEM-Collaboration Map & Diagnostics
             item { SmallTitle(text = strings.sectionCoexistence) }
             item {
-                val contended = status?.contendedPaths.orEmpty()
                 val yielded = status?.oemYieldedPaths.orEmpty()
+                val yieldedSet = yielded.toSet()
+                val activeContended = status?.contendedPaths.orEmpty().filterNot { it in yieldedSet }
                 val headerText = when {
-                    contended.isNotEmpty() -> "${contended.size} Node(s) in Auto-Cooldown Backoff"
+                    activeContended.isNotEmpty() -> "${activeContended.size} Node(s) in Auto-Cooldown Backoff"
                     yielded.isNotEmpty() -> "${strings.oemCooperatingTitle} · ${yielded.size} Yielded"
                     else -> "Zero OEM Contention · Full Ownership"
                 }
                 val headerColor = when {
-                    contended.isNotEmpty() -> Color(0xFFF59E0B)
+                    activeContended.isNotEmpty() -> Color(0xFFF59E0B)
                     yielded.isNotEmpty() -> Color(0xFF38BDF8)
                     else -> Color(0xFF22C55E)
                 }
@@ -365,7 +366,7 @@ fun SystemTab(
                         color = headerColor,
                     )
                     Spacer(Modifier.height(4.dp))
-                    if (contended.isEmpty() && yielded.isEmpty()) {
+                    if (activeContended.isEmpty() && yielded.isEmpty()) {
                         Text(
                             text = if (strings.isIndonesian) {
                                 "CoreFlow Autonomous Co-Pilot berjalan harmonis bersama OEM tanpa konflik."
@@ -376,16 +377,16 @@ fun SystemTab(
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                     } else {
-                        if (contended.isNotEmpty()) {
+                        if (activeContended.isNotEmpty()) {
                             Text(
-                                text = contended.joinToString("\n"),
+                                text = activeContended.joinToString("\n"),
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,
                                 color = Color(0xFFF59E0B),
                             )
                         }
                         if (yielded.isNotEmpty()) {
-                            if (contended.isNotEmpty()) Spacer(Modifier.height(8.dp))
+                            if (activeContended.isNotEmpty()) Spacer(Modifier.height(8.dp))
                             Text(
                                 text = strings.oemCooperatingSummary,
                                 style = MiuixTheme.textStyles.footnote1,

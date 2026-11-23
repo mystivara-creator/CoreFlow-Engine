@@ -515,14 +515,49 @@ def build_anomaly_dataset() -> List[Tuple[List[float], int]]:
     return samples
 
 
-def main() -> int:
+def main(argv: List[str] | None = None) -> int:
+    import argparse
+
     repo = Path(__file__).resolve().parents[1]
-    assets = repo / "android/src/main/assets"
+    default_assets = repo / "android/src/main/assets"
+
+    parser = argparse.ArgumentParser(
+        description="Train & export Companion App on-demand ONNX opset-13 models (NLU + Session Anomaly)",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=default_assets,
+        help=f"Output directory for .onnx assets (default: {default_assets})",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Train and verify accuracy without writing .onnx files to disk",
+    )
+    args = parser.parse_args(argv)
+    assets: Path = args.out_dir
 
     nlu_data = build_nlu_dataset()
     w1, b1, w2, b2, nlu_acc = train_classifier(
         nlu_data, in_dim=NLU_DIM, h_dim=NLU_HIDDEN, out_dim=len(INTENTS), epochs=260, lr=0.09, seed=2026
     )
+
+    anom_data = build_anomaly_dataset()
+    aw1, ab1, aw2, ab2, anom_acc = train_classifier(
+        anom_data, in_dim=8, h_dim=16, out_dim=len(ANOMALY_CLASSES), epochs=220, lr=0.06, seed=4096
+    )
+
+    assert nlu_acc >= 0.99, f"Expected NLU train accuracy >= 99%, got {nlu_acc}"
+    assert anom_acc >= 0.97, f"Expected Anomaly train accuracy >= 97%, got {anom_acc}"
+
+    if args.dry_run:
+        print(
+            f"[dry-run] Verified NLU (train_acc={nlu_acc*100:.1f}%, samples={len(nlu_data)}) "
+            f"& Anomaly (train_acc={anom_acc*100:.1f}%, samples={len(anom_data)})"
+        )
+        return 0
+
     nlu_blob = export_mlp_onnx(
         assets / "cfae_nlu_intent.onnx",
         "cfae_nlu_intent_mlp",
@@ -533,11 +568,6 @@ def main() -> int:
         b1,
         w2,
         b2,
-    )
-
-    anom_data = build_anomaly_dataset()
-    aw1, ab1, aw2, ab2, anom_acc = train_classifier(
-        anom_data, in_dim=8, h_dim=16, out_dim=len(ANOMALY_CLASSES), epochs=220, lr=0.06, seed=4096
     )
     anom_blob = export_mlp_onnx(
         assets / "cfae_session_anomaly.onnx",
@@ -553,8 +583,6 @@ def main() -> int:
 
     print(f"Exported cfae_nlu_intent.onnx      ({len(nlu_blob)} B, train_acc={nlu_acc*100:.1f}%, samples={len(nlu_data)})")
     print(f"Exported cfae_session_anomaly.onnx ({len(anom_blob)} B, train_acc={anom_acc*100:.1f}%, samples={len(anom_data)})")
-    assert nlu_acc >= 0.99, f"Expected NLU train accuracy >= 99%, got {nlu_acc}"
-    assert anom_acc >= 0.97, f"Expected Anomaly train accuracy >= 97%, got {anom_acc}"
     return 0
 
 

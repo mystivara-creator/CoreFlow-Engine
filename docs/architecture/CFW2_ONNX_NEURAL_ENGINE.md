@@ -1,6 +1,6 @@
 # CFAE System Framework — Hybrid CFW2 + ONNX Neural Engine Architecture
 
-Status: **Phase A Implemented & Verified (`feat/v6.1-onnx-cfw2-neural-engine`, PR #49)**  
+Status: **Phase A + Phase B Implemented, 2× Audited & Hardware-Verified (`feat/v6.1-onnx-cfw2-neural-engine`, PR #49)**  
 Target Runtime Budgets (`coreflowd`): **`< 0.3%` idle CPU · `< 3 MB` RSS · `< 16 KB` model footprint · `< 15 µs/tick` inference**
 
 ---
@@ -99,3 +99,30 @@ Implemented alongside Phase A in PR #49 (`android/`):
   - `android/src/main/assets/cfae_nlu_intent.onnx` (~34 KB, opset-13, `256→32→11` FNV-1a signed feature hashing MLP): augments [`CoreFlowDialogueEngine.kt`](../../android/src/main/kotlin/io/coreflow/CoreFlowDialogueEngine.kt) with free-form Indonesian/English colloquial NLU while keeping deterministic sovereign guardrails and live telemetry grounding authoritative.
   - `android/src/main/assets/cfae_session_anomaly.onnx` (~1.2 KB, opset-13, `8→16→5` MLP): 1-tap root-cause session anomaly analysis (`HEALTHY`, `THERMAL_SATURATION`, `FAST_CHARGE_HEAT`, `STUTTER_IO_CONTENTION`, `EXTERNAL_TAMPER`).
 - **Daemon Model Manager (`SystemTab.kt` + `CoreFlowManager.kt`):** Displays live daemon AI backend/jank risk/workload class and enables validated SAF import/removal of custom 1.7 KB `.cfw2` models (bounded <= 16 KB read, CRC32 & finite weight verification, atomic `chown 0:0` / `chmod 0644` install).
+
+---
+
+## 6. Offline & Google Colab Training Quickstart
+
+All training tools under `tools/` are pure Python 3 (zero external dependencies for `.cfw2` and Companion `.onnx` training — runs in < 2 seconds on CPU or Google Colab without GPU):
+
+```bash
+# 1. Clone repo (works directly inside a Google Colab cell with `!`)
+git clone https://github.com/mystivara-creator/CoreFlow-Engine.git
+cd CoreFlow-Engine
+
+# 2. Train a personalized 1,700 B CFW2 micro-model from one or more device --diag JSON exports
+python3 tools/train_cfw2_from_diag.py \
+  --diag /path/to/coreflow-diag-1.json /path/to/coreflow-diag-2.json \
+  --epochs 120 --activation tanh \
+  -o equilibrium.cfw2
+
+# 3. Verify CRC32, dimensions, and weight bounds before importing via Companion App -> Settings -> Neural Model Manager
+python3 tools/onnx_to_cfw2.py --inspect equilibrium.cfw2
+
+# 4. (Optional) Compile an external PyTorch/ONNX opset-13 10->16->12->3 MLP into CFW2
+python3 tools/onnx_to_cfw2.py --from-onnx my_model.onnx -o equilibrium.cfw2
+
+# 5. (Optional) Re-train Companion App NLU + Session Anomaly ONNX assets
+python3 tools/train_companion_onnx.py --dry-run
+```

@@ -43,10 +43,10 @@ Works directly on **Magisk, KernelSU, KernelSU-Next, and APatch** — **no KsuWe
 
 - **Home**: Aligned live telemetry pills (`SoC Temp`, `Render`, `UClamp`, `Headroom`), live **SoC Temp & Headroom Sparkline**, 4-Pillar readiness strip, 2x2 Autonomous Profiles (`Balanced`, `Smoothness`, `Gaming`, `Battery`), 1-tap **Pause (A/B Compare)**, and quick **Bypass Charging** toggle (when supported).
 - **Control Hub (Capability-Driven)**: Live per-cluster EAS frequency bars, GPU busy % & live **Thermal Zones**, **Bypass Charging / Auto Bypass in Games / Charge Ceiling (80% / 85% / 90%)**, RAM/ZRAM & PSI stall monitors, Real FPS HUD controls, and **2 Quick Settings Tiles** (*CoreFlow Mode* + *CoreFlow Bypass*).
-- **Live AI Feed & Sovereign Dialogue Console**: Real-time stream of verified `DecisionEpisode` cards, 10-second AI thermal forecast, and deterministic `CFAE TELEMETRY LINK` diagnostics.
+- **Live AI Feed & Sovereign Dialogue Console**: Real-time stream of verified `DecisionEpisode` cards, 10-second Hybrid CFW2/RLS AI thermal & jank-risk forecast, on-demand ARM64 **ONNX Runtime** free-form ID/EN NLU (`0 MB` background RAM via `ON_STOP` close), and 1-tap **AI Session Analysis**.
 - **Deep Per-App Rules**: Real app icons & names via `PackageManager`, automatic Game detection, Effective State badges (`Using Global` / `Override Active`), and 5-mode overrides (`Auto / Gaming / Smooth / Battery / Stock`).
 - **Floating Real FPS Game HUD**: Draggable overlay over any game with real SurfaceFlinger FPS readout + **tap-to-expand Mini Game Panel** (4-profile pills, 1-tap Pause A/B, 1-tap Bypass Charging).
-- **Settings, Backup & Bilingual UI**: Instant **English / Bahasa Indonesia** switcher, live Miuix/Monet themes, **SAF Profile Export/Import** with SoC provenance verification, native Share Sheet `--diag`, CFJ4 Journal inspector, and Emergency OEM Rollback.
+- **Settings, Neural Model Manager & Bilingual UI**: Instant **English / Bahasa Indonesia** switcher, live Miuix/Monet themes, **SAF `.cfw2` Neural Model Manager**, **SAF Profile Export/Import** with SoC provenance verification, native Share Sheet `--diag`, CFJ4 Journal inspector, and Emergency OEM Rollback.
 
 ---
 
@@ -81,7 +81,7 @@ coreflowd --rollback-baseline # Stop daemon & restore every modified kernel node
 sh action.sh clear-safety     # Clear boot-loop SAFE_MODE/disable markers & reset boot_attempts
 ```
 
-See [docs/DESIGN.md](docs/DESIGN.md) for the UI & Honesty Contract and [SECURITY.md](SECURITY.md) for the security model.
+See [docs/DESIGN.md](docs/DESIGN.md) for the UI & Honesty Contract, [docs/architecture/CFW2_ONNX_NEURAL_ENGINE.md](docs/architecture/CFW2_ONNX_NEURAL_ENGINE.md) for the Hybrid CFW2 + ONNX Neural Engine & offline/Colab training guide, and [SECURITY.md](SECURITY.md) for the security model.
 
 ---
 

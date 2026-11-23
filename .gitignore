@@ -1,5 +1,6 @@
 # Generated build output
 build/
+build-*/
 dist/
 artifacts/
 
@@ -7,10 +8,12 @@ artifacts/
 third_party/onnxruntime-android/
 third_party/jni/
 
-# Local tooling
+# Local tooling & Python bytecode
 .cache/
 compile_commands.json
 Testing/
+__pycache__/
+*.py[cod]
 
 # WebUI build dependencies
 node_modules/
@@ -26,6 +29,7 @@ rust/Cargo.lock
 
 # Android Companion App
 android/.gradle/
+android/build/
 android/local.properties
 *.jks
 *.keystore
