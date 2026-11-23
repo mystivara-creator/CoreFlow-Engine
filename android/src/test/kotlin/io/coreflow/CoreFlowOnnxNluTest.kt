@@ -315,4 +315,34 @@ class CoreFlowOnnxNluTest {
         assertFalse("Summary must never display -1°C: ${report.summary}", report.summary.contains("-1°C"))
         assertTrue("Summary should show -- placeholder: ${report.summary}", report.summary.contains("--"))
     }
+
+    @Test
+    fun recoveredSessionAfterHistoricalThermalGuardClassifiesHealthy() {
+        openRealAssets()
+        // Reproduce real PARROTPRO post-reboot snapshot: earlier 73 C peak + 2 historical
+        // Thermal Guard events, now cleanly recovered to 46.8 C INTERACTIVE (thermalGuard=false).
+        val base = statusSnapshot(
+            socTemp = 46.8f,
+            battTemp = 41.0f,
+            velCpm = 0.25f,
+            cpuUtil = 19f,
+            jankRatio = 0.05f,
+            aiJankRisk = 0.25f,
+            thermalGuard = false,
+        )
+        val recovered = base.copy(
+            aiPredicted10s = 64f,
+            session = base.session.copy(
+                thermalGuardEvents = 2L,
+                avgSocTempCelsius = 50.1f,
+                peakSocTempCelsius = 73.1f,
+            ),
+        )
+        val report = CoreFlowOnnxNlu.analyzeSession(recovered, isIndonesian = false)
+        assertEquals(CoreFlowOnnxNlu.AnomalyCategory.HEALTHY, report.category)
+        assertFalse(
+            "Recovered session must never claim Thermal Guard is actively capping headroom: ${report.summary}",
+            report.summary.contains("actively capping headroom"),
+        )
+    }
 }

@@ -461,19 +461,27 @@ object CoreFlowOnnxNlu {
 
     fun extractSessionFeatures(status: CoreFlowManager.DaemonStatus?): FloatArray {
         if (status == null) return FloatArray(ANOMALY_INPUT_DIM)
-        val peakTemp = status.session.peakSocTempCelsius.takeIf { it > 0f }
-            ?: status.socTempCelsius.takeIf { it > 0f } ?: 35f
-        val avgTemp = status.session.avgSocTempCelsius.takeIf { it > 0f }
-            ?: status.socTempCelsius.takeIf { it > 0f } ?: 34f
-        val peakNorm = ((peakTemp - 30f) / 30f).coerceIn(0f, 1.5f)
-        val avgNorm = ((avgTemp - 30f) / 30f).coerceIn(0f, 1.5f)
+        val liveSoc = status.socTempCelsius.takeIf { it > 0f } ?: 35f
+        val sessionPeak = status.session.peakSocTempCelsius.takeIf { it > 0f } ?: liveSoc
+        val sessionAvg = status.session.avgSocTempCelsius.takeIf { it > 0f } ?: liveSoc
+        // If Thermal Guard is inactive and live SoC + 10s forecast have recovered to cool/normal
+        // levels, evaluate against current equilibrium rather than a brief past boot/launch peak.
+        val recoveredCool = !status.thermalGuardActive && liveSoc < 54f && status.aiPredicted10s < 75f
+        val effectivePeak = if (recoveredCool) liveSoc else maxOf(liveSoc, sessionPeak)
+        val effectiveAvg = if (recoveredCool) minOf(liveSoc, sessionAvg) else sessionAvg
+        val peakNorm = ((effectivePeak - 30f) / 30f).coerceIn(0f, 1.5f)
+        val avgNorm = ((effectiveAvg - 30f) / 30f).coerceIn(0f, 1.5f)
         val slopeNorm = (status.thermalVelocityCpm / 3.0f).coerceIn(0f, 1.5f)
         val jankNorm = maxOf(
             status.hyperFluid.jankRatio ?: 0f,
             status.aiJankRisk,
         ).coerceIn(0f, 1.0f)
         val cpuNorm = (status.cpuUtilPct / 100f).coerceIn(0f, 1.0f)
-        val guardNorm = if (status.thermalGuardActive || status.session.thermalGuardEvents > 0L) 1.0f else 0.0f
+        val guardNorm = when {
+            status.thermalGuardActive -> 1.0f
+            !recoveredCool && status.session.thermalGuardEvents > 0L -> 0.5f
+            else -> 0.0f
+        }
         val tamperCount = status.tamperGuard.totalEvents + status.conflictingModules.size.toLong()
         val tamperNorm = (tamperCount.toFloat() / 2.0f).coerceIn(0f, 1.0f)
         val chargeHeatNorm = if (status.batteryPower.charging) {
@@ -547,22 +555,35 @@ object CoreFlowOnnxNlu {
                 },
                 backendName = backend,
             )
-            AnomalyCategory.THERMAL_SATURATION -> SessionAnomalyReport(
-                category = category,
-                confidence = conf,
-                title = if (isIndonesian) "Akumulasi Panas Termal" else "Thermal Saturation Detected",
-                summary = if (isIndonesian) {
-                    "Terdeteksi saturasi termal sustained (SoC $tempStr, prediksi 10d ${status?.aiPredicted10s?.toInt() ?: 0}%). Thermal Guard aktif menjaga batas aman."
+            AnomalyCategory.THERMAL_SATURATION -> {
+                val guardActive = status?.thermalGuardActive == true
+                val guardNoteId = if (guardActive) {
+                    "Thermal Guard aktif menjaga batas aman."
                 } else {
-                    "Sustained thermal saturation detected (SoC $tempStr, 10s forecast ${status?.aiPredicted10s?.toInt() ?: 0}%). Thermal Guard is actively capping headroom."
-                },
-                recommendation = if (isIndonesian) {
-                    "Gunakan profil Battery sementara atau beri jeda pendinginan 2–3 menit agar headroom pulih penuh."
+                    "Beban termal tinggi terdeteksi pada sesi ini (Thermal Guard dalam mode siaga)."
+                }
+                val guardNoteEn = if (guardActive) {
+                    "Thermal Guard is actively capping headroom."
                 } else {
-                    "Switch briefly to Battery profile or allow 2–3 minutes of cooling so thermal headroom recovers."
-                },
-                backendName = backend,
-            )
+                    "Elevated thermal load observed in this session (Thermal Guard currently standing by)."
+                }
+                SessionAnomalyReport(
+                    category = category,
+                    confidence = conf,
+                    title = if (isIndonesian) "Akumulasi Panas Termal" else "Thermal Saturation Detected",
+                    summary = if (isIndonesian) {
+                        "Terdeteksi akumulasi panas termal (SoC $tempStr, prediksi 10d ${status?.aiPredicted10s?.toInt() ?: 0}%). $guardNoteId"
+                    } else {
+                        "Thermal load accumulation detected (SoC $tempStr, 10s forecast ${status?.aiPredicted10s?.toInt() ?: 0}%). $guardNoteEn"
+                    },
+                    recommendation = if (isIndonesian) {
+                        "Gunakan profil Battery sementara atau beri jeda pendinginan 2–3 menit agar headroom pulih penuh."
+                    } else {
+                        "Switch briefly to Battery profile or allow 2–3 minutes of cooling so thermal headroom recovers."
+                    },
+                    backendName = backend,
+                )
+            }
             AnomalyCategory.FAST_CHARGE_HEAT -> SessionAnomalyReport(
                 category = category,
                 confidence = conf,

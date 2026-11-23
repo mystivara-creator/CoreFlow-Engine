@@ -2401,7 +2401,10 @@ int main(int argc, char* argv[]) {
         if (pid_dec.valid) {
             double scale = pid_dec.capacity_scale;
             if (ai.valid && ai.confidence >= 0.60 && ai.predicted_pressure_10s >= 80.0) {
-                scale = std::min(scale, ai.recommended_scale);
+                // Keep advisory pre-damp bounded above 0.65 unless Thermal Guard is active so
+                // 10s Android thermal headroom refresh steps cannot slam headroom down to 0.44.
+                const double ai_floor = thermal_guard ? 0.25 : 0.65;
+                scale = std::min(scale, std::max(ai.recommended_scale, ai_floor));
             }
             if (thermal_guard) scale = std::min(scale, 0.75);
             const auto eq = engine::compute_thermal_equilibrium({
@@ -2415,7 +2418,17 @@ int main(int argc, char* argv[]) {
                 live_status.ctx.mode == ContextMode::LaunchBurst});
             live_status.charging_damped = eq.charging_damped;
             equilibrium_guard = eq.equilibrium_guard;
-            live_status.capacity_scale = std::clamp(eq.effective_scale, 0.25, 1.0);
+            // Slew-rate limit post-PID AI/equilibrium scale changes (max 0.08/s down, 0.06/s up)
+            // so 1-tick telemetry/AI blips cannot produce a 40% headroom cliff.
+            const double target_scale = std::clamp(eq.effective_scale, 0.25, 1.0);
+            const double max_drop = std::clamp(0.08 * elapsed, 0.02, 0.20);
+            const double max_rise = std::clamp(0.06 * elapsed, 0.02, 0.15);
+            const double prev_scale = std::isfinite(live_status.capacity_scale)
+                ? std::clamp(live_status.capacity_scale, 0.25, 1.0)
+                : 1.0;
+            live_status.capacity_scale = std::clamp(
+                std::clamp(target_scale, prev_scale - max_drop, prev_scale + max_rise),
+                0.25, 1.0);
         } else {
             pid_controller->reset();
             live_status.charging_damped = false;

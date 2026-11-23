@@ -416,12 +416,17 @@ fun LiveFeedTab(
             item { SmallTitle(text = strings.sectionAiBrain) }
 
             item {
-                val contendedCount = (status?.contendedPaths?.size ?: 0) + (status?.oemYieldedNodes ?: 0)
+                val settledYields = status?.oemYieldedPaths.orEmpty().toSet()
+                val activeContention = status?.contendedPaths.orEmpty().filterNot { it in settledYields }
+                val contendedCount = maxOf(
+                    (status?.contendedPaths.orEmpty() + settledYields).toSet().size,
+                    status?.oemYieldedNodes ?: 0,
+                )
                 val sourceLabel = status?.let {
                     strings.humanizeThermalSource(it.thermalSource, contendedCount)
                 } ?: "--"
                 val sourceColor = when {
-                    (status?.contendedPaths?.size ?: 0) > 0 -> Color(0xFFF59E0B)
+                    activeContention.isNotEmpty() -> Color(0xFFF59E0B)
                     (status?.oemYieldedNodes ?: 0) > 0 -> Color(0xFF38BDF8)
                     status?.isRunning == true -> Color(0xFF22C55E)
                     else -> Color(0xFF64748B)
@@ -455,35 +460,30 @@ fun LiveFeedTab(
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Row(
+                        Box(
+                            modifier = Modifier
+                                .size(9.dp)
+                                .clip(CircleShape)
+                                .background(sourceColor),
+                        )
+                        Text(
+                            text = status?.let {
+                                "${strings.humanizeMode(it.mode)} · ${it.effectiveProfile.label}"
+                            } ?: "Offline",
+                            style = MiuixTheme.textStyles.headline1,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(9.dp)
-                                    .clip(CircleShape)
-                                    .background(sourceColor),
-                            )
-                            Text(
-                                text = status?.let {
-                                    "${strings.humanizeMode(it.mode)} · ${it.effectiveProfile.label}"
-                                } ?: "Offline",
-                                style = MiuixTheme.textStyles.headline1,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        Spacer(Modifier.size(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            BadgeTag(backendLabel, backendColor)
-                            BadgeTag(sourceLabel, sourceColor)
-                        }
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        BadgeTag(backendLabel, backendColor)
+                        BadgeTag(sourceLabel, sourceColor)
                     }
 
                     Spacer(Modifier.height(12.dp))
