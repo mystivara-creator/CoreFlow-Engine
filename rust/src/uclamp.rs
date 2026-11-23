@@ -63,6 +63,13 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
     } else {
         0.0
     };
+    let starvation_norm = if input.starvation_pressure.is_finite() && input.starvation_pressure >= 0.0
+    {
+        input.starvation_pressure.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let starvation_rescue = starvation_norm >= 0.20;
 
     // Unified Zero-Profile bias: PROFILE_BATTERY represents automatic Low-Battery Eco (<= 20% discharging)
     // applying a smooth ~15% trim while preserving full jank rescue when frames drop.
@@ -95,12 +102,12 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
 
     // Closed-loop frame pacing feedback (ADPF-class) + Feed-Forward Pre-Emptive Cancel:
     // - Verified zero/near-zero jank (< 1.5% missed frames) -> gently trim floor to save power & heat,
-    //   UNLESS feedforward_freeze is active (sudden GPU/PSI derivative spike or active touch window),
+    //   UNLESS feedforward_freeze or runqueue starvation_rescue is active,
     //   which freezes trimming pre-emptively before frames can miss T_budget = 1000 / Hz ms.
     // - Measured jank (>= 3% missed frames) -> inject proportional rescue headroom immediately.
     let jank_factor = if input.jank_ratio.is_finite() && input.jank_ratio >= 0.0 {
         if input.jank_ratio < 0.015 && input.mode != MODE_LAUNCH_BURST {
-            if input.feedforward_freeze {
+            if input.feedforward_freeze || starvation_rescue {
                 1.0
             } else if input.mode == MODE_GAMING {
                 0.88
@@ -113,6 +120,15 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
         } else {
             1.0
         }
+    } else {
+        1.0
+    };
+
+    // Universal schedstat runqueue starvation rescue (works across all engines & non-LTPO panels):
+    // When critical foreground / SurfaceFlinger threads sit runnable waiting for a CPU, lift floor up to +18%.
+    let starvation_boost = if starvation_rescue {
+        let sev = ((starvation_norm - 0.20) / 0.80).clamp(0.0, 1.0);
+        1.0 + sev * 0.18
     } else {
         1.0
     };
@@ -147,19 +163,20 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
     let base_min = (anchor_floor
         * profile_bias
         * jank_factor
+        * starvation_boost
         * app_bias
         * symbiotic_scale
         * bounded_scale.clamp(0.50, 1.0))
     .min(max_safe_floor);
     // Warm-zone Little-cluster steering: when chassis is in Cool-Glide (scale < 0.92) during
-    // light Interactive scrolling/browsing (render < 0.35, no jank), trim floor smoothly so
-    // routine UI work stays on cool Little cores instead of waking hot Big cores — even during
-    // active touch windows (feedforward_freeze guards jank_factor only, never overrides thermal physics).
+    // light Interactive scrolling/browsing (render < 0.35, no jank, no runqueue starvation), trim
+    // floor smoothly so routine UI work stays on cool Little cores instead of waking hot Big cores.
     let jank_rescue = input.jank_ratio.is_finite() && input.jank_ratio >= 0.03;
     let warm_efficiency = if input.mode == MODE_INTERACTIVE
         && bounded_scale < 0.92
         && render_norm < 0.35
         && !jank_rescue
+        && !starvation_rescue
     {
         (bounded_scale / 0.92).clamp(0.65, 1.0)
     } else {
@@ -203,6 +220,7 @@ mod tests {
             app_uclamp_bias: 1.0,
             feedforward_freeze: false,
             symbiotic_cpu_scale: 1.0,
+            starvation_pressure: -1.0,
         }
     }
 
@@ -349,5 +367,30 @@ mod tests {
         assert!(t_eco.util_min < t_norm.util_min);
         assert!(t_eco.util_min >= (t_norm.util_min * 78) / 100);
         assert!(t_eco_jank.util_min > t_eco.util_min);
+    }
+
+    #[test]
+    fn schedstat_starvation_cancels_trim_lifts_floor_and_respects_thermal_guard() {
+        let make = |starv: f64, guard: bool| {
+            let mut inp = base_input(MODE_INTERACTIVE);
+            inp.jank_ratio = 0.0;
+            inp.capacity_scale = 0.80;
+            inp.render_pressure = 0.20;
+            inp.starvation_pressure = starv;
+            inp.thermal_guard = guard;
+            inp
+        };
+        let t_trimmed = compute_uclamp_target(make(-1.0, false));
+        let t_rescued = compute_uclamp_target(make(0.75, false));
+        assert!(
+            t_rescued.util_min > t_trimmed.util_min + 40,
+            "starvation should cancel trim/warm-efficiency and boost floor: trimmed={} rescued={}",
+            t_trimmed.util_min,
+            t_rescued.util_min
+        );
+
+        let t_guarded = compute_uclamp_target(make(0.75, true));
+        assert!(t_guarded.util_max <= 768);
+        assert!(t_guarded.util_min <= 269);
     }
 }

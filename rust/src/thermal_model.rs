@@ -6,16 +6,19 @@ const STEP_MS: u64 = 10_000;
 const STEP_S: f64 = 10.0;
 const RING: usize = 60;
 const MIN_STEPS: u32 = 60;
-const FORGET: f64 = 0.998;
+const FORGET_STEADY: f64 = 0.996;
+const FORGET_ADAPT: f64 = 0.960;
 const MAX_GAP_MS: u64 = 120_000;
 
-/// Online first-order lumped-RC chassis identification (observe-only).
+/// Online first-order lumped-RC chassis identification with innovation-triggered adaptive forgetting.
 ///
 /// Physical model (battery/skin temperature as the chassis node, total system power as input):
 ///   C dT/dt = P - (T - Ta) / R_theta
 /// Discretised at STEP_S with a = exp(-STEP_S / tau):
 ///   x[k+1] = a * x[k] + b * P[k] + c      (x = T - T0, b = R_theta (1-a), c = (1-a)(Ta - T0))
-/// Parameters (a, b, c) are tracked with recursive least squares and a forgetting factor.
+/// Parameters (a, b, c) are tracked with recursive least squares and an adaptive forgetting factor
+/// that tightens temporarily when consistent 1-step prediction residuals indicate an environment
+/// shift (e.g. external Peltier cooler attached/removed or moving between AC and hot outdoors).
 /// From them: tau = -STEP_S / ln(a), R_theta = b / (1-a), Ta = T0 + c / (1-a), and the
 /// sustainable power for a target chassis temperature P_sus = (T_target - Ta) / R_theta.
 ///
@@ -34,10 +37,12 @@ pub struct ThermalModelEstimator {
     prev_x: f64,
     have_t0: bool,
     t0: f64,
-    // RLS
+    // RLS + environment-shift residual tracker
     theta: [f64; 3],
     cov: [[f64; 3]; 3],
     steps: u32,
+    innovation_ewma: f64,
+    shift_streak: u8,
     // Excitation ring
     ring_p: [f64; RING],
     ring_t: [f64; RING],
@@ -61,6 +66,8 @@ pub fn new_thermal_model_estimator() -> Box<ThermalModelEstimator> {
         theta: [0.0; 3],
         cov: [[0.0; 3]; 3],
         steps: 0,
+        innovation_ewma: 0.0,
+        shift_streak: 0,
         ring_p: [0.0; RING],
         ring_t: [0.0; RING],
         ring_len: 0,
@@ -99,6 +106,8 @@ impl ThermalModelEstimator {
             row[i] = 1.0e3;
         }
         self.steps = 0;
+        self.innovation_ewma = 0.0;
+        self.shift_streak = 0;
         self.ring_len = 0;
         self.ring_head = 0;
         self.avg_power_w = 0.0;
@@ -189,6 +198,35 @@ impl ThermalModelEstimator {
 
     fn rls_update(&mut self, x_prev: f64, p_prev: f64, x_next: f64) {
         let phi = [x_prev, p_prev, 1.0];
+        let pred = self
+            .theta
+            .iter()
+            .zip(phi.iter())
+            .map(|(a, b)| a * b)
+            .sum::<f64>();
+        let err = x_next - pred;
+        if self.steps >= 12 && err.is_finite() {
+            self.innovation_ewma = 0.75 * self.innovation_ewma + 0.25 * err;
+            if self.innovation_ewma.abs() > 0.22 {
+                self.shift_streak = self.shift_streak.saturating_add(1);
+                // On initial regime-shift detection (e.g. external cooler attached or moving outdoors),
+                // inject bounded diagonal covariance so RLS adapts immediately without exponential wind-up.
+                if self.shift_streak == 6 {
+                    self.cov[0][0] = (self.cov[0][0] + 0.05).min(50.0);
+                    self.cov[1][1] = (self.cov[1][1] + 0.20).min(50.0);
+                    self.cov[2][2] = (self.cov[2][2] + 1.00).min(100.0);
+                }
+            } else if self.innovation_ewma.abs() <= 0.10 {
+                self.shift_streak = 0;
+            }
+        }
+        let cov_trace = self.cov[0][0] + self.cov[1][1] + self.cov[2][2];
+        let lambda = if self.shift_streak >= 6 && cov_trace < 250.0 {
+            FORGET_ADAPT
+        } else {
+            FORGET_STEADY
+        };
+
         // k = P phi / (lambda + phi' P phi)
         let mut p_phi = [0.0; 3];
         for i in 0..3 {
@@ -196,11 +234,15 @@ impl ThermalModelEstimator {
                 p_phi[i] += self.cov[i][j] * phi[j];
             }
         }
-        let denom = FORGET + phi.iter().zip(p_phi.iter()).map(|(a, b)| a * b).sum::<f64>();
+        let denom = lambda
+            + phi
+                .iter()
+                .zip(p_phi.iter())
+                .map(|(a, b)| a * b)
+                .sum::<f64>();
         if !denom.is_finite() || denom <= 1e-12 {
             return;
         }
-        let err = x_next - self.theta.iter().zip(phi.iter()).map(|(a, b)| a * b).sum::<f64>();
         let mut k = [0.0; 3];
         for i in 0..3 {
             k[i] = p_phi[i] / denom;
@@ -215,12 +257,17 @@ impl ThermalModelEstimator {
         }
         for i in 0..3 {
             for j in 0..3 {
-                self.cov[i][j] = (self.cov[i][j] - k[i] * phi_p[j]) / FORGET;
+                self.cov[i][j] = (self.cov[i][j] - k[i] * phi_p[j]) / lambda;
             }
         }
         // Wind-up guard: with poor excitation and forgetting, the covariance can blow up.
         // Re-arm the whole estimator rather than carrying a corrupted (non-PSD) matrix.
-        if self.cov.iter().enumerate().any(|(i, row)| !row[i].is_finite() || row[i] > 1.0e7) {
+        if self
+            .cov
+            .iter()
+            .enumerate()
+            .any(|(i, row)| !row[i].is_finite() || row[i] > 1.0e7)
+        {
             self.reset();
         }
     }
@@ -263,9 +310,15 @@ impl ThermalModelEstimator {
             return invalid(self.steps, self.avg_power_w);
         }
 
+        let residual_damp = if self.shift_streak >= 6 {
+            (1.0 - (self.innovation_ewma.abs() - 0.12).max(0.0) / 0.80).clamp(0.35, 1.0)
+        } else {
+            1.0
+        };
         let conf = (f64::from(self.steps) / 180.0).min(1.0)
             * (std_p / 1.0).min(1.0)
             * (span / 3.0).min(1.0)
+            * residual_damp
             * 100.0;
         let sustainable = if target_c.is_finite() {
             ((target_c - ambient) / r_theta).max(0.0)
@@ -326,11 +379,69 @@ mod tests {
     fn recovers_rc_parameters_with_sensor_quantisation() {
         let res = simulate(6.0, 500.0, 28.0, 60, 0.1);
         assert!(res.valid, "model should be valid after 60 min of excitation");
-        assert!((res.r_theta_c_per_w - 6.0).abs() / 6.0 < 0.10, "R={} tau={} Ta={} steps={}", res.r_theta_c_per_w, res.tau_s, res.ambient_c, res.steps);
+        assert!(
+            (res.r_theta_c_per_w - 6.0).abs() / 6.0 < 0.10,
+            "R={} tau={} Ta={} steps={}",
+            res.r_theta_c_per_w,
+            res.tau_s,
+            res.ambient_c,
+            res.steps
+        );
         assert!((res.tau_s - 500.0).abs() / 500.0 < 0.15, "tau={}", res.tau_s);
         // Sustainable power for 38 C must match the analytic (38-28)/6.
         assert!((res.sustainable_w - 10.0 / 6.0).abs() < 0.3, "Psus={}", res.sustainable_w);
         assert!(res.confidence >= 40);
+    }
+
+    #[test]
+    fn adapts_to_sudden_cooler_attach_and_ambient_shift() {
+        let mut est = new_thermal_model_estimator();
+        let mut rng = Lcg(19);
+        let mut t = 34.0;
+        let mut p = 2.5;
+        let mut before = invalid(0, 0.0);
+        let mut after = invalid(0, 0.0);
+
+        // Phase 1: 30 min in warm room (R=6.0 C/W, tau=480 s, Ta=30.0 C) -> Psus ~ 1.33 W
+        for sec in 0..(30 * 60) {
+            if sec % 40 == 0 {
+                p = 0.8 + rng.next() * 5.2;
+            }
+            let c = 480.0 / 6.0;
+            t += (p - (t - 30.0) / 6.0) / c;
+            let measured = (t / 0.1).round() * 0.1;
+            before = est.push_sample(1_000 + sec * 1_000, measured, p, 38.0);
+        }
+        assert!(before.valid);
+        assert!(
+            (before.ambient_c - 30.0).abs() < 2.5,
+            "before Ta={}",
+            before.ambient_c
+        );
+
+        // Phase 2: External Peltier cooler attached (R=3.5 C/W, tau=300 s, Ta=18.0 C) -> Psus ~ 5.7 W
+        for sec in (30 * 60)..(55 * 60) {
+            if sec % 40 == 0 {
+                p = 1.0 + rng.next() * 6.0;
+            }
+            let c = 300.0 / 3.5;
+            t += (p - (t - 18.0) / 3.5) / c;
+            let measured = (t / 0.1).round() * 0.1;
+            after = est.push_sample(1_000 + sec * 1_000, measured, p, 38.0);
+        }
+        assert!(after.valid, "model must stay valid after cooler attach");
+        assert!(
+            after.ambient_c < before.ambient_c - 6.0,
+            "ambient should drop significantly after cooler attach: before={} after={}",
+            before.ambient_c,
+            after.ambient_c
+        );
+        assert!(
+            after.sustainable_w > before.sustainable_w + 2.0,
+            "sustainable power should rise sharply with cooler: before={} after={}",
+            before.sustainable_w,
+            after.sustainable_w
+        );
     }
 
     #[test]

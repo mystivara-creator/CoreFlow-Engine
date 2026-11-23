@@ -87,10 +87,19 @@ pub fn compute_symbiotic_plan(input: SymbioticInput) -> SymbioticPlan {
     } else {
         0.45
     };
+    let starvation_q = if input.starvation_pressure.is_finite() && input.starvation_pressure >= 0.0
+    {
+        input.starvation_pressure.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
 
     // Little's Law normalized queue pressure per orthogonal domain (0.0..1.0).
     let l_gpu = gpu_queue;
-    let l_cpu = render_q.max(cpu_psi_q).max(cpu_util_q * 0.85);
+    let l_cpu = render_q
+        .max(cpu_psi_q)
+        .max(starvation_q)
+        .max(cpu_util_q * 0.85);
     let l_mem_io = io_psi_q.max(mem_psi_q);
 
     // 1. Anti Single-Core/Prime Hotspot & Cross-Cluster Co-Sharing:
@@ -228,6 +237,7 @@ mod tests {
             avail_ram_ratio: 0.50,
             capacity_scale: 1.0,
             thermal_guard: false,
+            starvation_pressure: -1.0,
         }
     }
 
@@ -327,5 +337,18 @@ mod tests {
         inp_low_gpu.gpu_busy_pct = 4.0;
         let plan_low_gpu = compute_symbiotic_plan(inp_low_gpu);
         assert_eq!(plan_low_gpu.regime, REGIME_BALANCED);
+    }
+
+    #[test]
+    fn schedstat_starvation_detects_cpu_draw_bound_even_with_low_global_psi() {
+        let mut inp = neutral_input();
+        inp.render_pressure = 0.45;
+        inp.cpu_psi = 3.0;
+        inp.gpu_busy_pct = 28.0;
+        inp.starvation_pressure = 0.78;
+        let plan = compute_symbiotic_plan(inp);
+        assert_eq!(plan.regime, REGIME_CPU_DRAW_BOUND);
+        assert!(plan.cpu_uclamp_scale > 1.04);
+        assert!(plan.encourage_cluster_spread);
     }
 }

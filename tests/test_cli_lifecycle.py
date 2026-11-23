@@ -22,6 +22,8 @@ assert "HardwareProbe" in source
 assert "RenderLoadSampler" in source
 assert "DecisionJournal" in source
 assert "FramePacingSensor" in source
+assert "SchedstatSensor" in source
+assert "VmstatThrashingSensor" in source
 assert "AppDnaStore" in source
 assert "compute_thermal_equilibrium" in source
 assert "compute_symbiotic_plan" in source
@@ -79,8 +81,18 @@ if len(sys.argv) >= 2:
             assert "hyperFluid" in payload and isinstance(payload["hyperFluid"], dict)
             for hf_key in (
                 "framePacingAvailable",
+                "framePacingVerified",
+                "framePacingSource",
                 "measuredFps",
                 "jankRatio",
+                "schedstatSupported",
+                "runqueueDelayMs",
+                "starvationPressure",
+                "vmstatSupported",
+                "refaultFilePerSec",
+                "directReclaimPerSec",
+                "thrashingPressure",
+                "directReclaimStorm",
                 "appDnaLearned",
                 "activeAppBias",
                 "activeAppEfficiencyWeight",
@@ -115,6 +127,9 @@ if len(sys.argv) >= 2:
             assert isinstance(model, dict) and model["valid"] is False
             assert model["rThetaCPerW"] is None and model["sustainablePowerMw"] is None
             assert model["targetCelsius"] == 38.0 and model["confidence"] == 0
+            assert model["effectiveTargetCelsius"] == 38.0
+            assert model["closedLoopActive"] is False
+            assert model["powerBudgetMw"] is None
             assert "memoryBusKnobs" in payload["actuators"]
             assert "hardware" in payload and isinstance(payload["hardware"], dict)
             assert "memory" in payload and isinstance(payload["memory"], dict)

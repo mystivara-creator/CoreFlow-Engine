@@ -14,27 +14,29 @@ Tidak ada profil, mode manual, atau per-app preset. Perilaku muncul dari fisika 
 
 ```mermaid
 flowchart TD
-    subgraph S["1. SENSE (hanya membaca)"]
+    subgraph S["1. SENSE (hanya membaca, zero-heap hot-path)"]
       HP["HardwareProbe<br/>topologi cluster, GPU, cgroup, node sysfs"]
       TM["ThermalMonitor<br/>zona die/board/baterai, komposit"]
-      FP["FramePacingSensor<br/>fps, jank ratio"]
+      FP["FramePacingSensor<br/>Tier-A commit vs Tier-B probation<br/>(non-LTPO fixed-Hz fail-closed)"]
+      SS["SchedstatSensor<br/>schedstat run_delay fg + SF"]
+      VM["VmstatThrashingSensor<br/>/proc/vmstat refault + direct reclaim"]
       PSI["PSI cpu/io/mem + GPU busy"]
       CE["ContextEngine<br/>sentuhan, foreground, launch, game, media"]
       BP["BatteryPower<br/>arus, tegangan, mW, %"]
     end
     subgraph U["2. UNDERSTAND (estimasi)"]
-      TT["ThermalTrend (Rust)<br/>EWMA tau=15s, velocity C/menit"]
+      TT["ThermalTrend + ThermalModel (Rust)<br/>EWMA tau=15s, velocity, Adaptive-RLS RC<br/>(R_theta, tau, T_amb, P_budget)"]
       AI["Prediktor beban<br/>RLS / CFW2 / ONNX, jank risk"]
       DNA["AppDnaStore<br/>bias per-app yang dipelajari"]
       OR["Orchestrator (Rust)<br/>regime: GPU-bound, CPU-draw, IO-starved, hotspot"]
     end
     subgraph D["3. DECIDE (hukum kendali)"]
-      CT["Controller (Rust, PID+integral)<br/>pressure → capacity_scale 0.25..1.0"]
+      CT["Controller + Equilibrium (Rust)<br/>PID + closed-loop P_budget (38..41.5 C)<br/>→ capacity_scale 0.25..1.0"]
     end
     subgraph A["4. ACT (aktuator)"]
-      TS["ThreadScheduler<br/>per-TID uclamp min/max"]
+      TS["ThreadScheduler<br/>per-TID uclamp min/max + starvation rescue"]
       TE["ThermalEnvelope<br/>governor CPU/GPU + EAS cgroup uclamp.max"]
-      SM["StorageMemory<br/>readahead, preread, background cap"]
+      SM["StorageMemory<br/>readahead, 2-regime MGLRU/swap, bg isolation"]
       SK["SemanticKnobs + Longevity<br/>knob sched/vm, batas charge"]
     end
     subgraph G["5. GUARD (keselamatan & koeksistensi)"]
@@ -50,7 +52,7 @@ flowchart TD
     end
     S --> U --> D --> A --> G
     G -->|"tulis terverifikasi (readback)"| KERNEL[("Kernel: sysfs / procfs / cgroup")]
-    KERNEL -.->|"umpan balik: suhu, fps, beban"| S
+    KERNEL -.->|"umpan balik: suhu, fps, schedstat, vmstat"| S
     G --> O
 ```
 
@@ -58,9 +60,9 @@ Lokasi kode:
 
 | Lapis | File utama |
 |---|---|
-| Sense | `src/v5/hardware_probe.cpp`, `src/kernel/thermal_monitor.cpp`, `src/v6/frame_pacing_sensor.cpp`, `src/v5/context_engine.cpp` |
+| Sense | `src/v5/hardware_probe.cpp`, `src/kernel/thermal_monitor.cpp`, `src/v6/frame_pacing_sensor.cpp`, `src/v6/schedstat_sensor.cpp`, `src/v6/vmstat_thrashing_sensor.cpp`, `src/v5/context_engine.cpp` |
 | Understand | `rust/src/thermal_trend.rs`, `rust/src/thermal_model.rs`, `src/kernel/neural_predictor.cpp`, `src/v6/app_dna_store.cpp`, `rust/src/orchestrator.rs` |
-| Decide | `rust/src/controller.rs` |
+| Decide | `rust/src/controller.rs`, `rust/src/thermal_trend.rs` (`compute_thermal_equilibrium`), `rust/src/uclamp.rs` |
 | Act | `src/v5/thread_scheduler.cpp`, `src/v5/thermal_envelope_actuator.cpp`, `src/v5/storage_memory_actuator.cpp`, `src/v6/semantic_knob_engine.cpp` |
 | Guard | `src/kernel/mutation_coordinator.cpp`, `src/kernel/baseline_store.cpp`, `src/v6/oem_collaboration_map.cpp`, `src/v6/boot_calm_sanctuary.cpp` |
 | Loop | `src/daemon/main.cpp` (reactor + timerfd), `src/daemon/reactor.cpp` |
@@ -71,14 +73,17 @@ Lokasi kode:
 2. **Termal itu RC:** \(T_{chassis} \approx T_{amb} + P_{sustained}\cdot R_\theta\), dengan konstanta waktu menit, bukan detik. Konsekuensinya:
    - Die melonjak cepat (detik), baterai/casing lambat (menit).
    - Keputusan termal harus memakai sinyal lambat (EWMA τ=15 s), bukan suhu die mentah.
-   - **Suhu casing tidak bisa dipaksa turun di bawah apa yang dibolehkan daya rata-rata.** Target "38 °C" hanya mungkin jika daya rata-rata jangka panjang cukup kecil. Karena itu target 38 °C bukan satu tombol, melainkan hasil dari anggaran daya.
-3. **Responsif = latensi, bukan frekuensi puncak:** Yang menentukan rasa mulus adalah seberapa cepat thread kritis (UI/Render) mendapat kapasitas. Karena itu boost dilakukan **per-TID** (`SYS_sched_setattr`), bukan menaikkan seluruh cluster.
-4. **Little's Law (\(L=\lambda W\))** dipakai Orchestrator untuk menentukan siapa bottleneck (CPU, GPU, atau memori/IO) sehingga daya diberikan ke yang membuat pipeline macet, bukan ke semuanya.
+   - **Anggaran daya receding-horizon tertutup (`P_budget`)**: Ketika `ThermalModelEstimator` telah konvergen (`confidence >= 45`, saat discharging), CoreFlow menghitung target adaptif \(T_{\text{target,eff}} = \text{clamp}(\max(38.0,\ T_a + 7.0),\ 38.0,\ 41.5^\circ\text{C})\) dan anggaran daya fisik:
+     $$P_{\text{budget}}(t) = \frac{T_{\text{target,eff}} - T_a}{R_\theta} + \frac{\tau \cdot (T_{\text{target,eff}} - T_{\text{chassis}})}{R_\theta \cdot H}$$
+     lalu memetakannya ke `capacity_scale` via hukum daya silikon \(P \propto s^{1.8}\). Dengan *adaptive forgetting* + *soft covariance injection* di `thermal_model.rs`, estimator otomatis beradaptasi ketika pengguna berpindah suhu ruangan (AC vs luar ruangan tropis) atau memasang *external Peltier cooler*.
+3. **Responsif = latensi antrean & deadline, bukan frekuensi puncak:** Yang menentukan rasa mulus adalah seberapa cepat thread kritis (UI/Render/SurfaceFlinger) mendapat CPU tanpa menunggu di runqueue. `SchedstatSensor` mengukur `run_delay_ns` aktual dari `/proc/<pid>/task/<tid>/schedstat` (universal di semua nama thread/engine tanpa eBPF) untuk memicu penyelamatan `uclamp.min` per-TID dan isolasi background secara langsung — bahkan ketika panel fixed-Hz non-LTPO tidak menyediakan sensor FPS commit.
+4. **Memori anti-freeze dua-regime (`/proc/vmstat`):** `VmstatThrashingSensor` membedakan **eviksi page-cache awal** (`workingset_refault_file` tinggi saat RAM masih tersedia → naikkan pelindung MGLRU `min_ttl_ms` hingga 1200 ms + dorong halaman anonim dingin ke ZRAM) vs **badai direct-reclaim** (`pgsteal_direct >= 64/s` → langsung nolkan `min_ttl_ms`, hentikan `read_ahead_kb` burst & prefetch agar alokasi UI tidak membeku).
+5. **Little's Law (\(L=\lambda W\))** dipakai Orchestrator (menggabungkan `render_pressure`, CPU PSI, dan `starvation_pressure`) untuk menentukan siapa bottleneck (CPU, GPU, atau memori/IO) sehingga daya diberikan ke yang membuat pipeline macet, bukan ke semuanya.
 
 ## 4. Variabel kendali tunggal
 
 ```
-sinyal beban + tekanan termal ──► Controller ──► capacity_scale ∈ [0.25, 1.0]
+sinyal beban + tekanan termal + P_budget RC ──► Controller + Equilibrium ──► capacity_scale ∈ [0.25, 1.0]
 ```
 
 `capacity_scale` adalah satu-satunya angka "berapa daya yang boleh". Semua aktuator **menerjemahkan** skalar itu sesuai sifat fisiknya sendiri:
@@ -86,17 +91,17 @@ sinyal beban + tekanan termal ──► Controller ──► capacity_scale ∈ 
 | Aktuator | Terjemahan dari `capacity_scale` |
 |---|---|
 | ThermalEnvelope | ceiling frekuensi CPU/GPU, `hispeed_load`; `top-app` / `foreground` / `system-background` `cpu.uclamp.max` |
-| StorageMemory | `background/cpu.uclamp.max` ke kapasitas core Little saat hangat; readahead |
-| ThreadScheduler | uclamp min/max per-TID, dibatasi skalar |
+| StorageMemory | `background/cpu.uclamp.max` ke kapasitas core Little saat hangat/starvation; readahead, 2-regime MGLRU & swappiness berbasis `/proc/vmstat` |
+| ThreadScheduler | uclamp min/max per-TID (dibatasi skalar, dengan penyelamatan jank & `schedstat` runqueue starvation) |
 | Knob semantik | agresivitas sched/vm |
 
 Aturan prioritas (urutan menang bila konflik):
 
 1. **Keselamatan keras:** baterai ≥ 58 °C atau die ≥ 95 °C → semuanya rollback ke baseline.
-2. **Latensi pengguna:** `LaunchBurst`, jank ≥ 3%, atau suhu dingin → cap `top-app` langsung diangkat.
-3. **Termal:** saat hangat → cap daya sesuai skalar.
+2. **Latensi pengguna:** `LaunchBurst`, jank terverifikasi ≥ 3%, `schedstat` starvation ≥ 0.20, atau suhu dingin → cap/floor `top-app` dan thread kritis langsung diangkat (kecuali `THERMAL_GUARD` aktif).
+3. **Termal:** saat hangat atau melampaui `P_budget` → cap daya sesuai skalar (`THERMAL_GUARD` tetap mengunci penuh pada chassis ≥ 44 °C / die ≥ 76 °C).
 4. **Baterai:** Low-Battery Eco (≤ 20%) memangkas sedikit tanpa merusak scroll.
-5. **Efisiensi idle:** mode `Efficiency` / `ScreenOff` melepas boost, mempertahankan cap EAS.
+5. **Efisiensi idle:** mode `Efficiency` / `ScreenOff` melepas boost, mempertahankan cap EAS hangat, dan menidurkan seluruh sensor (0 syscall).
 
 ## 5. Konteks (pengganti "profil")
 
@@ -113,7 +118,7 @@ Aturan prioritas (urutan menang bila konflik):
 3. **Satu pemilik per node.** Dua aktuator tidak boleh menulis node yang sama. Di v6.1.0-R, node cap `top-app`, `foreground`, `system-background`, `background` dipaksa berbeda (lihat commit `62cf513`).
 4. **Yield ke OEM.** Jika OEM menulis balik node yang sama, CoreFlow mundur dan mencatatnya (`oemYieldedPaths`), dan tidak berperang.
 5. **Penemuan dinamis.** Tidak ada path vendor yang di-hardcode; path ditemukan dari mountinfo/sysfs. Satu-satunya konvensi tetap adalah nama grup AOSP kanonik (`top-app`, `foreground`, `background`).
-6. **Jujur tentang yang tidak diketahui.** Fitur yang tidak ada di perangkat itu *absen*, tidak ditampilkan sebagai nonaktif. Status tidak boleh melaporkan sesuatu yang tidak diukur (contoh: `autonomousRegime=thermal_pacing` hanya jika baterai ≥ 38,5 °C atau skala < 0,88).
+6. **Jujur tentang yang tidak diketahui (Fail-Closed Sensor Contract).** Fitur yang tidak ada di perangkat itu *absen*, tidak ditampilkan sebagai nonaktif. Sumber frame Tier-B (`vblank_irq`, `*/fps` generik) tidak pernah mengeluarkan `jank_ratio = 0.0` sebelum lolos verifikasi idle-drop; panel fixed-Hz non-LTPO yang terkunci ≥ 92% `target_hz` selama 3 probe idle berturut-turut dikarantina fail-closed (`fail_closed:fixed_hz_panel`) untuk sesi boot tersebut.
 
 ## 7. Cara membaca perilaku di perangkat
 
@@ -123,21 +128,22 @@ Aturan prioritas (urutan menang bila konflik):
 | Apa yang sebenarnya ditulis? | `journal.entries` (path, nilai pabrik, nilai aktif) |
 | Apakah OEM melawan? | `oemYieldedPaths`, `contendedPaths` |
 | Seberapa cepat memanas? | `thermalVelocityCpm` (sudah di-EWMA) |
-| Berapa daya yang berkelanjutan untuk 38 °C? | `thermalModel` (`valid`, `rThetaCPerW`, `tauSec`, `sustainablePowerMw`, `headroomMw`, `confidence`) |
-| Mengapa mode berganti? | `episodes` (ModeShift, LaunchBurst, ThermalRecovered) |
+| Apakah closed-loop RC aktif & berapa anggaran dayanya? | `thermalModel` (`valid`, `closedLoopActive`, `effectiveTargetCelsius`, `powerBudgetMw`, `rThetaCPerW`, `tauSec`, `ambientCelsius`, `sustainablePowerMw`, `confidence`) |
+| Apakah sensor FPS terverifikasi atau panel fixed-Hz fail-closed? | `hyperFluid` (`framePacingAvailable`, `framePacingVerified`, `framePacingSource`, `measuredFps`, `jankRatio`) |
+| Apakah ada CPU runqueue starvation atau RAM thrashing? | `hyperFluid` (`schedstatSupported`, `runqueueDelayMs`, `starvationPressure`, `vmstatSupported`, `refaultFilePerSec`, `directReclaimPerSec`, `thrashingPressure`, `directReclaimStorm`) |
+| Mengapa mode berganti? | `episodes` (`ModeShift`, `LaunchBurst`, `ThermalRecovered`, `FramePacingFailClosed`) |
 | Apakah ada gangguan? | Self-Audit 6 cek, AVC denials |
 
 ## 8. Celah jujur (belum selesai / belum terbukti)
 
-1. **Target 38 °C belum terbukti di perangkat.** Dump terakhir berumur 427 detik pasca-boot (fase panas boot). Butuh dump setelah 20–30 menit pemakaian.
-2. **Cap `top-app` tidak berlaku di dump terakhir.** Penyebab yang paling mungkin adalah salah resolusi grup (sudah diperbaiki di `62cf513`), tetapi ini belum dikonfirmasi di perangkat.
-3. **Node `background` kemungkinan diperebutkan OEM.** Belum diketahui apakah ini artefak bug yang sama atau OEM sungguhan.
-4. **Model termal per-perangkat sudah ada tetapi baru observe-only.** `rust/src/thermal_model.rs` mengidentifikasi \(R_\theta\), \(\tau\), dan suhu ambient secara online (RLS, langkah 10 detik, hanya saat discharging) dan melaporkan `thermalModel.sustainablePowerMw` untuk target 38 °C. Estimator menolak melapor (`valid=false`) tanpa eksitasi daya dan rentang suhu yang cukup. Ia **belum menggerakkan aktuator** sampai dump perangkat memvalidasi angkanya.
-5. **Tidak ada ukuran "mulus" end-to-end.** Jank dan fps hanya terukur saat sensor frame aktif; belum ada metrik tunggal (mis. persentil-99 frame time) yang menjadi tujuan optimasi resmi.
+1. **Validasi lapangan 30 menit pasca-boot.** Dump terakhir sebelumnya masih berumur 427 detik pasca-boot; perlu dump 20–30 menit untuk mengonfirmasi kurva closed-loop `thermalModel` (`R_theta`, `tau`, `ambientCelsius`, `powerBudgetMw`) dan kestabilan cap `top-app`/`background` di perangkat nyata.
+2. **Simulasi lintas-OEM otomatis belum ada.** Verifikasi lintas arketipe SoC/ROM (HyperOS, OneUI/SDHMS, Dimensity/FPSGO, Tensor/LTPO, budget eMMC) masih menunggu **Virtual SoC Farm (`CF-Sim`)** di Fase 2.
+3. **Belum ada distribusi frame-time per-frame (`p95`/`p99`).** `FramePacingSensor` kini fail-closed aman di panel non-LTPO dan dibantu `SchedstatSensor` `run_delay`, namun belum mengukur distribusi *per-commit frame time* `p99` terhadap batas VSync secara langsung.
 
 ## 9. Arah penyempurnaan (urutan usulan)
 
-1. Validasi di perangkat: dump 30 menit, konfirmasi cap `top-app` dan `background`, lalu merge PR #50.
-2. Validasi `thermalModel` dari dump (apakah `valid`, apakah \(R_\theta\), \(\tau\), dan `sustainablePowerMw` masuk akal), lalu jadikan `P_budget` input Controller.
-3. Satu metrik mulus (p99 frame time + jank) sebagai fungsi tujuan; kendali bisa melonggarkan cap bila mulus sudah terjamin dan mengetatkan bila ada ruang.
+1. **Validasi perangkat Fase 1**: Ambil dump 30 menit untuk verifikasi lapangan `thermalModel.closedLoopActive`, `schedstat` `runqueueDelayMs`, `/proc/vmstat` `thrashingPressure`, dan status `framePacingVerified` di perangkat nyata.
+2. **Fase 2 — Virtual SoC Farm (`CF-Sim`) & Online Causal Verification**: Bangun simulator fisika multi-SoC/OEM di CI dan `device_effectiveness.map` untuk membuktikan 0 osilasi dan 0 kontensi di arketipe perangkat asing.
+3. **Fase 3 — Per-Frame `p99` Deadline Control & Online Silicon EDP Knee**: Jadikan margin deadline VSync (`p99`) sebagai fungsi tujuan resmi bersama profil kurva efisiensi $C \cdot V^2 \cdot f$ per-perangkat.
+
 

@@ -106,7 +106,18 @@ int main() {
     assert(kernel_state[5501].first > base_helper_min);
     assert(kernel_state[5501].first <= kernel_state[5500].first);
 
-    // 6. Entering Efficiency or Excluded resets all Tier-1 and Tier-2 tracked TIDs cleanly
+    // 6. Universal schedstat starvation rescue lifts floor even when jank_ratio == 0 and cpu_psi == 0
+    ThreadDemandContext starv_ctx = smooth_unfrozen;
+    starv_ctx.cpu_psi = 0.0;
+    starv_ctx.starvation_pressure = -1.0;
+    const auto t_no_starv = ThreadSchedulerActuator::compute_target(
+        ContextMode::Interactive, PerformanceProfile::Balanced, 1.0, false, starv_ctx);
+    starv_ctx.starvation_pressure = 0.80;
+    const auto t_with_starv = ThreadSchedulerActuator::compute_target(
+        ContextMode::Interactive, PerformanceProfile::Balanced, 1.0, false, starv_ctx);
+    assert(t_with_starv.util_min > t_no_starv.util_min + 40U);
+
+    // 7. Entering Efficiency or Excluded resets all Tier-1 and Tier-2 tracked TIDs cleanly
     sched.apply(ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true,
                 {900, 901}, {5500}, mid_soc, {5501, 5502});
     assert(sched.stats().active_boosted_tids == 0U);
@@ -115,6 +126,6 @@ int main() {
     assert(kernel_state[5501].first == 0U && kernel_state[5501].second == 1024U);
     assert(kernel_state[5502].first == 0U && kernel_state[5502].second == 1024U);
 
-    std::cout << "v6.2 Role-Tiered & Cooperative ThreadSchedulerActuator tests passed\n";
+    std::cout << "v6.2 Role-Tiered, Cooperative & Starvation-Aware ThreadSchedulerActuator tests passed\n";
     return 0;
 }
