@@ -150,6 +150,48 @@ int main() {
         assert(mtk_probe.is_screen_off(mtk_topo));
     }
 
+    // Android cpuctl: the resolver's "most app processes" heuristic lands on `background`
+    // (3 cached apps vs 1 visible app). The EAS cap target must still be the AOSP `top-app`
+    // group and must never alias another managed cgroup node.
+    {
+        const fs::path cg_sys = root / "cg_sys";
+        const fs::path cg_proc = root / "cg_proc";
+        const fs::path cpuctl = root / "cpuctl";
+        write_file(cg_proc / "self/mountinfo",
+                   "41 30 0:42 / " + cpuctl.string() +
+                       " rw,nosuid,nodev - cgroup cgroup rw,cpu,cpuacct\n");
+        const auto make_group = [&](const char* name, const std::string& pids) {
+            const fs::path g = cpuctl / name;
+            write_file(g / "cpu.uclamp.min", "0.00\n");
+            write_file(g / "cpu.uclamp.max", "max\n");
+            write_file(g / "tasks", pids);
+            write_file(g / "cgroup.procs", pids);
+        };
+        make_group("top-app", "501\n");
+        make_group("foreground", "");
+        make_group("system-background", "");
+        make_group("background", "601\n602\n603\n");
+        for (const int pid : {501, 601, 602, 603}) {
+            const std::string id = std::to_string(pid);
+            const char* grp = pid == 501 ? "top-app" : "background";
+            write_file(cg_proc / id / "status",
+                       "Name:\tapp\nUid:\t10200\t10200\t10200\t10200\nTgid:\t" + id + "\n");
+            write_file(cg_proc / id / "oom_score_adj", pid == 501 ? "0\n" : "900\n");
+            write_file(cg_proc / id / "cgroup", std::string("7:cpu,cpuacct:/") + grp + "\n");
+        }
+        HardwareProbe cg_probe(cg_sys.string(), cg_proc.string());
+        const HardwareTopology cg_topo = cg_probe.discover();
+        assert(fs::path(cg_topo.cgroups.top_app_uclamp_max_path).parent_path().filename() ==
+               "top-app");
+        assert(fs::path(cg_topo.cgroups.foreground_uclamp_max_path).parent_path().filename() ==
+               "foreground");
+        assert(fs::path(cg_topo.cgroups.system_background_uclamp_max_path).parent_path().filename() ==
+               "system-background");
+        assert(fs::path(cg_topo.cgroups.background_uclamp_max_path).parent_path().filename() ==
+               "background");
+        assert(cg_topo.cgroups.top_app_uclamp_max_path != cg_topo.cgroups.background_uclamp_max_path);
+    }
+
     fs::remove_all(root);
     std::cout << "v5 HardwareProbe tests passed\n";
     return 0;

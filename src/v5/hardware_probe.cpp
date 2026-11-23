@@ -827,7 +827,13 @@ HardwareTopology HardwareProbe::discover() const noexcept {
                 uclamp_format_detected = true;
             }
         };
-        if (!topo.cgroups.top_app_dir.empty()) {
+        // The generic resolver above picks the cpu group with the MOST verified app processes,
+        // which on real Android is frequently `background` (dozens of cached apps) rather than
+        // the visible `top-app` group. A power cap must only ever target the AOSP-canonical
+        // `top-app` group, otherwise we would throttle cached apps while believing we paced the
+        // foreground (and fight the background/foreground owners over the same node).
+        if (!topo.cgroups.top_app_dir.empty() &&
+            fs::path(topo.cgroups.top_app_dir).filename() == "top-app") {
             const fs::path ta_max = fs::path(topo.cgroups.top_app_dir) / "cpu.uclamp.max";
             if (is_regular_writable(ta_max)) {
                 topo.cgroups.top_app_uclamp_max_path = ta_max.string();
@@ -867,6 +873,19 @@ HardwareTopology HardwareProbe::discover() const noexcept {
                 topo.cgroups.background_uclamp_max_path = (bg / "cpu.uclamp.max").string();
                 detect_uclamp_format(bg / "cpu.uclamp.max");
             }
+        }
+    }
+
+    // Single-owner guarantee: the four EAS cap targets must be distinct nodes.
+    {
+        auto& cg = topo.cgroups;
+        const auto clash = [](const std::string& a, const std::string& b) {
+            return !a.empty() && a == b;
+        };
+        if (clash(cg.top_app_uclamp_max_path, cg.foreground_uclamp_max_path) ||
+            clash(cg.top_app_uclamp_max_path, cg.system_background_uclamp_max_path) ||
+            clash(cg.top_app_uclamp_max_path, cg.background_uclamp_max_path)) {
+            cg.top_app_uclamp_max_path.clear();
         }
     }
 
