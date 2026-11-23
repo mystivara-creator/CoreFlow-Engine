@@ -84,6 +84,7 @@ private:
     BaselineStore& baseline_;
     v6::OemCollaborationMap* oem_map_{nullptr};
     std::unordered_map<std::string, std::string> last_written_;
+    std::unordered_map<std::string, uint64_t> baseline_hispeed_khz_;
     std::unordered_map<std::string, ContentionEntry> contended_paths_;
     ThermalEnvelopeStats stats_{};
 };

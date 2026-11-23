@@ -149,7 +149,22 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
         * symbiotic_scale
         * bounded_scale.clamp(0.50, 1.0))
     .min(max_safe_floor);
-    let mut raw_min = base_min * velocity_damping;
+    // Warm-zone Little-cluster steering: when chassis is in Cool-Glide (scale < 0.92) during
+    // light Interactive browsing (render < 0.35, no jank, no sudden touch/GPU spike), trim floor
+    // smoothly so routine UI tasks stay on cool Little cores instead of waking hot Big cores.
+    let jank_rescue = input.jank_ratio.is_finite() && input.jank_ratio >= 0.05;
+    let warm_efficiency = if input.mode == MODE_INTERACTIVE
+        && bounded_scale < 0.92
+        && render_norm < 0.35
+        && !jank_rescue
+        && !input.feedforward_freeze
+    {
+        (bounded_scale / 0.92).clamp(0.65, 1.0)
+    } else {
+        1.0
+    };
+
+    let mut raw_min = base_min * velocity_damping * warm_efficiency;
 
     if input.thermal_guard {
         let guard_cap = (big_cap * 0.75).round().clamp(0.0, 1024.0) as u32;
@@ -286,5 +301,27 @@ mod tests {
         let out = compute_uclamp_target(burst);
         assert!(out.util_min <= 768, "util_min should stay <= 75% big capacity, got {}", out.util_min);
         assert_eq!(out.util_max, 1024);
+    }
+
+    #[test]
+    fn warm_zone_interactive_steers_light_scroll_without_hurting_heavy_render() {
+        let mut light_cool = base_input(MODE_INTERACTIVE);
+        light_cool.capacity_scale = 1.0;
+        light_cool.render_pressure = 0.16;
+
+        let mut light_warm = base_input(MODE_INTERACTIVE);
+        light_warm.capacity_scale = 0.76; // 41 C Cool-Glide zone
+        light_warm.render_pressure = 0.16;
+
+        let mut heavy_warm = base_input(MODE_INTERACTIVE);
+        heavy_warm.capacity_scale = 0.76;
+        heavy_warm.render_pressure = 0.65; // heavy rendering demands full headroom
+
+        let t_cool = compute_uclamp_target(light_cool);
+        let t_light_warm = compute_uclamp_target(light_warm);
+        let t_heavy_warm = compute_uclamp_target(heavy_warm);
+
+        assert!(t_light_warm.util_min < (t_cool.util_min * 75) / 100);
+        assert!(t_heavy_warm.util_min > t_light_warm.util_min + 60);
     }
 }
