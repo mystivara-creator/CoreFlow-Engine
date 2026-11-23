@@ -34,7 +34,7 @@
 All semi-manual profile switches (`Balanced / Smoothness / Gaming / Battery`) and manual per-app override buckets are unified into **one real-time physics-driven autonomous loop** that adapts continuously per millisecond:
 - **Zero-Lag Scrolling & Smoothness**: `< 5 ms` touchscreen boost + refresh-rate-adaptive `OverScroller` fling hold (`60Hz: 750ms`, `90Hz: 850ms`, `120Hz+: 950ms`) + automatic frame-drop jank rescue (`>= 3%` drops).
 - **Automatic 3D Gaming**: Instant `HeavyGame3D` signature detection (`UnityMain`, `GameThread`, `VulkanThread`, `libUE4.so`, `libil2cpp.so`) + sustained GPU hysteresis + coupled CPU/GPU/Memory bus orchestration.
-- **Proactive 38°C Cool-Glide & Low-Battery Auto-Eco**: Smooth thermal glide beginning at `37.5°C` chassis + warm Little-cluster UClamp steering + OEM factory `hispeed_freq` ceiling cap + hands-off passive video node release + automatic **Low-Battery Eco (`<= 20%` discharging, ~15% trim & `500ms` fling hold while keeping scrolling smooth)**.
+- **Multi-Cgroup EAS Thermal-Power Pacing & Low-Battery Auto-Eco**: OEM-contention-free Linux EAS `cpu.uclamp.max` ceilings across `top-app`, `foreground`, `system-background`, and `background` cut peak Big-core $C \cdot V^2 \cdot f$ voltage spikes and pin background tasks to Little cores whenever chassis temperature rises (`>= 38.5°C` or headroom `< 88%`), lifting immediately to `max` on `LaunchBurst` or `>= 3%` jank, plus automatic **Low-Battery Eco (`<= 20%` discharging, `500ms` fling hold while keeping scrolling smooth)**.
 - **Minimal Escape Hatches Only**: 1-tap **Pause (A/B Compare)** and per-app **Exclude (Stock OEM)**.
 
 Instead of dumping manual frequency sliders or fighting OEM thermal daemons, CoreFlow follows four strict engineering rules:
@@ -63,10 +63,10 @@ Single-pass hardware and kernel capability discovery at startup (zero hardcoded 
 - **Post-Boot Thermal Tranquility**: On cold boot, `BootCalmSanctuary` waits for kernel/thermal quiescence before capturing true post-boot OEM baselines (after `perf-hal` and `mi_thermald` finish init), then ramps actuators smoothly over 30 seconds.
 - **Zero Daemon Fighting**: Any sysfs node actively written by OEM thermal/perf daemons is detected via read-back verification and cooperatively yielded (`30s → 300s` backoff and persistent OEM collaboration map), preventing write-loops and battery drain.
 
-### 3. Dual-Domain Thermal Physics, Proactive 38°C Cool-Glide & Coupled Orchestrator
+### 3. Dual-Domain Thermal Physics, Multi-Cgroup EAS Pacing & Coupled Orchestrator
 - **Self-Healing Android Thermal HAL**: Queries Android's native `AThermalManager` severity and `AThermal_getThermalHeadroom` with automatic 10-second retry/re-acquisition if `thermalservice` is unavailable at boot or restarts.
 - **Dual-Domain Physics-Aware Fallback**: Whenever OEM thermal policy is unavailable, `evaluate_generic_thermal_fallback` separates **chassis/skin/battery** comfort limits (`40°C` recover / `44°C` trip) from **CPU silicon die** junction limits (`66°C` recover / `74°C` trip / `88°C` emergency), ensuring normal Snapdragon/Dimensity idle temperatures (`42–55°C`) never falsely trigger `THERMAL_GUARD`.
-- **Rust Control Core (`rust/`)**: Zero-allocation OLS thermal velocity analyzer (`°C/min`), hysteretic PID controller, **Proactive 38°C Cool-Glide** dual-timescale equilibrium planner, automatic **Low-Battery Eco (`<= 20%`)**, and slew-rate limiter (`<= 0.08/s` down, `<= 0.06/s` up) that eliminates single-tick headroom cliffs.
+- **Rust Control Core (`rust/`) & Multi-Cgroup EAS Governor**: Zero-allocation OLS thermal velocity analyzer (`°C/min` fed by a $\tau = 15\text{ s}$ EWMA composite chassis+die filter), hysteretic PID controller, dual-timescale equilibrium planner, OEM-contention-free multi-cgroup EAS `cpu.uclamp.max` ceilings (`top-app`, `foreground`, `system-background`, `background`), automatic **Low-Battery Eco (`<= 20%`)**, and slew-rate limiter (`<= 0.08/s` down, `<= 0.06/s` up).
 
 ### 4. Hybrid CFW2 + ONNX Neural Engine
 See full specification in [docs/architecture/CFW2_ONNX_NEURAL_ENGINE.md](docs/architecture/CFW2_ONNX_NEURAL_ENGINE.md).
@@ -96,7 +96,7 @@ Every mode shift, launch burst, thermal guard, OEM yield, tamper event, and conf
 
 Works directly on **Magisk, KernelSU, KernelSU-Next, and APatch** — **no KsuWebUI or MMRL required**!
 
-- **Home**: Live telemetry pills (`SoC Temp`, `Render`, `UClamp`, `Headroom`), **SoC Temp & Headroom Sparkline**, 4-Pillar readiness strip, **Live Zero-Profile Autonomous Engine Card** (real-time regime badge + `38°C Cool-Glide · App DNA · Hybrid AI`), 1-tap **Pause (A/B Compare)**, and quick **Bypass Charging** toggle (when supported).
+- **Home**: Live telemetry pills (`SoC Temp`, `Render`, `UClamp`, `Headroom`), **SoC Temp & Headroom Sparkline**, 4-Pillar readiness strip, **Live Zero-Profile Autonomous Engine Card** (real-time regime badge + `EAS Cap · App DNA · Hybrid AI`), 1-tap **Pause (A/B Compare)**, and quick **Bypass Charging** toggle (when supported).
 - **Control Hub (Capability-Driven)**: Per-cluster live EAS frequency bars, GPU busy % & live **Thermal Zones**, **Bypass Charging / Auto Bypass in Games / Charge Ceiling**, RAM/ZRAM & PSI stall monitors, Real FPS HUD controls, and **2 Quick Settings Tiles** (*CoreFlow Auto ↔ Paused OEM A/B* + *CoreFlow Bypass*).
 - **Live AI Feed & `CFAE TELEMETRY LINK` Console**:
   - Live `DecisionEpisode` stream, 10-second AI thermal & jank-risk forecast, workload classifier, and backend status badge (`ONNX Live` / `CFW2 Micro-MLP` / `Embedded RLS`).

@@ -4,7 +4,7 @@ CoreFlow Companion (Miuix Compose) and MD3 WebUI follow six strict engineering &
 
 ## 1. 100% Pure Zero-Profile Autonomy
 - Manual global profiles (`Balanced / Smoothness / Gaming / Battery`) and manual per-app override buckets are intentionally absent.
-- One continuous physics-driven closed loop adapts automatically to touchscreen input (`< 5 ms` + Hz-adaptive OverScroller fling hold), automatic 3D game engine signatures, **Proactive 38°C Cool-Glide**, **Low-Battery Auto-Eco (`<= 20%` discharging)**, and per-app **App DNA (`CFDNA2`)**.
+- One continuous physics-driven closed loop adapts automatically to touchscreen input (`< 5 ms` + Hz-adaptive OverScroller fling hold), automatic 3D game engine signatures, **Multi-Cgroup EAS Thermal-Power Pacing** (`cpu.uclamp.max` + EWMA slow-thermal velocity), **Low-Battery Auto-Eco (`<= 20%` discharging)**, and per-app **App DNA (`CFDNA2`)**.
 - The only non-manual escape hatches exposed to the user are **Pause (Stock OEM A/B Compare)** and per-app **Exclude (Stock OEM)**.
 
 ## 2. Capability-Driven UI ("Absent, Not Disabled")
