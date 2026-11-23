@@ -253,8 +253,6 @@ void ThermalEnvelopeActuator::apply(
     const double thermal_pressure = thermal_guard ? 1.0 : std::clamp((1.0 - scale) * 4.0, 0.0, 1.0);
     const double effective_scale = std::clamp(scale - (stepdown_lead * (0.25 + 0.75 * thermal_pressure)), 0.25, 1.0);
     const double profile_bias =
-        profile == PerformanceProfile::Smoothness ? 1.08 :
-        profile == PerformanceProfile::Gaming ? 1.10 :
         profile == PerformanceProfile::Battery ? 0.85 : 1.00;
     const double max_cluster_cap = static_cast<double>(std::max<uint32_t>(topo.big_capacity, 512U));
 
@@ -281,7 +279,7 @@ void ThermalEnvelopeActuator::apply(
             } else if (mode == ContextMode::ScreenOff) {
                 mode_demand = 0.30;
             } else if (mode == ContextMode::LaunchBurst || mode == ContextMode::Gaming) {
-                mode_demand = 0.78 + (cap_ratio * 0.10) + (cpu_psi_norm * 0.08);
+                mode_demand = 0.84 + (cap_ratio * 0.10) + (cpu_psi_norm * 0.08);
             } else if (mode == ContextMode::Interactive) {
                 const double warm_big_trim = (effective_scale < 0.94 && cap_ratio >= 0.80)
                     ? std::clamp((0.94 - effective_scale) * 0.75, 0.0, 0.22)
@@ -292,9 +290,7 @@ void ThermalEnvelopeActuator::apply(
             }
             const double effective_tier = std::clamp(mode_demand * profile_bias * effective_scale, 0.25, 0.82);
             uint64_t freq = select_opp(cluster.opps_khz, effective_tier);
-            if (mode == ContextMode::Interactive &&
-                effective_scale < 0.94 &&
-                profile != PerformanceProfile::Smoothness) {
+            if (mode == ContextMode::Interactive && effective_scale < 0.94) {
                 const auto bit = baseline_hispeed_khz_.find(cluster.hispeed_freq_path);
                 if (bit != baseline_hispeed_khz_.end() && bit->second > 0U && freq > bit->second) {
                     freq = bit->second;

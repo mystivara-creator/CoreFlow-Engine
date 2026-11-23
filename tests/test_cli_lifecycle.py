@@ -9,9 +9,9 @@ repo = Path(__file__).resolve().parents[1]
 source = (repo / "src/daemon/main.cpp").read_text()
 config = (repo / "include/coreflow/config.hpp").read_text()
 
-# Core v6.0.0-R Sovereign Rebuild architecture & safety invariants
-assert 'constexpr char kVersion[] = "6.0.0-R";' in source
-assert 'std::string version{"6.0.0-R"};' in config
+# Core v6.1.0-R Unified Zero-Profile Autonomous architecture & safety invariants
+assert 'constexpr char kVersion[] = "6.1.0-R";' in source
+assert 'std::string version{"6.1.0-R"};' in config
 assert "VulkanController" not in source
 assert "DeviceValidationRecorder" not in source
 assert "ThreadSchedulerActuator" in source
@@ -61,9 +61,12 @@ if len(sys.argv) >= 2:
         payload = json.loads(lines[-1])
         assert isinstance(payload, dict), f"{flag} JSON root is not an object"
         if flag == "--status":
-            assert payload.get("version") == "6.0.0-R"
+            assert payload.get("version") == "6.1.0-R"
             assert "profile" in payload
             assert "effectiveProfile" in payload
+            assert "autonomousRegime" in payload and isinstance(payload["autonomousRegime"], str)
+            assert "lowBatteryEco" in payload and isinstance(payload["lowBatteryEco"], bool)
+            assert "appDnaEntries" in payload and isinstance(payload["appDnaEntries"], list)
             assert "mode" in payload
             for bs_key in (
                 "bootSettleActive",
@@ -128,27 +131,27 @@ if len(sys.argv) >= 2:
             )
             assert "vulkan" not in payload
         elif flag == "--capabilities":
-            assert payload.get("version") == "6.0.0-R"
+            assert payload.get("version") == "6.1.0-R"
             assert payload.get("rustPidEngine") is True
             assert "perThreadUclampSupported" in payload
             assert "bypassChargingSupported" in payload
             assert "storageType" in payload
         elif flag == "--atlas":
             assert payload.get("atlasFormat") == "coreflow-atlas-v6"
-            assert payload.get("version") == "6.0.0-R"
+            assert payload.get("version") == "6.1.0-R"
             assert isinstance(payload.get("cpuClusters"), list)
             assert isinstance(payload.get("gpu"), dict)
             assert isinstance(payload.get("powerControl"), dict)
             assert isinstance(payload.get("thermalZones"), list)
         elif flag == "--episodes":
-            assert payload.get("version") == "6.0.0-R"
+            assert payload.get("version") == "6.1.0-R"
             assert isinstance(payload.get("episodes"), list)
         elif flag == "--journal":
             assert payload.get("format") == "CFJ4"
             assert isinstance(payload.get("entries"), list)
         elif flag == "--diag":
             assert payload.get("reportFormat") == "coreflow-diag-v6"
-            assert payload.get("version") == "6.0.0-R"
+            assert payload.get("version") == "6.1.0-R"
             assert isinstance(payload.get("capabilities"), dict)
             assert isinstance(payload.get("atlas"), dict)
             assert isinstance(payload.get("status"), dict)

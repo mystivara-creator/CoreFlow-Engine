@@ -68,7 +68,6 @@ fun HomeTab(
     contentPadding: PaddingValues,
     scrollBehavior: ScrollBehavior,
     onRefresh: () -> Unit,
-    onSelectProfile: (CoreFlowManager.Profile) -> Unit,
     onTogglePause: (Boolean) -> Unit,
     onToggleBypass: (Boolean) -> Unit,
     onStartDaemon: () -> Unit,
@@ -197,6 +196,7 @@ fun HomeTab(
                     isPaused -> Color(0xFFF59E0B)
                     isThermalGuard -> Color(0xFFF97316)
                     isBootSettle -> Color(0xFF38BDF8)
+                    status?.lowBatteryEco == true -> Color(0xFF10B981)
                     else -> Color(0xFF22C55E)
                 }
                 val heroBgColor = when {
@@ -217,9 +217,9 @@ fun HomeTab(
                     }
                     isSoftRamp -> {
                         val pct = ((status.bootRampProgress * 100f).toInt()).coerceIn(0, 100)
-                        "${status.effectiveProfile.label} · Ramp ${pct}%"
+                        "${if (strings.isIndonesian) "Otonom" else "Autonomous"} · Ramp ${pct}%"
                     }
-                    else -> "${status.effectiveProfile.label} · ${strings.humanizeMode(status.mode)}"
+                    else -> status.autonomousRegimeLabel(strings.isIndonesian)
                 }
 
                 Card(
@@ -498,86 +498,146 @@ fun HomeTab(
                 }
             }
 
-            // 4-Profile Selector (Strictly Equal-Height 2x2 Cards with 3D Tilt Feedback)
+            // Live Zero-Profile Autonomous Engine Card (Replaces Legacy 4-Profile Grid)
             item {
                 SmallTitle(text = strings.sectionProfile)
             }
 
             item {
-                val activeProfile = status?.profile
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val pairs = CoreFlowManager.Profile.primaryProfiles.chunked(2)
-                    for (rowProfiles in pairs) {
+                val regimeLabel = status?.autonomousRegimeLabel(strings.isIndonesian)
+                    ?: if (strings.isIndonesian) "Menghubungkan..." else "Connecting..."
+                val regimeColor = when (status?.autonomousRegime) {
+                    "paused_oem" -> Color(0xFFF59E0B)
+                    "thermal_emergency", "thermal_guard" -> Color(0xFFF97316)
+                    "gaming_3d" -> Color(0xFFEF4444)
+                    "cool_glide" -> Color(0xFF38BDF8)
+                    "low_battery_eco" -> Color(0xFF10B981)
+                    "interactive_scroll", "launch_burst" -> Color(0xFFA78BFA)
+                    else -> Color(0xFF22C55E)
+                }
+                val hz = status?.hardware?.refreshHz ?: 60
+                val flingHoldMs = when {
+                    status?.lowBatteryEco == true -> 500
+                    hz >= 115 -> 950
+                    hz >= 85 -> 850
+                    else -> 750
+                }
+                val dnaCount = status?.hyperFluid?.appDnaLearned ?: 0
+                val aiBackendShort = strings.humanizeAiBackend(status?.aiBackend ?: "embedded-rls-mlp")
+                val ecoActive = status?.lowBatteryEco == true
+                val explanation = when (status?.autonomousRegime) {
+                    "paused_oem" -> if (strings.isIndonesian) {
+                        "Semua node kernel & UClamp dikembalikan ke bawaan pabrik untuk perbandingan objektif A/B."
+                    } else {
+                        "All kernel nodes and UClamp floors are restored to factory OEM defaults for objective A/B comparison."
+                    }
+                    "gaming_3d" -> if (strings.isIndonesian) {
+                        "Engine 3D terdeteksi otomatis — UClamp per-TID, bus memori, & 38°C Cool-Glide sedang menyeimbangkan FPS stabil."
+                    } else {
+                        "3D game engine auto-detected — per-TID UClamp, memory bus, and 38°C Cool-Glide are pacing steady FPS."
+                    }
+                    "low_battery_eco" -> if (strings.isIndonesian) {
+                        "Baterai ≤20% tanpa charger: memangkas ~15% daya berlebih (hold fling 500ms) sambil menjaga scroll tetap mulus & jank rescue aktif."
+                    } else {
+                        "Battery ≤20% off-charger: trimming ~15% excess draw (500ms fling hold) while preserving smooth scrolling & jank rescue."
+                    }
+                    "cool_glide" -> if (strings.isIndonesian) {
+                        "Proactive 38°C Cool-Glide aktif — mengarahkan beban ringan ke klaster Little dan menahan lonjakan panas secara halus."
+                    } else {
+                        "Proactive 38°C Cool-Glide engaged — steering light scroll onto Little cores and gliding thermals smoothly toward 38°C."
+                    }
+                    "interactive_scroll" -> if (strings.isIndonesian) {
+                        "Jalur sentuh <5ms & OverScroller hold ${flingHoldMs}ms (${hz}Hz) aktif dengan jank rescue otomatis ≥3%."
+                    } else {
+                        "<5ms touch path & ${flingHoldMs}ms OverScroller hold (${hz}Hz) active with automatic ≥3% frame-drop rescue."
+                    }
+                    else -> if (strings.isIndonesian) {
+                        "100% Otonom tanpa profil manual — menyatukan respons sentuh <5ms, deteksi game 3D, 38°C Cool-Glide, dan App DNA secara real-time."
+                    } else {
+                        "100% Zero-Profile autonomous — unifying <5ms touch, auto 3D gaming, 38°C Cool-Glide, and App DNA in real time."
+                    }
+                }
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(
+                            BorderStroke(1.dp, regimeColor.copy(alpha = 0.35f)),
+                            RoundedCornerShape(16.dp),
+                        ),
+                    insideMargin = PaddingValues(14.dp),
+                    pressFeedbackType = PressFeedbackType.Tilt,
+                    onClick = {
+                        onOpenDialogue(
+                            if (strings.isIndonesian) "Status suhu & beban sekarang?" else "Current thermal & load status?",
+                        )
+                    },
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(IntrinsicSize.Min),
+                            verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f),
                         ) {
-                            for (profile in rowProfiles) {
-                                val selected = activeProfile == profile
-                                val cardColors = if (selected) {
-                                    CardDefaults.defaultColors(
-                                        color = MiuixTheme.colorScheme.primary.copy(alpha = 0.14f),
-                                    )
-                                } else {
-                                    CardDefaults.defaultColors()
-                                }
-                                val borderMod = if (selected) {
-                                    Modifier.border(
-                                        BorderStroke(1.dp, MiuixTheme.colorScheme.primary.copy(alpha = 0.45f)),
-                                        RoundedCornerShape(16.dp),
-                                    )
-                                } else {
-                                    Modifier
-                                }
-                                Card(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxHeight()
-                                        .then(borderMod),
-                                    insideMargin = PaddingValues(14.dp),
-                                    colors = cardColors,
-                                    pressFeedbackType = PressFeedbackType.Tilt,
-                                    onClick = { if (!busy) onSelectProfile(profile) },
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                    ) {
-                                        Text(
-                                            text = profile.label,
-                                            style = MiuixTheme.textStyles.headline2,
-                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (selected) {
-                                                MiuixTheme.colorScheme.primary
-                                            } else {
-                                                MiuixTheme.colorScheme.onSurface
-                                            },
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        if (selected) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(8.dp)
-                                                    .clip(CircleShape)
-                                                    .background(MiuixTheme.colorScheme.primary),
-                                            )
-                                        }
-                                    }
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        text = profile.tagline,
-                                        style = MiuixTheme.textStyles.footnote1,
-                                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(9.dp)
+                                    .clip(CircleShape)
+                                    .background(regimeColor),
+                            )
+                            Text(
+                                text = regimeLabel,
+                                style = MiuixTheme.textStyles.headline2,
+                                fontWeight = FontWeight.Bold,
+                                color = regimeColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
+                        HeroStatusBadge(
+                            text = if (ecoActive) "Auto-Eco ≤20%" else "Zero-Profile",
+                            accent = if (ecoActive) Color(0xFF10B981) else regimeColor,
+                        )
+                    }
+
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = explanation,
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        MetricPill(
+                            label = "Cool-Glide",
+                            value = "38°C",
+                            accent = Color(0xFF38BDF8),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "App DNA",
+                            value = "$dnaCount",
+                            accent = Color(0xFFA78BFA),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "Hybrid AI",
+                            value = aiBackendShort,
+                            accent = Color(0xFF34D399),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
                     }
                 }
             }

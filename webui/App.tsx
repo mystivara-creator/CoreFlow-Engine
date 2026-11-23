@@ -37,26 +37,23 @@ import { BaselineGuardianCard } from './components/BaselineGuardianCard';
 import { LiveReactionStream } from './components/LiveReactionStream';
 import { PixelHeader } from './components/PixelHeader';
 import {
-  AppRuleCategory,
-  assignPackageRule,
+  AppDnaEntrySummary,
   buildSafeSetConfigArg,
   computeHealthScore,
   computePillarReadiness,
-  CoreFlowAppRules,
   CoreFlowFeatures,
   CoreFlowV5Status,
   createPreviewStatus,
+  formatAutonomousRegime,
   formatDuration,
-  getPackageRuleCategory,
   HistorySample,
   isValidPackageName,
   MODE_LABELS,
   parseInstalledPackages,
   parseV5Status,
-  PerformanceProfile,
   PREVIEW_INSTALLED_PACKAGES,
-  PROFILE_META,
   ReactionLogEvent,
+  sanitizePackageList,
   stepPreviewStatus,
 } from './engine/autonomousEngine';
 
@@ -214,14 +211,6 @@ const DualSparkline: React.FC<{
 
 type NavTab = 'home' | 'control' | 'live' | 'apps' | 'system';
 
-const RULE_CATEGORY_OPTIONS: { id: AppRuleCategory; label: string }[] = [
-  { id: 'default', label: 'Auto' },
-  { id: 'gaming', label: 'Gaming' },
-  { id: 'smoothness', label: 'Smooth' },
-  { id: 'battery', label: 'Battery' },
-  { id: 'excluded', label: 'Stock' },
-];
-
 const AI_SPONSORS = [
   { name: 'Claude', badge: 'CL', role: 'Anthropic · Architecture', color: '#d97757', url: 'https://claude.ai' },
   { name: 'ChatGPT', badge: 'AI', role: 'OpenAI · Ideation', color: '#10a37f', url: 'https://chatgpt.com' },
@@ -261,7 +250,7 @@ export const App: React.FC = () => {
   const [starting, setStarting] = useState(false);
   const [logs, setLogs] = useState<ReactionLogEvent[]>([]);
 
-  // Per-App Picker & filter state
+  // Per-App Stock OEM Exclusion & filter state
   const [installedApps, setInstalledApps] = useState<string[]>(() =>
     hasNativeKernelSuBridge() ? [] : PREVIEW_INSTALLED_PACKAGES
   );
@@ -269,7 +258,6 @@ export const App: React.FC = () => {
   const [appSearch, setAppSearch] = useState('');
   const [appFilter, setAppFilter] = useState<'all' | 'rules'>('all');
   const [manualPkg, setManualPkg] = useState('');
-  const [manualCategory, setManualCategory] = useState<Exclude<AppRuleCategory, 'default'>>('gaming');
 
   const isId = lang === 'id';
   const isDark = resolveIsDark(appearance.theme);
@@ -437,28 +425,22 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleSelectProfile = (profile: PerformanceProfile) => {
-    void applyConfigUpdates(
-      [['profile', profile]],
-      (prev) => ({ ...prev, profile, effectiveProfile: profile }),
-      isId
-        ? `Profil diubah ke ${PROFILE_META[profile].label}`
-        : `Profile switched to ${PROFILE_META[profile].label}`
-    );
-  };
-
   const handleTogglePause = () => {
     const nextPaused = !status.inspectionMode;
     void applyConfigUpdates(
       [['inspection_mode', nextPaused ? 'true' : 'false']],
-      (prev) => ({ ...prev, inspectionMode: nextPaused }),
+      (prev) => ({
+        ...prev,
+        inspectionMode: nextPaused,
+        autonomousRegime: nextPaused ? 'paused_oem' : 'idle_cool',
+      }),
       nextPaused
         ? isId
           ? 'CoreFlow dijeda (Mode OEM A/B aktif)'
           : 'CoreFlow paused (OEM A/B compare active)'
         : isId
-          ? 'CoreFlow Engine dilanjutkan'
-          : 'CoreFlow Engine resumed'
+          ? 'CoreFlow Otonom dilanjutkan'
+          : 'CoreFlow Autonomous resumed'
     );
   };
 
@@ -510,7 +492,7 @@ export const App: React.FC = () => {
       } else {
         setStatus((prev) => ({ ...prev, running: true, pid: 1428, inspectionMode: false }));
       }
-      addLog('BOOST', 'Daemon', 'CFAE System Framework v6.0.0-R daemon started.');
+      addLog('BOOST', 'Daemon', 'CFAE System Framework v6.1.0-R Unified Autonomous daemon started.');
       setFeedback(isId ? 'Daemon CoreFlow aktif.' : 'CoreFlow daemon started.');
     } catch (err) {
       setErrorMsg(`Unable to start daemon: ${String(err)}`);
@@ -535,26 +517,23 @@ export const App: React.FC = () => {
     );
   };
 
-  const handleAssignAppRule = (pkg: string, category: AppRuleCategory) => {
+  const handleToggleExcluded = (pkg: string, excluded: boolean) => {
     const trimmed = pkg.trim();
     if (!isValidPackageName(trimmed)) {
       setErrorMsg(
         isId
-          ? 'Masukkan nama paket Android yang valid (contoh: com.miHoYo.GenshinImpact)'
-          : 'Enter a valid Android package name (e.g. com.miHoYo.GenshinImpact)'
+          ? 'Masukkan nama paket Android yang valid (contoh: com.android.camera)'
+          : 'Enter a valid Android package name (e.g. com.android.camera)'
       );
       return;
     }
-    const nextApps: CoreFlowAppRules = assignPackageRule(status.apps, trimmed, category);
+    const lower = trimmed.toLowerCase();
+    const baseExcluded = status.apps.excluded.filter((x) => x.toLowerCase() !== lower);
+    const nextExcluded = excluded ? sanitizePackageList([...baseExcluded, trimmed]) : baseExcluded;
     void applyConfigUpdates(
-      [
-        ['gaming_apps', nextApps.gaming.join(',')],
-        ['smoothness_apps', nextApps.smoothness.join(',')],
-        ['battery_apps', nextApps.battery.join(',')],
-        ['excluded_apps', nextApps.excluded.join(',')],
-      ],
-      (prev) => ({ ...prev, apps: nextApps }),
-      `${trimmed} → ${category.toUpperCase()}`
+      [['excluded_apps', nextExcluded.join(',')]],
+      (prev) => ({ ...prev, apps: { ...prev.apps, excluded: nextExcluded } }),
+      excluded ? `${trimmed} → Stock OEM` : `${trimmed} → Autonomous`
     );
   };
 
@@ -648,24 +627,37 @@ export const App: React.FC = () => {
       ? rawModeMeta.labelId
       : rawModeMeta.label;
 
-  const totalOverrides =
-    status.apps.gaming.length +
-    status.apps.smoothness.length +
-    status.apps.battery.length +
-    status.apps.excluded.length;
+  const regimeLabel = formatAutonomousRegime(status.autonomousRegime, isId);
+  const excludedSet = useMemo(
+    () => new Set(status.apps.excluded.map((x) => x.toLowerCase())),
+    [status.apps.excluded]
+  );
+  const appDnaByPkg = useMemo(() => {
+    const map = new Map<string, AppDnaEntrySummary>();
+    for (const d of status.appDnaEntries) {
+      map.set(d.pkg.toLowerCase(), d);
+    }
+    return map;
+  }, [status.appDnaEntries]);
+
+  const totalExcluded = status.apps.excluded.length;
 
   const filteredInstalledApps = useMemo(() => {
     const q = appSearch.trim().toLowerCase();
     const list = installedApps.filter((pkg) => {
-      if (appFilter === 'rules' && getPackageRuleCategory(status.apps, pkg) === 'default') return false;
-      return !q || pkg.toLowerCase().includes(q);
+      const lower = pkg.toLowerCase();
+      if (appFilter === 'rules' && !excludedSet.has(lower)) return false;
+      return !q || lower.includes(q);
     });
     return [...list].sort((a, b) => {
-      const ra = getPackageRuleCategory(status.apps, a) === 'default' ? 1 : 0;
-      const rb = getPackageRuleCategory(status.apps, b) === 'default' ? 1 : 0;
-      return ra !== rb ? ra - rb : a.localeCompare(b);
+      const ea = excludedSet.has(a.toLowerCase()) ? 0 : 1;
+      const eb = excludedSet.has(b.toLowerCase()) ? 0 : 1;
+      if (ea !== eb) return ea - eb;
+      const da = appDnaByPkg.has(a.toLowerCase()) ? 0 : 1;
+      const db = appDnaByPkg.has(b.toLowerCase()) ? 0 : 1;
+      return da !== db ? da - db : a.localeCompare(b);
     });
-  }, [installedApps, appSearch, appFilter, status.apps]);
+  }, [installedApps, appSearch, appFilter, excludedSet, appDnaByPkg]);
 
   const navTabs: { id: NavTab; label: string; Icon: React.FC<{ className?: string }> }[] = [
     { id: 'home', label: isId ? 'Beranda' : 'Home', Icon: Activity },
@@ -791,7 +783,7 @@ export const App: React.FC = () => {
                       }}
                     />
                     <h1 className="truncate text-base font-bold tracking-tight">
-                      {PROFILE_META[status.effectiveProfile].label} · {modeLabel}
+                      {regimeLabel}
                     </h1>
                   </div>
                   <p
@@ -925,47 +917,61 @@ export const App: React.FC = () => {
               <DualSparkline samples={status.history} trendLabel={trendText} isId={isId} />
             </section>
 
-            {/* 2x2 Proportional Autonomous Profile Grid */}
+            {/* Live Zero-Profile Autonomous Engine Card */}
             <div className="space-y-2">
-              <div className="cf-section-title">{isId ? 'Profil Otonom' : 'Autonomous Profile'}</div>
-              <div className="grid grid-cols-2 gap-2.5">
-                {(['balanced', 'smoothness', 'gaming', 'battery'] as PerformanceProfile[]).map((p) => {
-                  const active = status.profile === p;
-                  return (
-                    <button
-                      key={p}
-                      type="button"
-                      disabled={savingKey !== null}
-                      onClick={() => handleSelectProfile(p)}
-                      className="flex flex-col justify-between rounded-2xl p-3.5 text-left"
-                      style={{
-                        background: active
-                          ? 'var(--md-sys-color-primary-container)'
-                          : 'var(--md-sys-color-surface-container-low)',
-                        color: active
-                          ? 'var(--md-sys-color-on-primary-container)'
-                          : 'var(--md-sys-color-on-surface)',
-                        border: active
-                          ? '1.5px solid var(--md-sys-color-primary)'
-                          : '1px solid var(--md-sys-color-outline-variant)',
-                      }}
-                    >
-                      <div className="flex w-full items-center justify-between gap-1">
-                        <span className="text-sm font-bold truncate">{PROFILE_META[p].label}</span>
-                        {active && (
-                          <span
-                            className="h-2 w-2 rounded-full shrink-0"
-                            style={{ background: 'var(--md-sys-color-primary)' }}
-                          />
-                        )}
-                      </div>
-                      <p className="mt-1 text-[11px] leading-snug opacity-80 line-clamp-2">
-                        {isId ? PROFILE_META[p].taglineId : PROFILE_META[p].tagline}
-                      </p>
-                    </button>
-                  );
-                })}
+              <div className="cf-section-title">
+                {isId ? 'Mesin Otonom Real-Time' : 'Real-Time Autonomous Engine'}
               </div>
+              <section className="md3-card-elevated space-y-3 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{
+                        background: status.inspectionMode
+                          ? '#f59e0b'
+                          : status.lowBatteryEco
+                            ? '#10b981'
+                            : '#22c55e',
+                      }}
+                    />
+                    <span className="truncate text-sm font-bold">{regimeLabel}</span>
+                  </div>
+                  <span className="md3-badge md3-badge-primary shrink-0">
+                    {status.lowBatteryEco ? 'Auto-Eco ≤20%' : 'Zero-Profile'}
+                  </span>
+                </div>
+                <p
+                  className="text-xs leading-relaxed"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
+                  {isId
+                    ? '100% Otonom tanpa profil manual — menyatukan jalur sentuh <5ms, OverScroller adaptif Hz, deteksi game 3D otomatis, 38°C Cool-Glide, Low-Battery Eco ≤20%, dan App DNA secara real-time.'
+                    : '100% Zero-Profile autonomous — unifying <5ms touch response, Hz-adaptive OverScroller hold, automatic 3D gaming detection, 38°C Cool-Glide, Low-Battery Eco ≤20%, and App DNA in real time.'}
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Cool-Glide</div>
+                    <div className="cf-metric-value">38°C</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">App DNA</div>
+                    <div className="cf-metric-value">{status.hyperFluid.appDnaLearned}</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Fling Hold</div>
+                    <div className="cf-metric-value">
+                      {status.lowBatteryEco
+                        ? '500ms'
+                        : status.hardware.refreshHz >= 115
+                          ? '950ms'
+                          : status.hardware.refreshHz >= 85
+                            ? '850ms'
+                            : '750ms'}
+                    </div>
+                  </div>
+                </div>
+              </section>
             </div>
 
             {/* Session Impact 2x3 Uniform Grid */}
@@ -1362,7 +1368,7 @@ export const App: React.FC = () => {
                       style={{ background: status.actuators.contendedNodes > 0 ? '#f59e0b' : '#22c55e' }}
                     />
                     <h2 className="truncate text-sm font-bold">
-                      {modeLabel} · {PROFILE_META[status.effectiveProfile].label}
+                      {regimeLabel} · {modeLabel}
                     </h2>
                   </div>
                   <span
@@ -1506,7 +1512,7 @@ export const App: React.FC = () => {
                   onClick={() => setAppFilter('rules')}
                   className={`cf-seg-btn ${appFilter === 'rules' ? 'is-active' : ''}`}
                 >
-                  {isId ? `Diatur (${totalOverrides})` : `Rules (${totalOverrides})`}
+                  {isId ? `Stock OEM (${totalExcluded})` : `Stock OEM (${totalExcluded})`}
                 </button>
               </div>
 
@@ -1517,50 +1523,56 @@ export const App: React.FC = () => {
                   </div>
                 ) : (
                   filteredInstalledApps.slice(0, 60).map((pkg) => {
-                    const currentCat = getPackageRuleCategory(status.apps, pkg);
+                    const isExcluded = excludedSet.has(pkg.toLowerCase());
+                    const dna = appDnaByPkg.get(pkg.toLowerCase());
                     return (
                       <div
                         key={pkg}
-                        className="space-y-2 rounded-xl p-3"
+                        className="flex items-center justify-between gap-3 rounded-xl p-3"
                         style={{
                           background: 'var(--md-sys-color-surface-container)',
-                          border: '1px solid var(--md-sys-color-outline-variant)',
+                          border: isExcluded
+                            ? '1px solid #f59e0b'
+                            : '1px solid var(--md-sys-color-outline-variant)',
                         }}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate font-mono text-xs font-semibold">{pkg}</span>
-                          <span
-                            className={
-                              currentCat === 'default' ? 'md3-badge md3-badge-neutral' : 'md3-badge md3-badge-primary'
-                            }
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <div className="truncate font-mono text-xs font-semibold">{pkg}</div>
+                          <div
+                            className="text-[10.5px]"
+                            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
                           >
-                            {RULE_CATEGORY_OPTIONS.find((o) => o.id === currentCat)?.label ?? 'Auto'}
-                          </span>
+                            {isExcluded
+                              ? isId
+                                ? 'Dikecualikan — berjalan penuh sebagai Stock OEM'
+                                : 'Excluded — running unmodified Stock OEM'
+                              : dna
+                                ? `App DNA · Bias ${dna.uclampBias.toFixed(2)}x · Eff ${dna.efficiencyWeight.toFixed(2)}x (${dna.samples}s)`
+                                : isId
+                                  ? 'Dikelola otonom oleh CoreFlow'
+                                  : 'Autonomously managed by CoreFlow'}
+                          </div>
                         </div>
-                        <div className="grid grid-cols-5 gap-1">
-                          {RULE_CATEGORY_OPTIONS.map((opt) => {
-                            const active = currentCat === opt.id;
-                            return (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                disabled={savingKey !== null}
-                                onClick={() => handleAssignAppRule(pkg, opt.id)}
-                                className="rounded-lg py-1.5 text-[10.5px] font-semibold truncate"
-                                style={{
-                                  background: active
-                                    ? 'var(--md-sys-color-primary)'
-                                    : 'var(--md-sys-color-surface-container-high)',
-                                  color: active
-                                    ? 'var(--md-sys-color-on-primary)'
-                                    : 'var(--md-sys-color-on-surface-variant)',
-                                }}
-                              >
-                                {opt.label}
-                              </button>
-                            );
-                          })}
-                        </div>
+                        <button
+                          type="button"
+                          disabled={savingKey !== null}
+                          onClick={() => handleToggleExcluded(pkg, !isExcluded)}
+                          className="shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold"
+                          style={{
+                            background: isExcluded
+                              ? '#f59e0b'
+                              : 'var(--md-sys-color-surface-container-high)',
+                            color: isExcluded
+                              ? '#111827'
+                              : 'var(--md-sys-color-on-surface)',
+                          }}
+                        >
+                          {isExcluded
+                            ? 'Stock OEM'
+                            : isId
+                              ? 'Otonom'
+                              : 'Autonomous'}
+                        </button>
                       </div>
                     );
                   })
@@ -1568,9 +1580,11 @@ export const App: React.FC = () => {
               </div>
             </section>
 
-            {/* Manual Package Rule Entry */}
+            {/* Manual Stock OEM Exclusion Entry */}
             <section className="md3-card-elevated space-y-3 p-4">
-              <h2 className="text-sm font-bold">{isId ? 'Tambah Paket Manual' : 'Manual Package Entry'}</h2>
+              <h2 className="text-sm font-bold">
+                {isId ? 'Kecualikan Paket Manual (Stock OEM)' : 'Manual Stock OEM Exclusion'}
+              </h2>
               <div className="flex flex-wrap gap-2">
                 <input
                   type="text"
@@ -1584,51 +1598,34 @@ export const App: React.FC = () => {
                     color: 'var(--md-sys-color-on-surface)',
                   }}
                 />
-                <select
-                  value={manualCategory}
-                  onChange={(e) => setManualCategory(e.target.value as Exclude<AppRuleCategory, 'default'>)}
-                  className="rounded-xl px-3 py-2 text-xs font-semibold"
-                  style={{
-                    background: 'var(--md-sys-color-surface-container)',
-                    border: '1px solid var(--md-sys-color-outline-variant)',
-                    color: 'var(--md-sys-color-on-surface)',
-                  }}
-                >
-                  <option value="gaming">Gaming</option>
-                  <option value="smoothness">Smooth</option>
-                  <option value="battery">Battery</option>
-                  <option value="excluded">Stock</option>
-                </select>
                 <button
                   type="button"
                   className="md3-btn-filled"
                   onClick={() => {
-                    handleAssignAppRule(manualPkg, manualCategory);
+                    handleToggleExcluded(manualPkg, true);
                     setManualPkg('');
                   }}
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  <span>{isId ? 'Tambah' : 'Add'}</span>
+                  <span>{isId ? 'Kecualikan' : 'Exclude'}</span>
                 </button>
               </div>
 
-              {totalOverrides > 0 && (
+              {totalExcluded > 0 && (
                 <div className="flex flex-wrap gap-1.5 pt-1">
-                  {(['gaming', 'smoothness', 'battery', 'excluded'] as const).flatMap((bucket) =>
-                    status.apps[bucket].map((pkg) => (
-                      <span key={`${bucket}-${pkg}`} className="md3-badge md3-badge-neutral gap-1.5 font-mono">
-                        <span>{pkg}</span>
-                        <span className="opacity-70">({bucket})</span>
-                        <button
-                          type="button"
-                          aria-label={`Remove ${pkg}`}
-                          onClick={() => handleAssignAppRule(pkg, 'default')}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </span>
-                    ))
-                  )}
+                  {status.apps.excluded.map((pkg) => (
+                    <span key={pkg} className="md3-badge md3-badge-neutral gap-1.5 font-mono">
+                      <span>{pkg}</span>
+                      <span className="opacity-70">(Stock OEM)</span>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${pkg}`}
+                        onClick={() => handleToggleExcluded(pkg, false)}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
                 </div>
               )}
             </section>

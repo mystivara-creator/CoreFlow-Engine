@@ -10,48 +10,31 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
- * Android Quick Settings Tile for CoreFlow Engine v5.1.0.
- * Cycles through Balanced, Smoothness, Gaming, and Battery profiles
- * with verified root persistence and live state synchronization.
+ * Android Quick Settings Tile for CoreFlow Engine v6.1.0-R (Zero-Profile Autonomous).
+ * 1-tap toggle between Autonomous Engine and Paused (Stock OEM A/B Compare)
+ * with live SoC temperature, thermal headroom, and regime subtitle.
  */
 class CoreFlowTileService : TileService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private var currentProfileIndex = 0
-    private val profiles = listOf(
-        CoreFlowManager.Profile.BALANCED,
-        CoreFlowManager.Profile.SMOOTHNESS,
-        CoreFlowManager.Profile.GAMING,
-        CoreFlowManager.Profile.BATTERY
-    )
+    private var isPaused = false
 
     override fun onStartListening() {
         super.onStartListening()
-        scope.launch {
-            val active = CoreFlowManager.readActiveProfile().getOrNull()
-            if (active != null) {
-                val idx = profiles.indexOf(active)
-                if (idx >= 0) {
-                    currentProfileIndex = idx
-                }
-            }
-            updateTileState()
-        }
+        updateTileState()
     }
 
     override fun onClick() {
         super.onClick()
-        val nextIndex = (currentProfileIndex + 1) % profiles.size
-        val nextProfile = profiles[nextIndex]
-
+        val targetPaused = !isPaused
         scope.launch {
-            val applyResult = CoreFlowManager.applyProfile(nextProfile)
-            if (applyResult.isSuccess) {
-                currentProfileIndex = nextIndex
+            val res = CoreFlowManager.setPaused(targetPaused)
+            if (res.isSuccess) {
+                isPaused = targetPaused
                 updateTileState()
             } else {
                 val tile = qsTile ?: return@launch
-                tile.subtitle = "Apply failed"
+                tile.subtitle = "Root sync failed"
                 tile.updateTile()
             }
         }
@@ -64,16 +47,20 @@ class CoreFlowTileService : TileService() {
             val isRunning = status?.isRunning == true
             val temp = status?.socTempCelsius ?: -1f
 
-            if (isRunning) {
-                val profile = status?.profile ?: profiles[currentProfileIndex]
-                tile.state = if (status?.inspectionMode == true) Tile.STATE_INACTIVE else Tile.STATE_ACTIVE
-                tile.label = "CoreFlow: ${profile.label}"
+            if (isRunning && status != null) {
+                isPaused = status.inspectionMode
+                tile.state = if (status.inspectionMode) Tile.STATE_INACTIVE else Tile.STATE_ACTIVE
+                tile.label = if (status.inspectionMode) "CoreFlow: Paused" else "CoreFlow Auto"
                 tile.subtitle = when {
-                    status?.inspectionMode == true -> "Paused (OEM)"
-                    temp > 0f -> String.format(Locale.US, "%.1f°C · %d%%", temp, ((status?.capacityScale ?: 1f) * 100).toInt())
-                    else -> status?.mode ?: "Active"
+                    status.inspectionMode -> "Stock OEM (A/B)"
+                    status.lowBatteryEco && temp > 0f ->
+                        String.format(Locale.US, "Eco · %.1f°C · %d%%", temp, (status.capacityScale * 100).toInt())
+                    temp > 0f ->
+                        String.format(Locale.US, "%.1f°C · %d%%", temp, (status.capacityScale * 100).toInt())
+                    else -> status.autonomousRegimeLabel(isIndonesian = false)
                 }
             } else {
+                isPaused = false
                 tile.state = Tile.STATE_INACTIVE
                 tile.label = "CoreFlow"
                 tile.subtitle = "Stopped"

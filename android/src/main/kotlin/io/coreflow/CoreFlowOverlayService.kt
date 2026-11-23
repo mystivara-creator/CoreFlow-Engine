@@ -200,38 +200,17 @@ class CoreFlowOverlayService : Service() {
         }
         metricsText = metrics
 
-        // Expandable Mini Game Side Panel
+        // Expandable Zero-Profile Autonomous Mini Panel (Pause A/B + Bypass Charging + Close)
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            setPadding(0, dp(8), 0, 0)
-        }
-
-        val profileRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val profileShort = listOf(
-            "BAL" to CoreFlowManager.Profile.BALANCED,
-            "SMT" to CoreFlowManager.Profile.SMOOTHNESS,
-            "GAM" to CoreFlowManager.Profile.GAMING,
-            "BAT" to CoreFlowManager.Profile.BATTERY,
-        )
-        for ((shortName, prof) in profileShort) {
-            profileRow.addView(
-                makeChip(shortName, Color.argb(190, 30, 41, 59)) {
-                    scope.launch {
-                        CoreFlowManager.applyProfile(prof)
-                        refreshOnce()
-                    }
-                },
-            )
+            setPadding(0, dp(6), 0, 0)
         }
 
         val actionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(6), 0, 0)
+            setPadding(0, dp(2), 0, 0)
         }
 
         val pauseBtn = makeChip("PAUSE", Color.argb(210, 37, 99, 235)) {
@@ -260,7 +239,6 @@ class CoreFlowOverlayService : Service() {
         actionRow.addView(bypassBtn)
         actionRow.addView(closeBtn)
 
-        panel.addView(profileRow)
         panel.addView(actionRow)
         expandPanel = panel
 
@@ -373,7 +351,13 @@ class CoreFlowOverlayService : Service() {
             !status.isRunning -> "STOPPED"
             status.inspectionMode -> "PAUSED"
             status.thermalGuardActive -> "T-GUARD"
-            else -> status.effectiveProfile.label.uppercase(Locale.US)
+            status.autonomousRegime == "gaming_3d" -> "3D GAME"
+            status.autonomousRegime == "low_battery_eco" -> "ECO ≤20%"
+            status.autonomousRegime == "cool_glide" -> "COOL-GLIDE"
+            status.autonomousRegime == "launch_burst" -> "BURST"
+            status.autonomousRegime == "interactive_scroll" -> "SCROLL"
+            status.autonomousRegime == "excluded_oem" -> "OEM"
+            else -> "AUTO"
         }
         titleText?.text = "CF · $stateLabel" + if (status.batteryPower.bypassActive) " · BYP" else ""
 

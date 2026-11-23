@@ -168,21 +168,31 @@ class CoreFlowOnnxNluTest {
         val status = statusSnapshot()
 
         val gaming = CoreFlowDialogueEngine.evaluate("mau mabar mlbb biar ngebut", status, true)
-        assertEquals(CoreFlowDialogueEngine.DialogueIntent.CONTEXT_SHIFT_GAMING, gaming.intent)
-        assertEquals(CoreFlowManager.Profile.GAMING, gaming.requestedProfile)
+        assertEquals(CoreFlowDialogueEngine.DialogueIntent.EXPLAIN_GAMING_AUTONOMY, gaming.intent)
+        assertNull(gaming.requestedInspectionMode)
         assertTrue(gaming.telemetryTags.any { it.contains("ONNX") })
 
         val battery = CoreFlowDialogueEngine.evaluate("batre lagi boros banget tolong irit", status, true)
-        assertEquals(CoreFlowDialogueEngine.DialogueIntent.CONTEXT_SHIFT_BATTERY, battery.intent)
-        assertEquals(CoreFlowManager.Profile.BATTERY, battery.requestedProfile)
+        assertEquals(CoreFlowDialogueEngine.DialogueIntent.EXPLAIN_BATTERY_COOLING, battery.intent)
+        assertNull(battery.requestedInspectionMode)
 
         val smoothEn = CoreFlowDialogueEngine.evaluate("keep animations silky and responsive", status, false)
-        assertEquals(CoreFlowDialogueEngine.DialogueIntent.CONTEXT_SHIFT_SMOOTHNESS, smoothEn.intent)
-        assertEquals(CoreFlowManager.Profile.SMOOTHNESS, smoothEn.requestedProfile)
+        assertEquals(CoreFlowDialogueEngine.DialogueIntent.EXPLAIN_SMOOTHNESS_AUTONOMY, smoothEn.intent)
+        assertNull(smoothEn.requestedInspectionMode)
 
         val gamingEn = CoreFlowDialogueEngine.evaluate("i am about to play competitive matches", status, false)
-        assertEquals(CoreFlowDialogueEngine.DialogueIntent.CONTEXT_SHIFT_GAMING, gamingEn.intent)
-        assertEquals(CoreFlowManager.Profile.GAMING, gamingEn.requestedProfile)
+        assertEquals(CoreFlowDialogueEngine.DialogueIntent.EXPLAIN_GAMING_AUTONOMY, gamingEn.intent)
+        assertNull(gamingEn.requestedInspectionMode)
+
+        val pauseSl = CoreFlowDialogueEngine.evaluate("coba bandingin sama bawaan pabrik", status, true)
+        assertEquals(CoreFlowDialogueEngine.DialogueIntent.PAUSE_AB_COMPARE, pauseSl.intent)
+        assertEquals(true, pauseSl.requestedInspectionMode)
+        assertTrue(pauseSl.telemetryTags.any { it.contains("ONNX") })
+
+        val resumeSl = CoreFlowDialogueEngine.evaluate("turn autonomous loop back on now", status, false)
+        assertEquals(CoreFlowDialogueEngine.DialogueIntent.RESUME_AUTONOMOUS, resumeSl.intent)
+        assertEquals(false, resumeSl.requestedInspectionMode)
+        assertTrue(resumeSl.telemetryTags.any { it.contains("ONNX") })
     }
 
     @Test
@@ -191,7 +201,7 @@ class CoreFlowOnnxNluTest {
         val status = statusSnapshot()
         val refused = CoreFlowDialogueEngine.evaluate("tolong overclock cpu ke maksimal paksa", status, true)
         assertEquals(CoreFlowDialogueEngine.DialogueIntent.REJECT_MANUAL_TWEAK, refused.intent)
-        assertNull(refused.requestedProfile)
+        assertNull(refused.requestedInspectionMode)
         assertNull(refused.requestedTamperResyncNode)
     }
 

@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# CFAE System Framework / CoreFlow Engine v6.0.0-R — Sovereign Preflight, Hard-Block & Atomic Upgrade Installer.
+# CFAE System Framework / CoreFlow Engine v6.1.0-R — Sovereign Preflight, Hard-Block & Atomic Upgrade Installer.
 # All runtime capability discovery, hardware calibration, and kernel actuation remain owned by coreflowd.
 
 PATH="/system/bin:/system/xbin:/sbin:/vendor/bin:$PATH"
@@ -257,7 +257,7 @@ detect_conflicting_modules() {
 # ---------------------------------------------------------------------------
 ui ""
 ui "+======================================================+"
-ui "|       CFAE SYSTEM FRAMEWORK  v6.0.0-R (REBUILD)      |"
+ui "|       CFAE SYSTEM FRAMEWORK  v6.1.0-R (REBUILD)      |"
 ui "|      SOVEREIGN AUTONOMOUS ANDROID SYSTEM ENGINE      |"
 ui "|              by mystivara-creator                    |"
 ui "+======================================================+"
@@ -275,7 +275,7 @@ LIVE_MOD="${COREFLOW_LIVE_MOD_DIR:-/data/adb/modules/cfae_framework}"
 mkdir -p "$STATE_DIR" || die "Cannot prepare runtime state directory."
 chmod 0700 "$STATE_DIR" 2>/dev/null
 
-PREFLIGHT_REPORT="CFAE System Framework / CoreFlow Engine v6.0.0-R — read-only installer preflight"
+PREFLIGHT_REPORT="CFAE System Framework / CoreFlow Engine v6.1.0-R — read-only installer preflight"
 
 # Detect previous installation version for transparent upgrade reporting
 PREV_VERSION=""
@@ -333,9 +333,9 @@ status_line "INFO" "Device   : $BRAND $MODEL ($DEVICE)"
 status_line "INFO" "Kernel   : $KERNEL_RELEASE"
 status_line "INFO" "Root/MAC : $ROOT_MANAGER · SELinux $SELINUX_STATE"
 if [ -n "$PREV_VERSION" ]; then
-    status_line "UPGRADE" "Detected existing installation: $PREV_VERSION -> v6.0.0-R"
+    status_line "UPGRADE" "Detected existing installation: $PREV_VERSION -> v6.1.0-R"
 else
-    status_line "INSTALL" "Fresh installation of CFAE System Framework v6.0.0-R"
+    status_line "INSTALL" "Fresh installation of CFAE System Framework v6.1.0-R"
 fi
 
 # ---------------------------------------------------------------------------
@@ -549,7 +549,7 @@ elif [ -f "$DEFAULT_CONF" ] && [ ! -L "$DEFAULT_CONF" ]; then
     TMP_CONF="$USER_CONF.tmp.$$"
     rm -f "$TMP_CONF"
     if cp -f "$DEFAULT_CONF" "$TMP_CONF" && chmod 0600 "$TMP_CONF" && mv -f "$TMP_CONF" "$USER_CONF"; then
-        status_line "INIT" "Initialized default v6.0.0-R configuration ($USER_CONF)"
+        status_line "INIT" "Initialized default v6.1.0-R configuration ($USER_CONF)"
     else
         rm -f "$TMP_CONF"
         status_line "WARN" "Could not initialize default config; daemon will use compiled defaults"
@@ -635,12 +635,12 @@ if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
                     START_ATTEMPT=$((START_ATTEMPT + 1))
                 done
                 if [ "$DAEMON_READY" -eq 1 ]; then
-                    status_line "LIVE" "CFAE System Framework v6.0.0-R daemon restarted & verified via --status"
+                    status_line "LIVE" "CFAE System Framework v6.1.0-R daemon restarted & verified via --status"
                 else
-                    status_line "WARN" "Live restart unconfirmed; reboot once to activate v6.0.0-R"
+                    status_line "WARN" "Live restart unconfirmed; reboot once to activate v6.1.0-R"
                 fi
             else
-                status_line "WARN" "Live service.sh unavailable; reboot once to activate v6.0.0-R"
+                status_line "WARN" "Live service.sh unavailable; reboot once to activate v6.1.0-R"
             fi
         fi
     fi
@@ -650,7 +650,7 @@ fi
 
 ui ""
 ui "+======================================================+"
-ui "|  CFAE System Framework v6.0.0-R — Install Complete   |"
+ui "|  CFAE System Framework v6.1.0-R — Install Complete   |"
 ui "+------------------------------------------------------+"
 ui "|  WebUI   : KernelSU / APatch (or KsuWebUI on Magisk) |"
 ui "|  Report  : $STATE_DIR/install-preflight.log"

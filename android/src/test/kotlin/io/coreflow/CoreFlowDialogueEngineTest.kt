@@ -93,20 +93,25 @@ class CoreFlowDialogueEngineTest {
     )
 
     @Test
-    fun indonesianAndEnglishContextShiftIntentsPreserveSovereignThermalLock() {
+    fun indonesianAndEnglishAutonomyAndPauseResumeIntentsWorkCleanly() {
         val status = sampleStatus()
         val gaming = CoreFlowDialogueEngine.evaluate("Aku mau push rank / gaming berat", status, true)
-        assertEquals(CoreFlowDialogueEngine.DialogueIntent.CONTEXT_SHIFT_GAMING, gaming.intent)
-        assertEquals(CoreFlowManager.Profile.GAMING, gaming.requestedProfile)
+        assertEquals(CoreFlowDialogueEngine.DialogueIntent.EXPLAIN_GAMING_AUTONOMY, gaming.intent)
+        assertNull(gaming.requestedInspectionMode)
         assertTrue(gaming.reply.contains("Thermal Guard"))
 
         val battery = CoreFlowDialogueEngine.evaluate("Mode hemat baterai, HP lagi panas", status, true)
-        assertEquals(CoreFlowDialogueEngine.DialogueIntent.CONTEXT_SHIFT_BATTERY, battery.intent)
-        assertEquals(CoreFlowManager.Profile.BATTERY, battery.requestedProfile)
+        assertEquals(CoreFlowDialogueEngine.DialogueIntent.EXPLAIN_BATTERY_COOLING, battery.intent)
+        assertNull(battery.requestedInspectionMode)
+        assertTrue(battery.reply.contains("38°C Cool-Glide"))
 
-        val balanced = CoreFlowDialogueEngine.evaluate("Return to balanced automatic mode", status, false)
-        assertEquals(CoreFlowDialogueEngine.DialogueIntent.CONTEXT_SHIFT_BALANCED, balanced.intent)
-        assertEquals(CoreFlowManager.Profile.BALANCED, balanced.requestedProfile)
+        val pause = CoreFlowDialogueEngine.evaluate("Pause dulu untuk bandingkan OEM", status, true)
+        assertEquals(CoreFlowDialogueEngine.DialogueIntent.PAUSE_AB_COMPARE, pause.intent)
+        assertEquals(true, pause.requestedInspectionMode)
+
+        val resume = CoreFlowDialogueEngine.evaluate("Resume autonomous engine", status, false)
+        assertEquals(CoreFlowDialogueEngine.DialogueIntent.RESUME_AUTONOMOUS, resume.intent)
+        assertEquals(false, resume.requestedInspectionMode)
     }
 
     @Test
@@ -142,7 +147,7 @@ class CoreFlowDialogueEngineTest {
         val status = sampleStatus()
         val refused = CoreFlowDialogueEngine.evaluate("Kasih slider manual freq atau yield guard", status, true)
         assertEquals(CoreFlowDialogueEngine.DialogueIntent.REJECT_MANUAL_TWEAK, refused.intent)
-        assertNull(refused.requestedProfile)
+        assertNull(refused.requestedInspectionMode)
         assertNull(refused.requestedTamperResyncNode)
         assertTrue(refused.reply.contains("ditolak", ignoreCase = true))
     }

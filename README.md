@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="docs/assets/coreflow-v6-banner.svg" width="100%" alt="CFAE System Framework / CoreFlow Engine v6.0.0-R">
+  <img src="docs/assets/coreflow-v6-banner.svg" width="100%" alt="CFAE System Framework / CoreFlow Engine v6.1.0-R">
 </p>
 
 <p align="center">
-  <strong>Android 13+ (API 33+) · ARM64 · C++23 + Rust Daemon · Hybrid CFW2/ONNX Neural Engine · Miuix Compose Companion App · Magisk / KernelSU / APatch</strong>
+  <strong>Android 13+ (API 33+) · ARM64 · 100% Zero-Profile Autonomous C++23 + Rust Daemon · Hybrid CFW2/ONNX Neural Engine · Miuix Compose Companion App · Magisk / KernelSU / APatch</strong>
 </p>
 
 <p align="center">
@@ -29,7 +29,13 @@
 
 ## In Ten Seconds
 
-**CFAE System Framework / CoreFlow Engine `v6.0.0-R`** is an autonomous, sovereign performance, thermal, and power orchestration framework for rooted Android — engineered in **C++23 + Rust** (compact native binary targeting `< 0.3%` idle CPU and `< 3 MB` RSS, verifiable via `coreflowd --diag` and `/proc/<pid>/status`) paired with a native **Miuix Compose Companion App** (with on-demand ARM64 ONNX Runtime) and bundled **MD3 WebUI**.
+**CFAE System Framework / CoreFlow Engine `v6.1.0-R`** is a **100% Zero-Profile Unified Autonomous** performance, thermal, and power orchestration framework for rooted Android — engineered in **C++23 + Rust** (compact native binary targeting `< 0.3%` idle CPU and `< 3 MB` RSS, verifiable via `coreflowd --diag` and `/proc/<pid>/status`) paired with a native **Miuix Compose Companion App** (with on-demand ARM64 ONNX Runtime) and bundled **MD3 WebUI**.
+
+All semi-manual profile switches (`Balanced / Smoothness / Gaming / Battery`) and manual per-app override buckets are unified into **one real-time physics-driven autonomous loop** that adapts continuously per millisecond:
+- **Zero-Lag Scrolling & Smoothness**: `< 5 ms` touchscreen boost + refresh-rate-adaptive `OverScroller` fling hold (`60Hz: 750ms`, `90Hz: 850ms`, `120Hz+: 950ms`) + automatic frame-drop jank rescue (`>= 3%` drops).
+- **Automatic 3D Gaming**: Instant `HeavyGame3D` signature detection (`UnityMain`, `GameThread`, `VulkanThread`, `libUE4.so`, `libil2cpp.so`) + sustained GPU hysteresis + coupled CPU/GPU/Memory bus orchestration.
+- **Proactive 38°C Cool-Glide & Low-Battery Auto-Eco**: Smooth thermal glide beginning at `37.5°C` chassis + warm Little-cluster UClamp steering + OEM factory `hispeed_freq` ceiling cap + hands-off passive video node release + automatic **Low-Battery Eco (`<= 20%` discharging, ~15% trim & `500ms` fling hold while keeping scrolling smooth)**.
+- **Minimal Escape Hatches Only**: 1-tap **Pause (A/B Compare)** and per-app **Exclude (Stock OEM)**.
 
 Instead of dumping manual frequency sliders or fighting OEM thermal daemons, CoreFlow follows four strict engineering rules:
 
@@ -57,10 +63,10 @@ Single-pass hardware and kernel capability discovery at startup (zero hardcoded 
 - **Post-Boot Thermal Tranquility**: On cold boot, `BootCalmSanctuary` waits for kernel/thermal quiescence before capturing true post-boot OEM baselines (after `perf-hal` and `mi_thermald` finish init), then ramps actuators smoothly over 30 seconds.
 - **Zero Daemon Fighting**: Any sysfs node actively written by OEM thermal/perf daemons is detected via read-back verification and cooperatively yielded (`30s → 300s` backoff and persistent OEM collaboration map), preventing write-loops and battery drain.
 
-### 3. Dual-Domain Thermal Physics, Rust PID & Coupled Orchestrator
+### 3. Dual-Domain Thermal Physics, Proactive 38°C Cool-Glide & Coupled Orchestrator
 - **Self-Healing Android Thermal HAL**: Queries Android's native `AThermalManager` severity and `AThermal_getThermalHeadroom` with automatic 10-second retry/re-acquisition if `thermalservice` is unavailable at boot or restarts.
 - **Dual-Domain Physics-Aware Fallback**: Whenever OEM thermal policy is unavailable, `evaluate_generic_thermal_fallback` separates **chassis/skin/battery** comfort limits (`40°C` recover / `44°C` trip) from **CPU silicon die** junction limits (`66°C` recover / `74°C` trip / `88°C` emergency), ensuring normal Snapdragon/Dimensity idle temperatures (`42–55°C`) never falsely trigger `THERMAL_GUARD`.
-- **Rust Control Core (`rust/`)**: Zero-allocation OLS thermal velocity analyzer (`°C/min`), hysteretic PID controller, dual-timescale chassis/die equilibrium planner, and slew-rate limiter (`<= 0.08/s` down, `<= 0.06/s` up) that eliminates single-tick headroom cliffs.
+- **Rust Control Core (`rust/`)**: Zero-allocation OLS thermal velocity analyzer (`°C/min`), hysteretic PID controller, **Proactive 38°C Cool-Glide** dual-timescale equilibrium planner, automatic **Low-Battery Eco (`<= 20%`)**, and slew-rate limiter (`<= 0.08/s` down, `<= 0.06/s` up) that eliminates single-tick headroom cliffs.
 
 ### 4. Hybrid CFW2 + ONNX Neural Engine
 See full specification in [docs/architecture/CFW2_ONNX_NEURAL_ENGINE.md](docs/architecture/CFW2_ONNX_NEURAL_ENGINE.md).
@@ -82,7 +88,7 @@ Every kernel and charging mutation flows through a single audited write-ahead jo
 - **Guaranteed Rollback & Boot-Loop Protection**: `--recover-only`, `--rollback-baseline`, and automatic `SAFE_MODE` on repeated early crashes (see [SECURITY.md](SECURITY.md)).
 
 ### 6. Plane 3 — Verified Telemetry & Live Decision Episodes (`--status` / `--episodes`)
-Every mode shift, launch burst, thermal guard, OEM yield, tamper event, and config reload is recorded in a fixed-size zero-allocation ring buffer and exposed via JSON to both the Companion App and MD3 WebUI.
+Every mode shift, launch burst, thermal guard, OEM yield, tamper event, and config reload is recorded in a fixed-size zero-allocation ring buffer and exposed via JSON (`autonomousRegime`, `lowBatteryEco`, `appDnaEntries`) to both the Companion App and MD3 WebUI.
 
 ---
 
@@ -90,20 +96,20 @@ Every mode shift, launch burst, thermal guard, OEM yield, tamper event, and conf
 
 Works directly on **Magisk, KernelSU, KernelSU-Next, and APatch** — **no KsuWebUI or MMRL required**!
 
-- **Home**: Live telemetry pills (`SoC Temp`, `Render`, `UClamp`, `Headroom`), **SoC Temp & Headroom Sparkline**, 4-Pillar readiness strip, 2x2 Autonomous Profiles (`Balanced`, `Smoothness`, `Gaming`, `Battery`), 1-tap **Pause (A/B Compare)**, and quick **Bypass Charging** toggle (when supported).
-- **Control Hub (Capability-Driven)**: Per-cluster live EAS frequency bars, GPU busy % & live **Thermal Zones**, **Bypass Charging / Auto Bypass in Games / Charge Ceiling**, RAM/ZRAM & PSI stall monitors, Real FPS HUD controls, and **2 Quick Settings Tiles** (*CoreFlow Mode* + *CoreFlow Bypass*).
+- **Home**: Live telemetry pills (`SoC Temp`, `Render`, `UClamp`, `Headroom`), **SoC Temp & Headroom Sparkline**, 4-Pillar readiness strip, **Live Zero-Profile Autonomous Engine Card** (real-time regime badge + `38°C Cool-Glide · App DNA · Hybrid AI`), 1-tap **Pause (A/B Compare)**, and quick **Bypass Charging** toggle (when supported).
+- **Control Hub (Capability-Driven)**: Per-cluster live EAS frequency bars, GPU busy % & live **Thermal Zones**, **Bypass Charging / Auto Bypass in Games / Charge Ceiling**, RAM/ZRAM & PSI stall monitors, Real FPS HUD controls, and **2 Quick Settings Tiles** (*CoreFlow Auto ↔ Paused OEM A/B* + *CoreFlow Bypass*).
 - **Live AI Feed & `CFAE TELEMETRY LINK` Console**:
   - Live `DecisionEpisode` stream, 10-second AI thermal & jank-risk forecast, workload classifier, and backend status badge (`ONNX Live` / `CFW2 Micro-MLP` / `Embedded RLS`).
   - **On-Demand ARM64 ONNX Runtime (`0 MB` background RAM)**: Lazy-loaded off-main-thread when `LiveFeedTab` opens and deterministically closed on `Lifecycle.Event.ON_STOP` / `onDispose`.
-    - `cfae_nlu_intent.onnx` (~34 KB, `256→32→11`): Free-form colloquial Indonesian & English NLU augmenting deterministic sovereign guardrails.
+    - `cfae_nlu_intent.onnx` (~34 KB, `256→32→12`): Free-form colloquial Indonesian & English NLU supporting honest Zero-Profile telemetry explanations plus natural-language `RESYNC`, `Pause (A/B Compare)`, and `Resume Autonomous` commands.
     - `cfae_session_anomaly.onnx` (~1.2 KB, `8→16→5`): 1-tap root-cause session anomaly analysis (`Healthy`, `Thermal Saturation`, `Fast-Charge Heat`, `Stutter / I/O Contention`, `External Tamper`).
-- **Deep Per-App Rules**: Real app icons & names via `PackageManager`, automatic Game detection, Effective State badges (`Using Global` / `Override Active`), and 5-mode overrides (`Auto / Gaming / Smooth / Battery / Stock`).
-- **Floating Real FPS Game HUD**: Draggable overlay with real SurfaceFlinger FPS readout + **tap-to-expand Mini Game Panel** (4-profile pills, 1-tap Pause A/B, 1-tap Bypass Charging).
+- **App DNA & Stock OEM Exclusions**: Real app icons & names via `PackageManager`, live **App DNA** bias/efficiency badges, automatic `3D AUTO` game badges, and a single **Exclude (Stock OEM)** switch per app.
+- **Floating Real FPS Game HUD**: Draggable overlay with real SurfaceFlinger FPS readout + live **Autonomous Regime** + **tap-to-expand Mini Panel** (1-tap Pause A/B + 1-tap Bypass Charging).
 - **Settings, Neural Model Manager & Self-Audit**:
   - Instant **English / Bahasa Indonesia** switcher and Miuix/Monet themes.
   - **Neural Model Manager (SAF)**: Import/remove custom `1.7 KB` `.cfw2` models with client-side CRC32/bounds verification, anti-symlink root install, and graceful daemon reload.
-  - **6-Check Device Health Self-Audit**, **Update Center**, **SAF Profile Export/Import** (with SoC provenance check), native Share Sheet `--diag`, CFJ4 Journal inspector, and Emergency OEM Rollback.
-- **Bundled MD3 WebUI**: Available as a zero-APK alternative inside KernelSU / APatch (or KsuWebUI / MMRL on Magisk).
+  - **6-Check Device Health Self-Audit**, **Update Center**, **SAF Config Export/Import** (with SoC provenance check), native Share Sheet `--diag`, CFJ4 Journal inspector, and Emergency OEM Rollback.
+- **Bundled MD3 WebUI**: Available as a zero-APK alternative inside KernelSU / APatch (or KsuWebUI / MMRL on Magisk) with 100% Zero-Profile Autonomous parity.
 
 ---
 

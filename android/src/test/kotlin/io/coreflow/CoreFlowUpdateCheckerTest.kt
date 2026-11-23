@@ -78,6 +78,24 @@ class CoreFlowUpdateCheckerTest {
         )
         assertTrue(
             CoreFlowUpdateChecker.isRemoteNewer(
+                remoteVersion = "v6.1.0-R",
+                remoteCode = 64000,
+                localVersion = "6.0.0-R",
+                localCode = 63085,
+                isCompanionApp = true,
+            ),
+        )
+        assertFalse(
+            CoreFlowUpdateChecker.isRemoteNewer(
+                remoteVersion = "v6.0.0-R",
+                remoteCode = 63000,
+                localVersion = "6.1.0-R",
+                localCode = 64000,
+                isCompanionApp = false,
+            ),
+        )
+        assertTrue(
+            CoreFlowUpdateChecker.isRemoteNewer(
                 remoteVersion = "v6.4.0",
                 remoteCode = 64000,
                 localVersion = "6.0.0-R",

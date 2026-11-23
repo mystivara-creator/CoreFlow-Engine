@@ -196,7 +196,8 @@ int main() {
             {"excluded_apps", "com.android.camera"},
         }));
     const auto v5_cfg = coreflow::DaemonConfig::load_from_file(path.string());
-    assert(v5_cfg.profile == "smoothness");
+    // v6.1.0-R Zero-Profile Autonomous: legacy profile keys parse safely and normalize to autonomous.
+    assert(v5_cfg.profile == "autonomous");
     assert(v5_cfg.enable_frame_smoothness);
     assert(!v5_cfg.enable_storage_burst);
     assert(v5_cfg.gaming_apps == "com.miHoYo.GenshinImpact,com.tencent.ig");

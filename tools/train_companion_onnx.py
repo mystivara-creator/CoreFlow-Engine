@@ -151,7 +151,7 @@ def export_mlp_onnx(
     model = bytearray()
     model.extend(_pb_int64(1, 7))  # ir_version = 7
     model.extend(_pb_str(2, "cfae-companion-trainer"))
-    model.extend(_pb_str(3, "6.0.0-R"))
+    model.extend(_pb_str(3, "6.1.0-R"))
     model.extend(_pb_bytes(7, bytes(graph)))
     model.extend(_pb_bytes(8, opset))
 
@@ -168,17 +168,18 @@ NLU_DIM = 256
 NLU_HIDDEN = 32
 
 INTENTS = [
-    "CONTEXT_SHIFT_GAMING",      # 0
-    "CONTEXT_SHIFT_BATTERY",     # 1
-    "CONTEXT_SHIFT_SMOOTHNESS",  # 2
-    "CONTEXT_SHIFT_BALANCED",    # 3
-    "TAMPER_RESYNC",             # 4
-    "DIAGNOSE_STUTTER",          # 5
-    "DIAGNOSE_THERMAL_LOAD",     # 6
-    "DIAGNOSE_CONFLICT_TAMPER",  # 7
-    "DIAGNOSE_LEARNING_DNA",     # 8
-    "REJECT_MANUAL_TWEAK",       # 9
-    "GENERAL_SUMMARY",           # 10
+    "EXPLAIN_GAMING_AUTONOMY",      # 0
+    "EXPLAIN_BATTERY_COOLING",      # 1
+    "EXPLAIN_SMOOTHNESS_AUTONOMY",  # 2
+    "PAUSE_AB_COMPARE",             # 3
+    "RESUME_AUTONOMOUS",            # 4
+    "TAMPER_RESYNC",                # 5
+    "DIAGNOSE_STUTTER",             # 6
+    "DIAGNOSE_THERMAL_LOAD",        # 7
+    "DIAGNOSE_CONFLICT_TAMPER",     # 8
+    "DIAGNOSE_LEARNING_DNA",        # 9
+    "REJECT_MANUAL_TWEAK",          # 10
+    "GENERAL_SUMMARY",              # 11
 ]
 
 
@@ -302,7 +303,7 @@ def train_classifier(
 
 def build_nlu_dataset() -> List[Tuple[List[float], int]]:
     utterances: Dict[str, List[str]] = {
-        "CONTEXT_SHIFT_GAMING": [
+        "EXPLAIN_GAMING_AUTONOMY": [
             "aku mau push rank sekarang",
             "mabar genshin berat nih",
             "mabar mlbb biar ngebut",
@@ -319,7 +320,7 @@ def build_nlu_dataset() -> List[Tuple[List[float], int]]:
             "turn on game performance profile",
             "set context for intense 3d gaming",
         ],
-        "CONTEXT_SHIFT_BATTERY": [
+        "EXPLAIN_BATTERY_COOLING": [
             "hp mulai anget nih bikin adem dikit",
             "mode hemat baterai aja ya",
             "batre lagi boros banget tolong irit",
@@ -335,7 +336,7 @@ def build_nlu_dataset() -> List[Tuple[List[float], int]]:
             "keep device cool and extend endurance",
             "battery is draining fast make it last longer",
         ],
-        "CONTEXT_SHIFT_SMOOTHNESS": [
+        "EXPLAIN_SMOOTHNESS_AUTONOMY": [
             "scroll medsos biar mulus banget",
             "buat animasi layar dan ui jadi licin",
             "pengen scrolling halus tanpa jeda",
@@ -349,18 +350,30 @@ def build_nlu_dataset() -> List[Tuple[List[float], int]]:
             "keep animations silky and responsive",
             "prioritize fluid scrolling experience",
         ],
-        "CONTEXT_SHIFT_BALANCED": [
-            "balik ke mode otomatis seimbang",
-            "normalin lagi profilnya",
-            "pakai pengaturan standar otomatis aja",
-            "kembali ke balanced seperti biasa",
-            "sudah selesai main balik normal",
-            "sudah beres mabar normalin lagi",
-            "return to balanced automatic mode",
-            "back to normal default profile",
-            "restore balanced daily operation",
-            "use standard adaptive mode again",
-            "done gaming go back to balanced",
+        "PAUSE_AB_COMPARE": [
+            "pause coreflow dulu sebentar",
+            "jeda dulu mau bandingkan dengan oem",
+            "bandingkan performa stock oem sekarang",
+            "istirahatkan coreflow sementara",
+            "pause ab compare sekarang",
+            "coba bandingin sama bawaan pabrik",
+            "pause coreflow for oem comparison",
+            "enable ab compare inspection pause",
+            "temporarily pause engine to test stock oem",
+            "freeze coreflow modulation for a moment",
+            "hold off tuning so i can compare oem",
+        ],
+        "RESUME_AUTONOMOUS": [
+            "lanjutkan coreflow otonom sekarang",
+            "aktifkan lagi coreflow seperti biasa",
+            "balik aktifkan mesin otonom",
+            "selesai bandingkan oem lanjut jalan lagi",
+            "resume coreflow autonomous engine",
+            "unpause engine and resume normal optimization",
+            "exit oem inspection pause mode",
+            "turn autonomous loop back on now",
+            "restore active autonomous control",
+            "lanjut jalan lagi dong coreflownya",
         ],
         "TAMPER_RESYNC": [
             "rebut balik semua node yang diganggu",

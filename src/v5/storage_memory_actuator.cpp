@@ -185,9 +185,7 @@ uint64_t StorageMemoryActuator::compute_read_ahead_kb(
         : (q.type == StorageType::eMMC ? 0.85 : 1.00);
     const double psi_scale = 1.0 + std::clamp(io_psi / 50.0, 0.0, 0.60);
     const double profile_scale =
-        profile == PerformanceProfile::Battery ? 0.70 :
-        profile == PerformanceProfile::Smoothness ? 1.15 :
-        profile == PerformanceProfile::Gaming ? 1.15 : 1.00;
+        profile == PerformanceProfile::Battery ? 0.85 : 1.00;
 
     if (mode == ContextMode::LaunchBurst) {
         // Sequential APK / OAT / asset loading burst scaled to hardware queue ceiling.

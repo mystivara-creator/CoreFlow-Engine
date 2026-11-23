@@ -329,4 +329,17 @@ bool AppDnaStore::flush_if_dirty() noexcept {
     return flush_atomic_now();
 }
 
+std::vector<AppDnaEntry> AppDnaStore::snapshot_entries() const {
+    std::vector<AppDnaEntry> out;
+    out.reserve(entries_.size());
+    for (const auto& [_, entry] : entries_) {
+        out.push_back(entry);
+    }
+    std::sort(out.begin(), out.end(), [](const AppDnaEntry& a, const AppDnaEntry& b) {
+        if (a.last_seen_ms != b.last_seen_ms) return a.last_seen_ms > b.last_seen_ms;
+        return a.sample_count > b.sample_count;
+    });
+    return out;
+}
+
 } // namespace coreflow::v6
