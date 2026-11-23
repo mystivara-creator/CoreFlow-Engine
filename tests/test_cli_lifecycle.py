@@ -109,6 +109,8 @@ if len(sys.argv) >= 2:
                 assert isinstance(payload["apps"].get(bucket), list)
             assert "actuators" in payload and isinstance(payload["actuators"], dict)
             assert isinstance(payload["actuators"].get("contendedPaths"), list)
+            assert "easTopAppCapPct" in payload["actuators"]
+            assert "easCappedGroups" in payload["actuators"]
             assert "memoryBusKnobs" in payload["actuators"]
             assert "hardware" in payload and isinstance(payload["hardware"], dict)
             assert "memory" in payload and isinstance(payload["memory"], dict)

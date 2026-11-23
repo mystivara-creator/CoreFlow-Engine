@@ -93,6 +93,9 @@ struct VmNodesInfo {
 struct CgroupPathsInfo {
     std::string top_app_dir;
     std::string top_app_procs_path;
+    std::string top_app_uclamp_max_path;
+    std::string foreground_uclamp_max_path;
+    std::string system_background_uclamp_max_path;
     std::string background_dir;
     std::string background_io_weight_path;
     std::string background_uclamp_max_path;

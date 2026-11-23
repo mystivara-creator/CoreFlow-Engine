@@ -353,7 +353,8 @@ class CoreFlowOverlayService : Service() {
             status.thermalGuardActive -> "T-GUARD"
             status.autonomousRegime == "gaming_3d" -> "3D GAME"
             status.autonomousRegime == "low_battery_eco" -> "ECO ≤20%"
-            status.autonomousRegime == "cool_glide" -> "COOL-GLIDE"
+            status.autonomousRegime == "thermal_pacing" || status.autonomousRegime == "cool_glide" ->
+                if (status.easTopAppCapPct < 100) "EAS ${status.easTopAppCapPct}%" else "T-PACE"
             status.autonomousRegime == "launch_burst" -> "BURST"
             status.autonomousRegime == "interactive_scroll" -> "SCROLL"
             status.autonomousRegime == "excluded_oem" -> "OEM"

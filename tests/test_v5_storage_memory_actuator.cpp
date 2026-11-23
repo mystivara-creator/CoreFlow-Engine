@@ -230,6 +230,21 @@ int main() {
     act.apply(topo, sym_eff_ctx, PerformanceProfile::Balanced, true, true, 970000, supply_tel);
     assert(read_file(ra_path) == "128");
 
+    // 11. Warm Efficiency pins background/cpu.uclamp.max strictly to Little-core capacity while keeping io.weight OEM
+    topo.little_capacity = 384U; // 37.5% Little cluster capacity
+    StorageMemoryTelemetry warm_bg_tel = calm_tel;
+    warm_bg_tel.capacity_scale = 0.73;
+    act.apply(topo, sym_eff_ctx, PerformanceProfile::Balanced, true, true, 980000, warm_bg_tel);
+    assert(read_file(bg_io) == "default 100");
+    assert(read_file(bg_uclamp) != "max");
+    const double pinned_bg = std::stod(read_file(bg_uclamp));
+    assert(pinned_bg >= 22.0 && pinned_bg <= 35.0);
+    assert(act.stats().background_isolated);
+    // Once cool in Efficiency, background/cpu.uclamp.max releases cleanly back to OEM "max"
+    act.apply(topo, sym_eff_ctx, PerformanceProfile::Balanced, true, true, 990000, calm_tel);
+    assert(read_file(bg_uclamp) == "max");
+    assert(!act.stats().background_isolated);
+
     (void)baseline.rollback_all();
     assert(!baseline.has_active_mutations());
     assert(read_file(mglru_en) == "0x0007");

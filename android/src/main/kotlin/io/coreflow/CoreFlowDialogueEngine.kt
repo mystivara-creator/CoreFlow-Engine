@@ -39,7 +39,7 @@ object CoreFlowDialogueEngine {
             "Ada konflik modul atau intervensi?",
             "Apa yang udah dipelajari di HP ini?",
             "Siap buat gaming berat sekarang?",
-            "Baterai & suhu 38°C Cool-Glide gimana?",
+            "Kendali termal EAS & baterai gimana?",
             "Pause dulu untuk bandingkan OEM",
             "Lanjutkan CoreFlow otonom",
         )
@@ -50,7 +50,7 @@ object CoreFlowDialogueEngine {
             "Any conflicting modules or tampering?",
             "What has CFAE learned on this device?",
             "Is autonomous 3D gaming ready?",
-            "How are 38°C Cool-Glide & battery eco?",
+            "How are EAS thermal pacing & battery eco?",
             "Pause CoreFlow for OEM A/B compare",
             "Resume autonomous engine",
         )
@@ -82,7 +82,7 @@ object CoreFlowDialogueEngine {
                 DialogueIntent.RESUME_AUTONOMOUS
             containsAny(q, "push rank", "gaming berat", "mode game", "main game", "heavy gaming", "gaming mode", "3d gaming") ->
                 DialogueIntent.EXPLAIN_GAMING_AUTONOMY
-            containsAny(q, "hemat baterai", "mode hemat", "baterai awet", "lagi panas", "battery saver", "battery mode", "cool down", "phone feels warm", "cool-glide", "cool glide") ->
+            containsAny(q, "hemat baterai", "mode hemat", "baterai awet", "lagi panas", "battery saver", "battery mode", "cool down", "phone feels warm", "cool-glide", "cool glide", "kendali termal", "eas cap", "thermal pacing") ->
                 DialogueIntent.EXPLAIN_BATTERY_COOLING
             containsAny(q, "mode halus", "anti patah", "scroll halus", "smoothness", "fluid ui", "scrolling halus") ->
                 DialogueIntent.EXPLAIN_SMOOTHNESS_AUTONOMY
@@ -125,9 +125,9 @@ object CoreFlowDialogueEngine {
         val base = when (intent) {
             DialogueIntent.REJECT_MANUAL_TWEAK -> {
                 val reply = if (isIndonesian) {
-                    "Permintaan ditolak oleh CFAE System Framework. CoreFlow v6.1 beroperasi sebagai mesin otonom murni tanpa profil manual maupun slider frekuensi. Celah kompromi YIELD juga ditiadakan demi menjaga keseimbangan termal 38°C Cool-Glide dan penjadwalan lintas-domain."
+                    "Permintaan ditolak oleh CFAE System Framework. CoreFlow v6.1 beroperasi sebagai mesin otonom murni tanpa profil manual maupun slider frekuensi. Celah kompromi YIELD juga ditiadakan demi menjaga kendali daya EAS multi-cgroup dan penjadwalan lintas-domain."
                 } else {
-                    "Request rejected by CFAE System Framework. CoreFlow v6.1 runs as a pure Zero-Profile autonomous guardian—never a manual tweaking tool. Manual frequency sliders and YIELD compromises are intentionally absent to protect 38°C Cool-Glide thermal equilibrium."
+                    "Request rejected by CFAE System Framework. CoreFlow v6.1 runs as a pure Zero-Profile autonomous guardian—never a manual tweaking tool. Manual frequency sliders and YIELD compromises are intentionally absent to protect multi-cgroup EAS thermal-power pacing."
                 }
                 DialogueResolution(
                     intent = DialogueIntent.REJECT_MANUAL_TWEAK,
@@ -164,15 +164,15 @@ object CoreFlowDialogueEngine {
             }
             DialogueIntent.RESUME_AUTONOMOUS -> {
                 val reply = if (isIndonesian) {
-                    "Mesin Otonom CoreFlow diaktifkan kembali. Deteksi 3D Gaming otomatis, 38°C Cool-Glide, sentuhan <5ms, dan App DNA kembali mengendalikan perangkat secara real-time."
+                    "Mesin Otonom CoreFlow diaktifkan kembali. Deteksi 3D Gaming otomatis, Kendali Termal EAS multi-cgroup, sentuhan <5ms, dan App DNA kembali mengendalikan perangkat secara real-time."
                 } else {
-                    "CoreFlow Unified Autonomous Engine resumed. Automatic 3D Gaming detection, 38°C Cool-Glide, <5ms touch response, and App DNA are actively pacing the device in real time."
+                    "CoreFlow Unified Autonomous Engine resumed. Automatic 3D Gaming detection, multi-cgroup EAS thermal pacing, <5ms touch response, and App DNA are actively pacing the device in real time."
                 }
                 DialogueResolution(
                     intent = DialogueIntent.RESUME_AUTONOMOUS,
                     reply = reply,
                     requestedInspectionMode = false,
-                    telemetryTags = listOf("Autonomous Active", "38°C Cool-Glide"),
+                    telemetryTags = listOf("Autonomous Active", "EAS Pacing"),
                 )
             }
             DialogueIntent.EXPLAIN_GAMING_AUTONOMY -> {
@@ -189,9 +189,9 @@ object CoreFlowDialogueEngine {
                     }
                 } else ""
                 val reply = if (isIndonesian) {
-                    "Tidak perlu pindah profil manual — CoreFlow v6.1 otomatis mendeteksi game 3D dari thread engine (UnityMain/GameThread/Vulkan) dan beban GPU. Lantai UClamp per-TID serta bus memori ($busNodes node) langsung naik otomatis saat game berjalan, sementara 38°C Cool-Glide & Thermal Guard tetap menjaga suhu (SoC $tempStr · Headroom $scalePct%$bypassNote)."
+                    "Tidak perlu pindah profil manual — CoreFlow v6.1 otomatis mendeteksi game 3D dari thread engine (UnityMain/GameThread/Vulkan) dan beban GPU. Lantai UClamp per-TID serta bus memori ($busNodes node) langsung naik otomatis saat game berjalan, sementara Kendali Termal EAS & Thermal Guard menjaga suhu stabil (SoC $tempStr · Headroom $scalePct%$bypassNote)."
                 } else {
-                    "No manual profile switch needed—CoreFlow v6.1 automatically detects 3D games from engine threads (UnityMain/GameThread/Vulkan) and sustained GPU load. Per-TID UClamp and coupled memory bus ($busNodes nodes) scale up automatically while 38°C Cool-Glide & Thermal Guard protect thermals (SoC $tempStr · Headroom $scalePct%$bypassNote)."
+                    "No manual profile switch needed—CoreFlow v6.1 automatically detects 3D games from engine threads (UnityMain/GameThread/Vulkan) and sustained GPU load. Per-TID UClamp and coupled memory bus ($busNodes nodes) scale up automatically while EAS Thermal Pacing & Thermal Guard protect thermals (SoC $tempStr · Headroom $scalePct%$bypassNote)."
                 }
                 DialogueResolution(
                     intent = DialogueIntent.EXPLAIN_GAMING_AUTONOMY,
@@ -201,28 +201,31 @@ object CoreFlowDialogueEngine {
             }
             DialogueIntent.EXPLAIN_BATTERY_COOLING -> {
                 val tempStr = formatTemp(status?.socTempCelsius ?: -1f)
+                val battTempStr = formatTemp(status?.batteryTempCelsius ?: -1f)
                 val battPct = status?.batteryPower?.capacityPct
                 val ecoActive = status?.lowBatteryEco == true
+                val easCap = (status?.easTopAppCapPct ?: 100).coerceIn(20, 100)
+                val easCapStr = if (easCap < 100) "$easCap%" else "Max"
                 val scalePct = ((status?.capacityScale ?: 1f) * 100f).toInt().coerceIn(0, 100)
                 val reply = if (isIndonesian) {
                     val ecoStatus = if (ecoActive) {
-                        "Low-Battery Auto-Eco sedang AKTIF (baterai ${battPct ?: "--"}%): memangkas ~15% daya berlebih & hold fling 500ms namun scroll tetap mulus."
+                        "Low-Battery Auto-Eco sedang AKTIF (baterai ${battPct ?: "--"}%): memangkas lonjakan daya puncak & hold fling 500ms namun scroll tetap mulus."
                     } else {
                         "Low-Battery Auto-Eco otomatis aktif saat baterai ≤20% tanpa charger (saat ini ${battPct ?: "--"}%)."
                     }
-                    "CoreFlow tidak lagi memakai profil baterai manual — Proactive 38°C Cool-Glide otomatis mengerem panas secara halus mulai 37.5°C, mengarahkan scroll ringan ke klaster Little, dan melepas seluruh node saat idle/nonton (SoC $tempStr · Headroom $scalePct%). $ecoStatus"
+                    "CoreFlow menggunakan Kendali Termal EAS multi-cgroup nyata (tanpa profil manual): saat suhu bodi menghangat (baterai $battTempStr · SoC $tempStr), CoreFlow membatasi puncak tegangan Big-core via cpu.uclamp.max (EAS Cap $easCapStr · Headroom $scalePct%) dan mengunci background di klaster Little, lalu langsung melepas batas saat buka app atau terjadi jank. $ecoStatus"
                 } else {
                     val ecoStatus = if (ecoActive) {
-                        "Low-Battery Auto-Eco is ACTIVE (battery ${battPct ?: "--"}%): trimming ~15% excess draw with 500ms fling hold while keeping scrolling smooth."
+                        "Low-Battery Auto-Eco is ACTIVE (battery ${battPct ?: "--"}%): trimming peak voltage spikes with 500ms fling hold while keeping scrolling smooth."
                     } else {
                         "Low-Battery Auto-Eco engages automatically whenever battery ≤20% off-charger (currently ${battPct ?: "--"}%)."
                     }
-                    "CoreFlow needs no manual battery profile—Proactive 38°C Cool-Glide smoothly paces thermals starting at 37.5°C, steers light scrolling onto Little cores, and releases nodes when idle or watching video (SoC $tempStr · Headroom $scalePct%). $ecoStatus"
+                    "CoreFlow runs real multi-cgroup EAS thermal-power pacing (no manual battery profile): when the chassis warms (battery $battTempStr · SoC $tempStr), CoreFlow trims the steep Big-core voltage knee via cpu.uclamp.max (EAS Cap $easCapStr · Headroom $scalePct%) and pins background tasks to Little cores, lifting immediately on app launch or jank. $ecoStatus"
                 }
                 DialogueResolution(
                     intent = DialogueIntent.EXPLAIN_BATTERY_COOLING,
                     reply = reply,
-                    telemetryTags = listOf(if (ecoActive) "Auto-Eco Active" else "38°C Cool-Glide", "SoC $tempStr"),
+                    telemetryTags = listOf(if (ecoActive) "Auto-Eco Active" else "EAS Cap $easCapStr", "Batt $battTempStr"),
                 )
             }
             DialogueIntent.EXPLAIN_SMOOTHNESS_AUTONOMY -> {

@@ -129,6 +129,13 @@ data class AppStrings(
         else -> "Embedded RLS"
     }
 
+    fun humanizeAiBackendCompact(raw: String): String = when (raw.lowercase(Locale.US)) {
+        "onnx-runtime-live" -> "ONNX"
+        "cfw2-micro-mlp" -> "CFW2"
+        "custom-cfw-rls-mlp" -> "CFW1"
+        else -> "RLS"
+    }
+
     fun humanizeWorkload(raw: String): String = when (raw.lowercase(Locale.US)) {
         "thermal_surge" -> if (isIndonesian) "Lonjakan Suhu" else "Thermal Surge"
         "gpu_heavy" -> "GPU Heavy"
@@ -171,8 +178,8 @@ data class AppStrings(
     }
 
     fun formatTrend(velCpm: Float): String = when {
-        velCpm >= 0.6f -> String.format(Locale.US, "%s +%.1f°/m", trendHeating, velCpm)
-        velCpm <= -0.6f -> String.format(Locale.US, "%s %.1f°/m", trendCooling, velCpm)
+        velCpm >= 0.15f -> String.format(Locale.US, "+%.1f°/m", velCpm)
+        velCpm <= -0.15f -> String.format(Locale.US, "%.1f°/m", velCpm)
         else -> trendStable
     }
 }
@@ -288,7 +295,7 @@ fun rememberAppStrings(languageIndex: Int): AppStrings {
                 dialogueInputHint = "Tanya telemetri, App DNA, atau ketik Pause/Resume...",
                 dialogueSend = "Kirim",
                 dialogueQuickCardTitle = "Konsol Dialog CFAE Sovereign",
-                dialogueQuickCardSummary = "Tanya alasan stutter, suhu 38°C Cool-Glide, audit konflik, atau jeda perbandingan OEM.",
+                dialogueQuickCardSummary = "Tanya alasan stutter, Kendali Termal EAS, audit konflik, atau jeda perbandingan OEM.",
                 sectionUpdateCenter = "PUSAT PEMBARUAN CFAE",
                 updateCheckNow = "Cek Pembaruan",
                 updateChecking = "Memeriksa rilis GitHub...",
@@ -412,7 +419,7 @@ fun rememberAppStrings(languageIndex: Int): AppStrings {
                 dialogueInputHint = "Ask live telemetry, App DNA, or type Pause/Resume...",
                 dialogueSend = "Send",
                 dialogueQuickCardTitle = "CFAE Sovereign Dialogue Console",
-                dialogueQuickCardSummary = "Ask why frames dropped, inspect 38°C Cool-Glide & tamper forensics, or pause for OEM A/B.",
+                dialogueQuickCardSummary = "Ask why frames dropped, inspect EAS Thermal Pacing & tamper forensics, or pause for OEM A/B.",
                 sectionUpdateCenter = "CFAE UPDATE CENTER",
                 updateCheckNow = "Check for Updates",
                 updateChecking = "Checking GitHub releases...",

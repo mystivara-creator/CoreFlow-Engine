@@ -9,7 +9,7 @@ import android.content.Intent
  *
  * Since CoreFlow Engine v6.1.0-R (Zero-Profile Autonomous), coreflowd natively evaluates
  * real-time battery SOC (Low-Battery Auto-Eco <= 20%), dual-domain chassis/die thermals
- * (Proactive 38°C Cool-Glide + Thermal Guard), and charging state directly in kernel space
+ * (Multi-Cgroup EAS Thermal Pacing + Thermal Guard), and charging state directly in kernel space
  * without mutating manual profiles from Android broadcasts.
  */
 class CoreFlowThermalReceiver : BroadcastReceiver() {

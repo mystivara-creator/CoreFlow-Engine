@@ -108,8 +108,8 @@ const formatClock = (tsMs: number): string => {
 };
 
 const formatTrend = (vel: number, isId: boolean): string => {
-  if (vel >= 0.6) return `${isId ? 'Naik' : 'Rising'} +${vel.toFixed(1)}°/m`;
-  if (vel <= -0.6) return `${isId ? 'Turun' : 'Cooling'} ${vel.toFixed(1)}°/m`;
+  if (vel >= 0.15) return `+${vel.toFixed(1)}°/m`;
+  if (vel <= -0.15) return `${vel.toFixed(1)}°/m`;
   return isId ? 'Stabil' : 'Stable';
 };
 
@@ -946,13 +946,17 @@ export const App: React.FC = () => {
                   style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
                 >
                   {isId
-                    ? '100% Otonom tanpa profil manual — menyatukan jalur sentuh <5ms, OverScroller adaptif Hz, deteksi game 3D otomatis, 38°C Cool-Glide, Low-Battery Eco ≤20%, dan App DNA secara real-time.'
-                    : '100% Zero-Profile autonomous — unifying <5ms touch response, Hz-adaptive OverScroller hold, automatic 3D gaming detection, 38°C Cool-Glide, Low-Battery Eco ≤20%, and App DNA in real time.'}
+                    ? '100% Otonom tanpa profil manual — menyatukan jalur sentuh <5ms, OverScroller adaptif Hz, deteksi game 3D otomatis, Kendali Termal EAS multi-cgroup, Low-Battery Eco ≤20%, dan App DNA secara real-time.'
+                    : '100% Zero-Profile autonomous — unifying <5ms touch response, Hz-adaptive OverScroller hold, automatic 3D gaming detection, multi-cgroup EAS thermal pacing, Low-Battery Eco ≤20%, and App DNA in real time.'}
                 </p>
                 <div className="grid grid-cols-3 gap-2">
                   <div className="cf-metric-tile">
-                    <div className="cf-metric-label">Cool-Glide</div>
-                    <div className="cf-metric-value">38°C</div>
+                    <div className="cf-metric-label">EAS Cap</div>
+                    <div className="cf-metric-value">
+                      {status.actuators.easTopAppCapPct < 100
+                        ? `${status.actuators.easTopAppCapPct}%`
+                        : 'Max'}
+                    </div>
                   </div>
                   <div className="cf-metric-tile">
                     <div className="cf-metric-label">App DNA</div>

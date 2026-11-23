@@ -297,6 +297,8 @@ object CoreFlowManager {
         val readAheadKb: Int,
         val prereadBytes: Long,
         val managedEnvelopeNodes: Int,
+        val easTopAppCapPct: Int = 100,
+        val easCappedGroups: Int = 0,
         val semanticKnobsDiscovered: Int = 0,
         val semanticKnobsActive: Int = 0,
         val memoryBusKnobs: Int = 0,
@@ -361,7 +363,7 @@ object CoreFlowManager {
             "gaming_3d" -> if (isIndonesian) "3D Gaming Otomatis" else "Auto 3D Gaming"
             "launch_burst" -> "Launch Burst"
             "low_battery_eco" -> if (isIndonesian) "Hemat Baterai Otomatis (≤20%)" else "Low-Battery Auto-Eco (≤20%)"
-            "cool_glide" -> "38°C Cool-Glide"
+            "thermal_pacing", "cool_glide" -> if (isIndonesian) "Kendali Termal EAS" else "EAS Thermal Pacing"
             "interactive_scroll" -> if (isIndonesian) "Scroll Responsif" else "Interactive Scroll"
             else -> if (isIndonesian) "Tenang & Dingin" else "Idle Cool"
         }
@@ -562,6 +564,8 @@ object CoreFlowManager {
                 readAheadKb = actuators?.optInt("readAheadKb", 0) ?: 0,
                 prereadBytes = actuators?.optLong("prereadBytes", 0L) ?: 0L,
                 managedEnvelopeNodes = actuators?.optInt("managedEnvelopeNodes", 0) ?: 0,
+                easTopAppCapPct = (actuators?.optInt("easTopAppCapPct", 100) ?: 100).coerceIn(20, 100),
+                easCappedGroups = (actuators?.optInt("easCappedGroups", 0) ?: 0).coerceAtLeast(0),
                 semanticKnobsDiscovered = actuators?.optInt("semanticKnobsDiscovered", 0) ?: 0,
                 semanticKnobsActive = actuators?.optInt("semanticKnobsActive", 0) ?: 0,
                 memoryBusKnobs = actuators?.optInt("memoryBusKnobs", 0) ?: 0,

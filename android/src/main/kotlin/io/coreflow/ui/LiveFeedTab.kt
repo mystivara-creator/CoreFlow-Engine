@@ -433,8 +433,8 @@ fun LiveFeedTab(
                 }
                 val vel = status?.thermalVelocityCpm ?: 0f
                 val trendColor = when {
-                    vel >= 0.6f -> Color(0xFFEF4444)
-                    vel <= -0.6f -> Color(0xFF38BDF8)
+                    vel >= 0.25f -> Color(0xFFEF4444)
+                    vel <= -0.25f -> Color(0xFF38BDF8)
                     else -> Color(0xFF22C55E)
                 }
 

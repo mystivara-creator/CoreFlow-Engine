@@ -103,7 +103,7 @@ class CoreFlowDialogueEngineTest {
         val battery = CoreFlowDialogueEngine.evaluate("Mode hemat baterai, HP lagi panas", status, true)
         assertEquals(CoreFlowDialogueEngine.DialogueIntent.EXPLAIN_BATTERY_COOLING, battery.intent)
         assertNull(battery.requestedInspectionMode)
-        assertTrue(battery.reply.contains("38°C Cool-Glide"))
+        assertTrue(battery.reply.contains("Kendali Termal EAS"))
 
         val pause = CoreFlowDialogueEngine.evaluate("Pause dulu untuk bandingkan OEM", status, true)
         assertEquals(CoreFlowDialogueEngine.DialogueIntent.PAUSE_AB_COMPARE, pause.intent)

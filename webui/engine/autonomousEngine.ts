@@ -92,6 +92,8 @@ export interface CoreFlowActuatorStats {
   prereadFiles: number;
   prereadBytes: number;
   managedEnvelopeNodes: number;
+  easTopAppCapPct: number;
+  easCappedGroups: number;
   semanticKnobsDiscovered: number;
   semanticKnobsActive: number;
   memoryBusKnobs: number;
@@ -273,8 +275,9 @@ export function formatAutonomousRegime(regime: string, isId: boolean): string {
       return 'Launch Burst';
     case 'low_battery_eco':
       return isId ? 'Hemat Baterai Otomatis (≤20%)' : 'Low-Battery Auto-Eco (≤20%)';
+    case 'thermal_pacing':
     case 'cool_glide':
-      return '38°C Cool-Glide';
+      return isId ? 'Kendali Termal EAS' : 'EAS Thermal Pacing';
     case 'interactive_scroll':
       return isId ? 'Scroll Responsif' : 'Interactive Scroll';
     default:
@@ -649,6 +652,8 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
       prereadFiles: isFiniteNum(actuators.prereadFiles) ? actuators.prereadFiles : 0,
       prereadBytes: isFiniteNum(actuators.prereadBytes) ? actuators.prereadBytes : 0,
       managedEnvelopeNodes: isFiniteNum(actuators.managedEnvelopeNodes) ? actuators.managedEnvelopeNodes : 0,
+      easTopAppCapPct: isFiniteNum(actuators.easTopAppCapPct) ? Math.min(100, Math.max(20, Math.round(actuators.easTopAppCapPct))) : 100,
+      easCappedGroups: isFiniteNum(actuators.easCappedGroups) ? Math.max(0, Math.round(actuators.easCappedGroups)) : 0,
       semanticKnobsDiscovered: isFiniteNum(actuators.semanticKnobsDiscovered) ? actuators.semanticKnobsDiscovered : 0,
       semanticKnobsActive: isFiniteNum(actuators.semanticKnobsActive) ? actuators.semanticKnobsActive : 0,
       memoryBusKnobs: isFiniteNum(actuators.memoryBusKnobs) ? actuators.memoryBusKnobs : 0,
@@ -876,6 +881,8 @@ export function createPreviewStatus(): CoreFlowV5Status {
       prereadFiles: 18,
       prereadBytes: 42 * 1024 * 1024,
       managedEnvelopeNodes: 8,
+      easTopAppCapPct: 100,
+      easCappedGroups: 0,
       semanticKnobsDiscovered: 25,
       semanticKnobsActive: 6,
       memoryBusKnobs: 2,
@@ -998,8 +1005,8 @@ export function stepPreviewStatus(prev: CoreFlowV5Status, tick: number): CoreFlo
       ? 'gaming_3d'
       : nextMode === 'LAUNCH_BURST'
         ? 'launch_burst'
-        : temp >= 37.5 || scale < 0.94
-          ? 'cool_glide'
+        : scale < 0.88
+          ? 'thermal_pacing'
           : nextMode === 'INTERACTIVE'
             ? 'interactive_scroll'
             : 'idle_cool';

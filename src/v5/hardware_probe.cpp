@@ -816,8 +816,48 @@ HardwareTopology HardwareProbe::discover() const noexcept {
                 if (!topo.cgroups.top_app_procs_path.empty()) break;
             }
         }
+        bool uclamp_format_detected = false;
+        const auto detect_uclamp_format = [&](const fs::path& uclamp_leaf) {
+            if (uclamp_format_detected) return;
+            const auto cur = read_first_line(uclamp_leaf);
+            if (!cur.empty()) {
+                // Android kernels commonly encode cpu.uclamp.max as "max" or percentage "0.00..100.00"
+                topo.cgroups.uclamp_uses_percent =
+                    cur == "max" || cur.find('.') != std::string::npos || cur == "100";
+                uclamp_format_detected = true;
+            }
+        };
+        if (!topo.cgroups.top_app_dir.empty()) {
+            const fs::path ta_max = fs::path(topo.cgroups.top_app_dir) / "cpu.uclamp.max";
+            if (is_regular_writable(ta_max)) {
+                topo.cgroups.top_app_uclamp_max_path = ta_max.string();
+                detect_uclamp_format(ta_max);
+            }
+        }
         for (const auto& m : resolver.discover_cgroup_mounts()) {
-            const fs::path bg = fs::path(m.mount_point) / "background";
+            const fs::path root(m.mount_point);
+            if (topo.cgroups.top_app_uclamp_max_path.empty()) {
+                const fs::path ta_max = root / "top-app" / "cpu.uclamp.max";
+                if (is_regular_writable(ta_max)) {
+                    topo.cgroups.top_app_uclamp_max_path = ta_max.string();
+                    detect_uclamp_format(ta_max);
+                }
+            }
+            if (topo.cgroups.foreground_uclamp_max_path.empty()) {
+                const fs::path fg_max = root / "foreground" / "cpu.uclamp.max";
+                if (is_regular_writable(fg_max)) {
+                    topo.cgroups.foreground_uclamp_max_path = fg_max.string();
+                    detect_uclamp_format(fg_max);
+                }
+            }
+            if (topo.cgroups.system_background_uclamp_max_path.empty()) {
+                const fs::path sbg_max = root / "system-background" / "cpu.uclamp.max";
+                if (is_regular_writable(sbg_max)) {
+                    topo.cgroups.system_background_uclamp_max_path = sbg_max.string();
+                    detect_uclamp_format(sbg_max);
+                }
+            }
+            const fs::path bg = root / "background";
             if (!fs::is_directory(bg)) continue;
             if (topo.cgroups.background_dir.empty()) topo.cgroups.background_dir = bg.string();
             if (topo.cgroups.background_io_weight_path.empty() && is_regular_writable(bg / "io.weight")) {
@@ -825,10 +865,7 @@ HardwareTopology HardwareProbe::discover() const noexcept {
             }
             if (topo.cgroups.background_uclamp_max_path.empty() && is_regular_writable(bg / "cpu.uclamp.max")) {
                 topo.cgroups.background_uclamp_max_path = (bg / "cpu.uclamp.max").string();
-                const auto cur = read_first_line(bg / "cpu.uclamp.max");
-                // Android kernels commonly encode cpu.uclamp.max as "max" or percentage "0.00..100.00"
-                topo.cgroups.uclamp_uses_percent =
-                    cur == "max" || cur.find('.') != std::string::npos || cur == "100";
+                detect_uclamp_format(bg / "cpu.uclamp.max");
             }
         }
     }

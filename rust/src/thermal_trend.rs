@@ -151,9 +151,10 @@ pub fn compute_thermal_equilibrium(
     let mut charging_damped = false;
     let mut equilibrium_guard = false;
 
-    // 1. Slow chassis / battery Cool-Glide equilibrium loop:
-    // Proactively steer warm chassis temperatures (37.5..43.9 C) smoothly toward the ~38 C
-    // comfort zone without triggering harsh THERMAL_GUARD (which remains at 44.0 C).
+    // 1. Slow chassis / battery thermal-power equilibrium loop:
+    // Proactively ease headroom smoothly when battery/chassis warms above 37.5 C so
+    // Multi-Cgroup EAS cpu.uclamp.max pacing sheds excess C*V^2*f Watts well before
+    // hitting harsh THERMAL_GUARD (which remains at 44.0 C).
     let chassis = if skin > 0.0 && batt > 0.0 {
         skin.max(batt)
     } else if skin > 0.0 {
@@ -166,7 +167,7 @@ pub fn compute_thermal_equilibrium(
         let excess = (chassis - 37.5).clamp(0.0, 9.0);
         let mut eq_cap = (1.0 - excess * 0.055).clamp(0.55, 1.0);
         // Sustained warm-plateau nudge: if chassis >= 38.5 C and not actively cooling,
-        // ease power draw below ambient dissipation so temperature glides back toward ~38 C.
+        // ease power draw further so steady-state silicon heat stays bounded.
         if chassis >= 38.5 && vel >= -0.2 {
             eq_cap = (eq_cap - 0.05).clamp(0.55, 1.0);
         }

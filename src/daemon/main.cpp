@@ -714,10 +714,9 @@ std::string compute_autonomous_regime(const RuntimeStatusData& s) {
     if (s.ctx.mode == ContextMode::Gaming) return "gaming_3d";
     if (s.ctx.mode == ContextMode::LaunchBurst) return "launch_burst";
     if (s.low_battery_eco) return "low_battery_eco";
-    if ((std::isfinite(s.soc_temp) && s.soc_temp >= 37.5) ||
-        (std::isfinite(s.battery_temp) && s.battery_temp >= 37.5) ||
-        s.capacity_scale < 0.94) {
-        return "cool_glide";
+    if ((std::isfinite(s.battery_temp) && s.battery_temp >= 38.5) ||
+        s.capacity_scale < 0.88) {
+        return "thermal_pacing";
     }
     if (s.ctx.mode == ContextMode::Interactive) return "interactive_scroll";
     return "idle_cool";
@@ -982,6 +981,8 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"prereadFiles\":" << s.storage_stats.preread_files_total
         << ",\"prereadBytes\":" << s.storage_stats.preread_bytes_total
         << ",\"managedEnvelopeNodes\":" << s.envelope_stats.managed_nodes
+        << ",\"easTopAppCapPct\":" << s.envelope_stats.eas_top_app_cap_pct
+        << ",\"easCappedGroups\":" << s.envelope_stats.eas_capped_groups
         << ",\"semanticKnobsDiscovered\":" << s.semantic_stats.discovered_total
         << ",\"semanticKnobsActive\":" << s.semantic_stats.active_managed
         << ",\"memoryBusKnobs\":" << s.semantic_stats.memory_bus_knobs
@@ -1770,6 +1771,7 @@ int main(int argc, char* argv[]) {
     };
 
     auto thermal_trend = engine::new_thermal_trend_analyzer();
+    double thermal_trend_ewma_c = -1.0;
     auto preloader = engine::new_app_preloader();
     std::unordered_map<uint64_t, std::string> preloader_pkg_map;
     load_preloader_state(*preloader, preloader_pkg_map);
@@ -1842,6 +1844,9 @@ int main(int argc, char* argv[]) {
         t.cpu_psi = live_status.cpu_psi.value_or(0.0);
         t.memory = mem;
         t.io_supply_boost = symbiotic_plan.io_supply_boost || symbiotic_plan.boost_gpu_memory_supply;
+        t.capacity_scale = live_status.capacity_scale;
+        t.thermal_guard = live_status.thermal_guard;
+        t.low_battery_eco = live_status.low_battery_eco;
         return t;
     };
     const auto build_symbiotic_hints = [&]() noexcept {
@@ -1870,6 +1875,8 @@ int main(int argc, char* argv[]) {
         e.passive_media_only = is_passive_media_only(live_status.ctx);
         e.scheduler_responsiveness_scale = symbiotic_plan.scheduler_responsiveness_scale;
         e.thermal_stepdown_lead = symbiotic_plan.thermal_stepdown_lead;
+        e.jank_ratio = live_status.jank_ratio;
+        e.low_battery_eco = live_status.low_battery_eco;
         return e;
     };
 
@@ -2362,13 +2369,35 @@ int main(int argc, char* argv[]) {
                 live_status.history.erase(live_status.history.begin());
             }
             // Compute jitter-free thermal rise/cool velocity (°C/min) via Rust OLS ring buffer
-            // using monotonic steady_clock timestamps so NTP/NITZ wall-clock jumps never skew the slope.
-            const double die_trip_c = std::clamp(
-                static_cast<double>(config.thermal_trip_celsius) + 30.0, 72.0, 82.0);
+            // using monotonic steady_clock timestamps and an EWMA-damped composite chassis+die
+            // temperature (tau = 15s) so 1-second CPU die bursts never trigger fake ±25°/m swings.
+            double raw_trend_c = -1.0;
+            const double slow_chassis_c =
+                (std::isfinite(batt_temp) && batt_temp > 0.0f) ? static_cast<double>(batt_temp)
+                : (std::isfinite(skin_temp) && skin_temp > 0.0) ? skin_temp
+                : -1.0;
+            if (slow_chassis_c > 0.0 && std::isfinite(soc_temp) && soc_temp > 0.0f) {
+                raw_trend_c = 0.65 * slow_chassis_c + 0.35 * static_cast<double>(soc_temp);
+            } else if (slow_chassis_c > 0.0) {
+                raw_trend_c = slow_chassis_c;
+            } else if (std::isfinite(soc_temp) && soc_temp > 0.0f) {
+                raw_trend_c = static_cast<double>(soc_temp);
+            }
+            if (raw_trend_c > 0.0 && std::isfinite(raw_trend_c)) {
+                if (thermal_trend_ewma_c <= 0.0 || !std::isfinite(thermal_trend_ewma_c)) {
+                    thermal_trend_ewma_c = raw_trend_c;
+                } else {
+                    const double alpha = 1.0 - std::exp(-std::clamp(elapsed, 0.1, 30.0) / 15.0);
+                    thermal_trend_ewma_c += alpha * (raw_trend_c - thermal_trend_ewma_c);
+                }
+            }
+            const double trip_c = slow_chassis_c > 0.0
+                ? std::clamp(static_cast<double>(config.thermal_trip_celsius), 40.0, 52.0)
+                : std::clamp(static_cast<double>(config.thermal_trip_celsius) + 30.0, 72.0, 82.0);
             const auto trend = thermal_trend->push_sample(
                 now_ms,
-                static_cast<double>(soc_temp),
-                die_trip_c);
+                thermal_trend_ewma_c,
+                trip_c);
             live_status.thermal_velocity_cpm = trend.velocity_cpm;
             (void)write_status_snapshot(build_status_json(live_status));
         };

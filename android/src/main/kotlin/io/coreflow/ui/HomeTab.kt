@@ -510,7 +510,7 @@ fun HomeTab(
                     "paused_oem" -> Color(0xFFF59E0B)
                     "thermal_emergency", "thermal_guard" -> Color(0xFFF97316)
                     "gaming_3d" -> Color(0xFFEF4444)
-                    "cool_glide" -> Color(0xFF38BDF8)
+                    "thermal_pacing", "cool_glide" -> Color(0xFF38BDF8)
                     "low_battery_eco" -> Color(0xFF10B981)
                     "interactive_scroll", "launch_burst" -> Color(0xFFA78BFA)
                     else -> Color(0xFF22C55E)
@@ -523,7 +523,10 @@ fun HomeTab(
                     else -> 750
                 }
                 val dnaCount = status?.hyperFluid?.appDnaLearned ?: 0
-                val aiBackendShort = strings.humanizeAiBackend(status?.aiBackend ?: "embedded-rls-mlp")
+                val easCapPct = (status?.easTopAppCapPct ?: 100).coerceIn(20, 100)
+                val easCapText = if (easCapPct < 100) "$easCapPct%" else "Max"
+                val easCapAccent = if (easCapPct < 100) Color(0xFF38BDF8) else Color(0xFF22C55E)
+                val aiBackendCompact = strings.humanizeAiBackendCompact(status?.aiBackend ?: "embedded-rls-mlp")
                 val ecoActive = status?.lowBatteryEco == true
                 val explanation = when (status?.autonomousRegime) {
                     "paused_oem" -> if (strings.isIndonesian) {
@@ -532,19 +535,19 @@ fun HomeTab(
                         "All kernel nodes and UClamp floors are restored to factory OEM defaults for objective A/B comparison."
                     }
                     "gaming_3d" -> if (strings.isIndonesian) {
-                        "Engine 3D terdeteksi otomatis — UClamp per-TID, bus memori, & 38°C Cool-Glide sedang menyeimbangkan FPS stabil."
+                        "Engine 3D terdeteksi otomatis — UClamp per-TID, bus memori, & batas daya EAS ($easCapText) menjaga FPS stabil."
                     } else {
-                        "3D game engine auto-detected — per-TID UClamp, memory bus, and 38°C Cool-Glide are pacing steady FPS."
+                        "3D game engine auto-detected — per-TID UClamp, memory bus, and EAS power ceiling ($easCapText) pace steady FPS."
                     }
                     "low_battery_eco" -> if (strings.isIndonesian) {
-                        "Baterai ≤20% tanpa charger: memangkas ~15% daya berlebih (hold fling 500ms) sambil menjaga scroll tetap mulus & jank rescue aktif."
+                        "Baterai ≤20% tanpa charger: memangkas lonjakan daya puncak (EAS $easCapText, fling 500ms) sambil menjaga scroll mulus."
                     } else {
-                        "Battery ≤20% off-charger: trimming ~15% excess draw (500ms fling hold) while preserving smooth scrolling & jank rescue."
+                        "Battery ≤20% off-charger: trimming peak voltage draw (EAS $easCapText, 500ms fling) while keeping scrolling smooth."
                     }
-                    "cool_glide" -> if (strings.isIndonesian) {
-                        "Proactive 38°C Cool-Glide aktif — mengarahkan beban ringan ke klaster Little dan menahan lonjakan panas secara halus."
+                    "thermal_pacing", "cool_glide" -> if (strings.isIndonesian) {
+                        "Kendali Termal EAS aktif — membatasi puncak tegangan Big-core ($easCapText) & mengunci background di klaster Little tanpa bikin lag."
                     } else {
-                        "Proactive 38°C Cool-Glide engaged — steering light scroll onto Little cores and gliding thermals smoothly toward 38°C."
+                        "EAS Thermal Pacing active — capping peak Big-core voltage knee ($easCapText) and pinning background tasks to Little cores."
                     }
                     "interactive_scroll" -> if (strings.isIndonesian) {
                         "Jalur sentuh <5ms & OverScroller hold ${flingHoldMs}ms (${hz}Hz) aktif dengan jank rescue otomatis ≥3%."
@@ -552,9 +555,9 @@ fun HomeTab(
                         "<5ms touch path & ${flingHoldMs}ms OverScroller hold (${hz}Hz) active with automatic ≥3% frame-drop rescue."
                     }
                     else -> if (strings.isIndonesian) {
-                        "100% Otonom tanpa profil manual — menyatukan respons sentuh <5ms, deteksi game 3D, 38°C Cool-Glide, dan App DNA secara real-time."
+                        "100% Otonom tanpa profil manual — menyatukan sentuhan <5ms, deteksi game 3D, Kendali Termal EAS multi-cgroup, dan App DNA."
                     } else {
-                        "100% Zero-Profile autonomous — unifying <5ms touch, auto 3D gaming, 38°C Cool-Glide, and App DNA in real time."
+                        "100% Zero-Profile autonomous — unifying <5ms touch, auto 3D gaming, multi-cgroup EAS thermal pacing, and App DNA."
                     }
                 }
 
@@ -621,9 +624,9 @@ fun HomeTab(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         MetricPill(
-                            label = "Cool-Glide",
-                            value = "38°C",
-                            accent = Color(0xFF38BDF8),
+                            label = "EAS Cap",
+                            value = easCapText,
+                            accent = easCapAccent,
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                         MetricPill(
@@ -634,7 +637,7 @@ fun HomeTab(
                         )
                         MetricPill(
                             label = "Hybrid AI",
-                            value = aiBackendShort,
+                            value = aiBackendCompact,
                             accent = Color(0xFF34D399),
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
