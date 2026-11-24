@@ -31,6 +31,8 @@ struct EdpObservation {
     bool power_available{false};
     bool charging{false};
     bool screen_off{false};
+    double cpu_util_pct{-1.0};   // Optional CPU utilization (0..100, -1 if unavailable)
+    double gpu_busy_pct{-1.0};   // Optional GPU busy percentage (0..100, -1 if unavailable)
 };
 
 struct EdpSnapshot {

@@ -2169,6 +2169,8 @@ int main(int argc, char* argv[]) {
     double edp_alpha_ewma = v6::EdpKneeCalibrator::kDefaultExponent;
     double edp_knee_ewma = 0.78;
     double edp_blend_ewma = 0.0;
+    double edp_obs_scale_ewma = -1.0;
+    double edp_obs_power_ewma = -1.0;
     int last_scale_dir = 0;
     auto preloader = engine::new_app_preloader();
     std::unordered_map<uint64_t, std::string> preloader_pkg_map;
@@ -3305,15 +3307,34 @@ int main(int argc, char* argv[]) {
             if (khz_cnt > 0U) mean_khz /= static_cast<double>(khz_cnt);
 
             const auto batt_causal = longevity.sample_battery_telemetry();
-            if (cap_weight_sum > 0.0 && !screen_off && !boot_dec.boot_settle_active) {
+            if (cap_weight_sum > 0.0 && !screen_off && !boot_dec.boot_settle_active &&
+                batt_causal.available && !batt_causal.charging &&
+                std::isfinite(batt_causal.power_mw) && batt_causal.power_mw >= 150.0) {
+                const double raw_freq_scale = std::clamp(freq_ratio_weighted / cap_weight_sum, 0.25, 1.0);
+                // Phase-match instantaneous scaling_cur_freq against Android's 2-5s battery fuel-gauge
+                // averaging window (tau = 4.0s) and forward CPU/GPU utilization so clock-gated C-state
+                // idle hispeed_freq spikes never invert mid/high scale bins.
+                if (edp_obs_scale_ewma <= 0.0 || !std::isfinite(edp_obs_scale_ewma)) {
+                    edp_obs_scale_ewma = raw_freq_scale;
+                    edp_obs_power_ewma = batt_causal.power_mw;
+                } else {
+                    const double obs_k = 1.0 - std::exp(-std::clamp(elapsed, 0.1, 15.0) / 4.0);
+                    edp_obs_scale_ewma += obs_k * (raw_freq_scale - edp_obs_scale_ewma);
+                    edp_obs_power_ewma += obs_k * (batt_causal.power_mw - edp_obs_power_ewma);
+                }
                 v6::EdpObservation eobs{};
                 eobs.now_ms = now_ms;
-                eobs.effective_scale = std::clamp(freq_ratio_weighted / cap_weight_sum, 0.25, 1.0);
-                eobs.power_mw = batt_causal.power_mw;
-                eobs.power_available = batt_causal.available;
-                eobs.charging = batt_causal.charging;
-                eobs.screen_off = screen_off;
+                eobs.effective_scale = std::clamp(edp_obs_scale_ewma, 0.25, 1.0);
+                eobs.power_mw = edp_obs_power_ewma;
+                eobs.power_available = true;
+                eobs.charging = false;
+                eobs.screen_off = false;
+                eobs.cpu_util_pct = cpu_util;
+                eobs.gpu_busy_pct = gpu_busy.value_or(0.0);
                 edp_calibrator.observe(eobs);
+            } else if (screen_off || batt_causal.charging) {
+                edp_obs_scale_ewma = -1.0;
+                edp_obs_power_ewma = -1.0;
             }
             live_status.silicon_edp = edp_calibrator.snapshot();
             v6::CausalObservation cobs{};

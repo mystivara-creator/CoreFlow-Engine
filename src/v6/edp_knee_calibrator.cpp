@@ -170,14 +170,25 @@ void EdpKneeCalibrator::observe(const EdpObservation& obs) noexcept {
     last_obs_scale_ = s;
     last_obs_ms_ = obs.now_ms;
 
-    // Track low-load static/idle power anchor for safe P_base subtraction
-    if (s <= 0.38) {
+    // Track low-load static/idle power anchor for safe P_base subtraction.
+    // On real ARM64 silicon with deep C-states (e.g. Qualcomm WALT), idle cores can briefly
+    // park at hispeed_freq (scale > 0.40) while clock-gated (drawing ~idle Watts). Reject
+    // idle C-state samples from mid/high bins so they never invert the power-vs-scale curve!
+    const bool util_known = (std::isfinite(obs.cpu_util_pct) && obs.cpu_util_pct >= 0.0) ||
+                            (std::isfinite(obs.gpu_busy_pct) && obs.gpu_busy_pct >= 0.0);
+    const bool idle_cstate = util_known &&
+                             (obs.cpu_util_pct < 15.0) &&
+                             (obs.gpu_busy_pct < 15.0);
+    if (s <= 0.38 || idle_cstate) {
         if (min_idle_power_mw_ < 0.0) {
             min_idle_power_mw_ = p_mw;
         } else if (p_mw < min_idle_power_mw_) {
             min_idle_power_mw_ = min_idle_power_mw_ * 0.70 + p_mw * 0.30;
         } else {
             min_idle_power_mw_ = min_idle_power_mw_ * 0.98 + p_mw * 0.02;
+        }
+        if (idle_cstate && s > 0.40) {
+            return;
         }
     }
 
@@ -206,11 +217,13 @@ void EdpKneeCalibrator::observe(const EdpObservation& obs) noexcept {
 }
 
 void EdpKneeCalibrator::recompute_locked() noexcept {
-    // Collect active bins (count >= 2) onto the stack — strictly 0 heap allocations.
+    // Collect active bins (count >= 4) onto the stack — strictly 0 heap allocations.
+    // Requiring >= 4 samples per bin prevents isolated 1-2 tick PMIC/display transients
+    // from inverting bin order on real Android devices right after boot.
     size_t active_idx[kNumBins];
     size_t n_active = 0U;
     for (size_t i = 0U; i < kNumBins; ++i) {
-        if (bins_[i].count >= 2U && std::isfinite(bins_[i].mean_scale) &&
+        if (bins_[i].count >= 4U && std::isfinite(bins_[i].mean_scale) &&
             std::isfinite(bins_[i].mean_power_mw) && bins_[i].mean_power_mw > 0.0) {
             active_idx[n_active++] = i;
         }
@@ -254,12 +267,13 @@ void EdpKneeCalibrator::recompute_locked() noexcept {
         return;
     }
 
-    // Check monotonic power rise across scale bins (reject inverted/non-monotonic curves)
+    // Check monotonic power rise across scale bins (6% tolerance for real fuel-gauge/display jitter;
+    // still strictly rejects inverted or erratic non-monotonic curves).
     size_t mono_ok = 0U;
     for (size_t k = 0U; k + 1U < n_active; ++k) {
         const auto& lo = bins_[active_idx[k]];
         const auto& hi = bins_[active_idx[k + 1U]];
-        if (hi.mean_power_mw >= lo.mean_power_mw - 0.03 * std::max(lo.mean_power_mw, 500.0)) {
+        if (hi.mean_power_mw >= lo.mean_power_mw - 0.06 * std::max(lo.mean_power_mw, 500.0)) {
             ++mono_ok;
         }
     }

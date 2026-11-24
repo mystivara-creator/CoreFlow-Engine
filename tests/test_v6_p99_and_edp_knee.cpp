@@ -368,6 +368,62 @@ void test_edp_zero_wear_cfedp1_persistence_and_ota_reset() {
     std::cout << "[PASS] CFEDP1 Zero-Wear atomic persistence (parent-dir fsync) and OTA reset\n";
 }
 
+void test_edp_rejects_idle_cstate_hispeed_spikes_and_handles_fuel_gauge_jitter() {
+    // Replicates real PARROTPRO post-boot behavior:
+    // 1. Idle C-state wakeups park scaling_cur_freq at 0.55..0.90 while CPU < 10% & GPU < 5%
+    //    and power stays at ~1500 mW. These MUST NOT poison mid/high bins or invert monotonicity!
+    // 2. Subsequent active workloads (with realistic ±4% fuel-gauge jitter) MUST converge cleanly.
+    EdpKneeCalibrator cal;
+    cal.initialize("", "6.1.75-android14-hyperos", "PARROTPRO");
+    uint64_t now_ms = 10000ULL;
+
+    static constexpr double kIdleSpikes[6] = {0.48, 0.58, 0.68, 0.78, 0.85, 0.92};
+    for (int r = 0; r < 6; ++r) {
+        for (double s : kIdleSpikes) {
+            now_ms += 6000ULL;
+            EdpObservation obs{};
+            obs.now_ms = now_ms;
+            obs.effective_scale = s;
+            obs.power_mw = 1520.0 + static_cast<double>((r * 37) % 90);
+            obs.power_available = true;
+            obs.charging = false;
+            obs.screen_off = false;
+            obs.cpu_util_pct = 8.0;
+            obs.gpu_busy_pct = 2.0;
+            cal.observe(obs);
+        }
+    }
+    // Idle C-state hispeed spikes must be completely ignored (0 samples in mid/high bins)
+    assert(cal.snapshot().total_samples == 0U);
+    assert(!cal.snapshot().calibrated);
+
+    // Now feed active workloads across 7 bins with realistic ±4% fuel-gauge/backlight jitter
+    static constexpr double kScales[7] = {0.30, 0.42, 0.54, 0.66, 0.78, 0.88, 0.96};
+    for (int r = 0; r < 8; ++r) {
+        for (size_t i = 0; i < 7U; ++i) {
+            now_ms += 6000ULL;
+            const double s = kScales[i];
+            const double jitter = ((r + static_cast<int>(i)) % 2 == 0) ? 1.035 : 0.965;
+            EdpObservation obs{};
+            obs.now_ms = now_ms;
+            obs.effective_scale = s;
+            obs.power_mw = (650.0 + 4200.0 * std::pow(s, 2.15)) * jitter;
+            obs.power_available = true;
+            obs.charging = false;
+            obs.screen_off = false;
+            obs.cpu_util_pct = 25.0 + s * 55.0;
+            obs.gpu_busy_pct = 18.0 + s * 60.0;
+            cal.observe(obs);
+        }
+    }
+    const auto snap = cal.snapshot();
+    assert(snap.calibrated && snap.confidence >= 65U);
+    assert(snap.power_exponent >= 1.90 && snap.power_exponent <= 2.45);
+    assert(snap.knee_scale >= 0.60 && snap.knee_scale <= 0.85);
+
+    std::cout << "[PASS] EdpKneeCalibrator rejects idle C-state hispeed spikes & converges with fuel-gauge jitter\n";
+}
+
 } // namespace
 
 int main() {
@@ -376,6 +432,7 @@ int main() {
     test_edp_knee_discovery_across_silicon_archetypes_and_c0_blend();
     test_edp_numerical_safety_and_fail_closed_degenerate_curves();
     test_edp_zero_wear_cfedp1_persistence_and_ota_reset();
+    test_edp_rejects_idle_cstate_hispeed_spikes_and_handles_fuel_gauge_jitter();
     std::cout << "ALL V6 PHASE 3 P99 DEADLINE & SILICON EDP KNEE TESTS PASSED!\n";
     return 0;
 }
