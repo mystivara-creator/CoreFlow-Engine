@@ -338,6 +338,7 @@ void CausalVerifier::begin_trial(DomainTracker& tr) noexcept {
     tr.sum_mem_psi = 0.0;
     tr.sum_refault = 0.0;
     tr.sum_reclaim = 0.0;
+    tr.min_uclamp_cap_pct = 0U;
 }
 
 void CausalVerifier::accumulate_post(DomainTracker& tr, const CausalObservation& obs) noexcept {
@@ -347,6 +348,10 @@ void CausalVerifier::accumulate_post(DomainTracker& tr, const CausalObservation&
     tr.sum_vel += std::clamp(finite_or(obs.thermal_velocity_cpm), -10.0, 10.0);
     tr.sum_refault += std::max(0.0, finite_or(obs.refault_file_per_sec));
     tr.sum_reclaim += std::max(0.0, finite_or(obs.direct_reclaim_per_sec));
+    if (obs.uclamp_cap_pct > 0U) {
+        const uint32_t cap = std::min(obs.uclamp_cap_pct, 100U);
+        tr.min_uclamp_cap_pct = (tr.min_uclamp_cap_pct == 0U) ? cap : std::min(tr.min_uclamp_cap_pct, cap);
+    }
 
     if (obs.power_available && !obs.charging && std::isfinite(obs.power_mw) && obs.power_mw > 50.0) {
         ++tr.power_samples;
@@ -389,7 +394,16 @@ bool CausalVerifier::evaluate_domain_effect(
     switch (domain) {
         case CausalDomain::ThermalUclampCap: {
             if (!pre.power_ok || !post.power_ok) return false;
-            if (pre.cpu_util_pct < 20.0 && pre.gpu_busy_pct < 20.0) return false;
+            // Strict high-SNR precondition: during light daily workloads (~1.6W Instagram/Chrome),
+            // 120Hz OLED/display backlight dominates fuel-gauge power and shallow uclamp caps (>85%)
+            // are buried in noise. Require substantial power (>= 2400 mW) or compute load (CPU >= 50%)
+            // AND a meaningful cap (<= 85% when reported) before scoring or bypassing ThermalUclampCap.
+            if (pre.power_mw < kMinUclampTrialPowerMw && pre.cpu_util_pct < kMinUclampTrialCpuUtilPct) {
+                return false;
+            }
+            if (post.uclamp_cap_pct > kMaxUclampTrialCapPct) {
+                return false;
+            }
             if (d_cpu > kMaxMatchedLoadDeltaPct || d_gpu > kMaxMatchedLoadDeltaPct) return false;
             const double pwr_drop = (pre.power_mw - post.power_mw) / std::max(pre.power_mw, 500.0);
             const double vel_drop = (pre.thermal_vel_cpm > 0.15)
@@ -558,6 +572,7 @@ void CausalVerifier::finalize_trial(
     post.thermal_vel_cpm = tr.sum_vel * inv;
     post.refault_ps = tr.sum_refault * inv;
     post.reclaim_ps = tr.sum_reclaim * inv;
+    post.uclamp_cap_pct = tr.min_uclamp_cap_pct;
     if (tr.power_samples > 0U) {
         post.power_ok = true;
         post.power_mw = tr.sum_power / static_cast<double>(tr.power_samples);

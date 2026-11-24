@@ -915,6 +915,121 @@ void test_all_domain_actuator_rollbacks_and_emergency_immunity() {
     std::cout << "[PASS] All 4 remaining domain rollbacks and THERMAL_GUARD/reclaim-storm immunity\n";
 }
 
+void test_thermal_uclamp_cap_light_load_and_shallow_cap_precondition() {
+    CausalVerifier verifier;
+    verifier.initialize("", "6.6.118-android15-8", "PARROTPRO_HYPEROS3");
+    uint64_t now_ms = 10000ULL;
+    CausalObserveResult res{};
+
+    // 1. Light daily usage (Instagram/Chrome: ~1679 mW, CPU 28%, GPU 8%, uclamp_cap_pct = 80%)
+    //    Display backlight dominates fuel-gauge; 6 repeated trials with slight noise MUST NOT
+    //    record samples or falsely bypass ThermalUclampCap!
+    {
+        CausalObservation pre{};
+        pre.cpu_util_pct = 28.0;
+        pre.gpu_busy_pct = 8.0;
+        pre.power_available = true;
+        pre.charging = false;
+        pre.power_mw = 1679.0;
+        pre.uclamp_cap_active = false;
+        pre.uclamp_cap_pct = 100U;
+
+        CausalObservation post = pre;
+        post.power_mw = 1699.0; // -1.2% noise buried in 120Hz display draw
+        post.uclamp_cap_active = true;
+        post.uclamp_cap_pct = 80U;
+
+        for (int k = 0; k < 6; ++k) {
+            run_matched_trial(verifier, now_ms, pre, post, res);
+        }
+        const auto snap = verifier.domain_snapshot(CausalDomain::ThermalUclampCap);
+        assert(snap.samples == 0U);
+        assert(snap.state == CausalState::Probing);
+        assert(!verifier.is_bypassed(CausalDomain::ThermalUclampCap, false));
+    }
+
+    // 2. Heavy load (3400 mW, CPU 68%) with SHALLOW cap (uclamp_cap_pct = 90% > 85%)
+    //    MUST ALSO be rejected so tiny caps never cause false bypass!
+    {
+        CausalObservation pre{};
+        pre.cpu_util_pct = 68.0;
+        pre.gpu_busy_pct = 60.0;
+        pre.power_available = true;
+        pre.charging = false;
+        pre.power_mw = 3400.0;
+        pre.uclamp_cap_active = false;
+        pre.uclamp_cap_pct = 100U;
+
+        CausalObservation post = pre;
+        post.power_mw = 3390.0;
+        post.uclamp_cap_active = true;
+        post.uclamp_cap_pct = 90U; // > 85% shallow cap
+
+        for (int k = 0; k < 6; ++k) {
+            run_matched_trial(verifier, now_ms, pre, post, res);
+        }
+        const auto snap = verifier.domain_snapshot(CausalDomain::ThermalUclampCap);
+        assert(snap.samples == 0U);
+        assert(snap.state == CausalState::Probing);
+    }
+
+    // 3. Real heavy load (>= 2400 mW) AND meaningful cap (<= 85%) -> evaluates cleanly & proves effective!
+    {
+        CausalObservation pre{};
+        pre.cpu_util_pct = 64.0;
+        pre.gpu_busy_pct = 70.0;
+        pre.power_available = true;
+        pre.charging = false;
+        pre.power_mw = 3600.0;
+        pre.thermal_velocity_cpm = 0.6;
+        pre.uclamp_cap_active = false;
+        pre.uclamp_cap_pct = 100U;
+
+        CausalObservation post = pre;
+        post.power_mw = 2950.0;
+        post.thermal_velocity_cpm = 0.05;
+        post.uclamp_cap_active = true;
+        post.uclamp_cap_pct = 78U;
+
+        for (int k = 0; k < 3; ++k) {
+            run_matched_trial(verifier, now_ms, pre, post, res);
+        }
+        const auto snap = verifier.domain_snapshot(CausalDomain::ThermalUclampCap);
+        assert(snap.samples == 3U);
+        assert(snap.state == CausalState::VerifiedEffective);
+    }
+
+    // 4. High-CPU compute load (CPU >= 50% even at 2100 mW) with <= 85% cap on a genuinely no-op
+    //    kernel STILL bypasses cleanly after 5 trials.
+    {
+        CausalVerifier noop_v;
+        noop_v.initialize("", "6.6.118-android15-8", "NOOP_UCLAMP");
+        uint64_t t_ms = 10000ULL;
+        CausalObserveResult r{};
+
+        CausalObservation pre{};
+        pre.cpu_util_pct = 58.0;
+        pre.gpu_busy_pct = 15.0;
+        pre.power_available = true;
+        pre.charging = false;
+        pre.power_mw = 2100.0;
+        pre.uclamp_cap_active = false;
+        pre.uclamp_cap_pct = 100U;
+
+        CausalObservation post = pre;
+        post.power_mw = 2105.0;
+        post.uclamp_cap_active = true;
+        post.uclamp_cap_pct = 75U;
+
+        for (int k = 0; k < 5; ++k) {
+            run_matched_trial(noop_v, t_ms, pre, post, r);
+        }
+        assert(noop_v.is_bypassed(CausalDomain::ThermalUclampCap, false));
+    }
+
+    std::cout << "[PASS] ThermalUclampCap rejects light daily loads (~1.6W) & shallow caps (>85%), verifies/bypasses real loads\n";
+}
+
 } // namespace
 
 int main() {
@@ -924,6 +1039,7 @@ int main() {
     test_all_six_causal_domains_positive_negative_and_tradeoffs();
     test_actuator_rollback_and_thermal_guard_immunity();
     test_all_domain_actuator_rollbacks_and_emergency_immunity();
+    test_thermal_uclamp_cap_light_load_and_shallow_cap_precondition();
     std::cout << "ALL V6 CAUSAL VERIFIER & CHASSIS FUSER TESTS PASSED!\n";
     return 0;
 }
