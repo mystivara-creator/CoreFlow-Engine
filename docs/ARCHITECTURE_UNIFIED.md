@@ -69,7 +69,7 @@ Lokasi kode:
 
 ## 3. Fisika di balik keputusan
 
-1. **Daya dinamis & Online Silicon EDP Knee (`EdpKneeCalibrator`, `silicon_edp.map` / `CFEDP1`):** \(P \approx P_{\text{base}} + k \cdot s^{\hat{\alpha}}\). Tegangan naik hampir linear dengan frekuensi di ujung atas OPP, sehingga 10% frekuensi terakhir bisa memakan ±25–30% daya dengan gain <10%. `EdpKneeCalibrator` mengkalibrasi eksponen silikon aktual \(\hat{\alpha} \in [1.35, 2.80]\) dan titik lutut EDP (`edp_knee_scale` \(\in [0.55, 0.88]\), ambang kemiringan marjinal daya/performa \(> 1.65\)) secara daring dari telemetri daya & frekuensi aktual (8-bin zero-heap, tanpa tabel hardcode per-SoC, fail-closed pada kurva datar/non-monoton/noisy). Aktivasi memakai *C0 smooth blend* pada `confidence 50..70` yang tersinkronisasi antara rekonstruksi `P_demand`, `thermal_trend.rs`, dan `uclamp.max`, dengan persistensi Zero-Wear `CFEDP1` (`fsync` + `renameat` + `fsync` direktori induk, auto-reset saat OTA kernel/ROM).
+1. **Daya dinamis & Online Silicon EDP Knee (`EdpKneeCalibrator`, `silicon_edp.map` / `CFEDP2`):** \(P \approx P_{\text{base}} + k \cdot s^{\hat{\alpha}}\). Tegangan naik hampir linear dengan frekuensi di ujung atas OPP, sehingga 10% frekuensi terakhir bisa memakan ±25–30% daya dengan gain <10%. `EdpKneeCalibrator` mengkalibrasi eksponen silikon aktual \(\hat{\alpha} \in [1.35, 2.80]\) dan titik lutut EDP (`edp_knee_scale` \(\in [0.55, 0.88]\), ambang kemiringan marjinal daya/performa \(> 1.65\)) secara daring dari telemetri daya & frekuensi aktual (8-bin zero-heap, tanpa tabel hardcode per-SoC, fail-closed pada kurva datar/non-monoton/noisy). Aktivasi memakai *C0 smooth blend* pada `confidence 50..70` yang tersinkronisasi antara rekonstruksi `P_demand`, `thermal_trend.rs`, dan `uclamp.max`, dengan persistensi Zero-Wear `CFEDP2` (`fsync` + `renameat` + `fsync` direktori induk, auto-reset saat OTA kernel/ROM).
 2. **Termal itu RC:** \(T_{chassis} \approx T_{amb} + P_{sustained}\cdot R_\theta\), dengan konstanta waktu menit, bukan detik. Konsekuensinya:
    - Die melonjak cepat (detik), baterai/casing lambat (menit).
    - Keputusan termal harus memakai sinyal lambat (EWMA τ=15 s), bukan suhu die mentah.
@@ -103,7 +103,7 @@ Aturan prioritas (urutan menang bila konflik):
 2. **Latensi pengguna:** `LaunchBurst`, `p99DeadlineUtil >= 0.92`, jank terverifikasi ≥ 3%, `schedstat` starvation ≥ 0.20, atau suhu dingin → cap/floor `top-app` dan thread kritis langsung diangkat (kecuali `THERMAL_GUARD` aktif).
 3. **Termal & EDP:** saat hangat atau melampaui `P_budget` → cap daya sesuai skalar dan titik lutut EDP terkalibrasi (`THERMAL_GUARD` tetap mengunci penuh pada baterai fisik mentah ≥ 44 °C / die ≥ 76 °C, kebal terhadap bypass kausal).
 4. **Baterai:** Low-Battery Eco (≤ 20%) memangkas sedikit tanpa merusak scroll.
-5. **Efisiensi idle:** mode `Efficiency` / `ScreenOff` melepas boost, mempertahankan cap EAS hangat, melakukan flush Zero-Wear (`AppDNA` + `CFEM1` + `CFEDP1` bila berubah signifikan), dan menidurkan seluruh sensor (0 syscall).
+5. **Efisiensi idle:** mode `Efficiency` / `ScreenOff` melepas boost, mempertahankan cap EAS hangat, melakukan flush Zero-Wear (`AppDNA` + `CFEM1` + `CFEDP2` bila berubah signifikan), dan menidurkan seluruh sensor (0 syscall).
 
 ## 5. Konteks (pengganti "profil")
 
@@ -140,7 +140,7 @@ Aturan prioritas (urutan menang bila konflik):
 
 ## 8. Celah jujur (belum selesai / belum terbukti)
 
-1. **Validasi lapangan lanjutan pasca-Fase 3 pada beragam perangkat fisik.** Seluruh 6 arketipe lintas-OEM — termasuk sensor baterai 1°C + `xo-therm` (PARROTPRO), pure-1°C tanpa `xo-therm`, verifikasi kausal *no-op* `CFEM1`, kendali deadline `p99`, dan kalibrasi lutut EDP `CFEDP1` — telah terverifikasi deterministik di CI oleh **Virtual SoC Farm (`CF-Sim`)**, namun uji lapangan tambahan pada perangkat fisik non-Qualcomm (Dimensity/Exynos/Tensor) tetap bermanfaat untuk kalibrasi jangka panjang.
+1. **Validasi lapangan lanjutan pasca-Fase 3 pada beragam perangkat fisik.** Seluruh 6 arketipe lintas-OEM — termasuk sensor baterai 1°C + `xo-therm` (PARROTPRO), pure-1°C tanpa `xo-therm`, verifikasi kausal *no-op* `CFEM1`, kendali deadline `p99`, dan kalibrasi lutut EDP `CFEDP2` — telah terverifikasi deterministik di CI oleh **Virtual SoC Farm (`CF-Sim`)**, namun uji lapangan tambahan pada perangkat fisik non-Qualcomm (Dimensity/Exynos/Tensor) tetap bermanfaat untuk kalibrasi jangka panjang.
 2. **Resolusi sub-frame per-VSync (`SurfaceFlinger FrameTimeline` binder/eBPF).** `FramePacingSensor` kini mengestimasi ekor `p99` secara zero-heap dari commit-rate terverifikasi + jitter + `schedstat` `run_delay` dengan proteksi penuh anti-false-boost, namun masih bergranulasi jendela ~800 ms (bukan histogram per-frame langsung dari SurfaceFlinger `ASurfaceControl`/eBPF).
 
 ## 9. Arah penyempurnaan (urutan usulan)
