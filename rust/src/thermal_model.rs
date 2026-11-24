@@ -289,7 +289,20 @@ impl ThermalModelEstimator {
             if self.ring_len >= 12 {
                 let (win_std_p, win_span) = self.ring_excitation();
                 let adapting = self.shift_streak >= 4 || self.adapt_steps_remaining > 0;
-                let info_decay = if adapting { 0.975 } else { 0.997 };
+                // Fail-closed flatline guard: if temperature is completely frozen (< 0.05 C span)
+                // across the entire 10-minute ring despite power swings large enough to cross the
+                // sensor's quantization step, flush stale historical excitation quickly.
+                let q_est = self.quantization_step_est();
+                let flatline_std_p_thresh = if q_est >= 0.45 { 1.10 } else { 0.35 };
+                let flatlined =
+                    self.ring_len >= RING && win_span < 0.05 && win_std_p >= flatline_std_p_thresh;
+                let info_decay = if flatlined {
+                    0.88
+                } else if adapting {
+                    0.975
+                } else {
+                    0.997
+                };
                 self.info_std_p = (self.info_std_p * info_decay).max(win_std_p);
                 self.info_span = (self.info_span * info_decay).max(win_span);
             }
@@ -728,6 +741,172 @@ mod tests {
             last.ambient_c,
             last.r_theta_c_per_w,
             last.tau_s
+        );
+    }
+
+    #[test]
+    fn fails_closed_on_flatlined_battery_sensor_from_boot_and_mid_session() {
+        // Case A: Sensor flatlined at 38.0 C from boot despite large power swings -> never valid.
+        let mut est_boot = new_thermal_model_estimator();
+        let mut last = invalid(0, 0.0);
+        for sec in 0..1200u64 {
+            let p = if (sec / 45) % 2 == 0 { 4.5 } else { 1.0 };
+            last = est_boot.push_sample(1_000 + sec * 1_000, 38.0, p, 38.0);
+        }
+        assert!(
+            !last.valid && last.confidence == 0,
+            "flatlined sensor from boot must remain fail-closed (valid={} conf={})",
+            last.valid,
+            last.confidence
+        );
+
+        // Case B: Healthy warmup reaches valid + confidence >= 50, then sensor suddenly freezes
+        // at 40.0 C while power keeps swinging -> information bank must decay and fail closed.
+        let mut est = new_thermal_model_estimator();
+        let mut t: f64 = 32.0;
+        let r_true = 4.6;
+        let tau_true = 300.0;
+        let ta_true = 27.0;
+        let c_true = tau_true / r_true;
+        let mut warmed = invalid(0, 0.0);
+        for sec in 0..900u64 {
+            let p = if (sec / 45) % 2 == 0 { 4.4 } else { 1.6 };
+            t += (p - (t - ta_true) / r_true) / c_true;
+            warmed = est.push_sample(1_000 + sec * 1_000, t.round(), p, 38.0);
+        }
+        assert!(warmed.valid && warmed.confidence >= 45);
+
+        let frozen_temp = t.round();
+        let mut after_freeze = warmed;
+        for sec in 900..1900u64 {
+            let p = if (sec / 45) % 2 == 0 { 4.8 } else { 1.2 };
+            after_freeze = est.push_sample(1_000 + sec * 1_000, frozen_temp, p, 38.0);
+        }
+        assert!(
+            !after_freeze.valid && after_freeze.confidence == 0,
+            "mid-session flatlined sensor must fail closed after info-bank decay (valid={} conf={})",
+            after_freeze.valid,
+            after_freeze.confidence
+        );
+    }
+
+    #[test]
+    fn handles_1c_integer_boundary_jitter_without_false_valid_or_divergence() {
+        // Case A: Uncorrelated 1 C integer boundary chatter (39 <-> 40 every 10s step) under
+        // independent power wave must NEVER produce a false high-confidence closed-loop lock.
+        let mut est_uncorr = new_thermal_model_estimator();
+        let mut last = invalid(0, 0.0);
+        for sec in 0..1200u64 {
+            let p = if (sec / 70) % 2 == 0 { 3.8 } else { 1.4 };
+            let jitter_t = if (sec / 10) % 2 == 0 { 39.0 } else { 40.0 };
+            last = est_uncorr.push_sample(1_000 + sec * 1_000, jitter_t, p, 38.0);
+        }
+        assert!(
+            !last.valid || last.confidence < 45,
+            "uncorrelated 1 C boundary chatter must not activate closed-loop (valid={} conf={} R={} tau={})",
+            last.valid,
+            last.confidence,
+            last.r_theta_c_per_w,
+            last.tau_s
+        );
+
+        // Case B: Genuine RC warmup followed by steady hovering directly across the 39.5 C
+        // rounding boundary (producing 39 <-> 40 integer toggles) stays finite, stable, and valid.
+        let mut est = new_thermal_model_estimator();
+        let r_true = 5.0;
+        let tau_true = 240.0;
+        let ta_true = 26.5;
+        let c_true = tau_true / r_true;
+        let mut t: f64 = 31.0;
+        for sec in 0..1500u64 {
+            let p = if sec < 600 {
+                if (sec / 50) % 2 == 0 { 4.2 } else { 1.4 }
+            } else {
+                // Equilibrium right at 26.5 + 2.6 * 5.0 = 39.5 C -> toggles 39 <-> 40
+                if (sec / 25) % 2 == 0 { 3.1 } else { 2.1 }
+            };
+            t += (p - (t - ta_true) / r_true) / c_true;
+            last = est.push_sample(1_000 + sec * 1_000, t.round(), p, 38.0);
+        }
+        assert!(
+            last.valid && last.confidence >= 45,
+            "real physics hovering on 39.5 C rounding boundary must stay valid (valid={} conf={})",
+            last.valid,
+            last.confidence
+        );
+        assert!(
+            last.ambient_c.is_finite()
+                && last.r_theta_c_per_w.is_finite()
+                && last.tau_s.is_finite()
+                && est.cov.iter().all(|row| row.iter().all(|v| v.is_finite())),
+            "state must remain strictly finite under 1 C boundary jitter"
+        );
+    }
+
+    #[test]
+    fn handles_coarse_to_fine_precision_transition_and_extreme_spikes() {
+        let mut est = new_thermal_model_estimator();
+        let r_true = 5.2;
+        let tau_true = 210.0;
+        let ta_true = 26.0;
+        let c_true = tau_true / r_true;
+        let mut t: f64 = 31.0;
+        let mut last = invalid(0, 0.0);
+
+        // Phase 1 (0..600s): Pure 1 C integer steps
+        for sec in 0..600u64 {
+            let p = if (sec / 45) % 2 == 0 { 4.0 } else { 1.3 };
+            t += (p - (t - ta_true) / r_true) / c_true;
+            last = est.push_sample(1_000 + sec * 1_000, t.round(), p, 38.0);
+        }
+        assert!(est.quantization_step_est() >= 0.9);
+
+        // Phase 2 (600..1000s): Transition to fine 0.001 C fused precision
+        for sec in 600..1000u64 {
+            let p = if (sec / 45) % 2 == 0 { 3.8 } else { 1.5 };
+            t += (p - (t - ta_true) / r_true) / c_true;
+            let fine = (t * 1000.0).round() / 1000.0;
+            last = est.push_sample(1_000 + sec * 1_000, fine, p, 38.0);
+        }
+        assert!(
+            est.quantization_step_est() < 0.35,
+            "q_step_est must adapt downward on coarse->fine transition, got {}",
+            est.quantization_step_est()
+        );
+        assert!(last.valid && last.confidence >= 45);
+
+        // Phase 3: Inject extreme power/temperature spikes and invalid garbage samples
+        let spike_cases = [
+            (1_001_000, 38.5, 29.5),      // extreme valid power burst
+            (1_002_000, 99.0, 29.0),      // extreme valid temp spike
+            (1_003_000, f64::NAN, 4.0),   // NaN temp
+            (1_004_000, -5.0, 4.0),       // negative temp
+            (1_005_000, 150.0, 4.0),      // > 100 C temp
+            (1_006_000, 40.0, 999.0),     // out-of-range power (poisons step)
+            (1_007_000, 40.0, f64::INFINITY),
+        ];
+        for (ts, tc, pw) in spike_cases {
+            let r = est.push_sample(ts, tc, pw, 38.0);
+            assert!(r.avg_power_w.is_finite());
+            if r.valid {
+                assert!(r.r_theta_c_per_w.is_finite() && (0.5..=30.0).contains(&r.r_theta_c_per_w));
+                assert!(r.tau_s.is_finite() && (60.0..=3600.0).contains(&r.tau_s));
+                assert!(r.ambient_c.is_finite() && (5.0..=45.0).contains(&r.ambient_c));
+            }
+        }
+
+        // Phase 4: Clean physical recovery after spikes
+        for sec in 1010..1500u64 {
+            let p = if (sec / 45) % 2 == 0 { 3.9 } else { 1.4 };
+            t += (p - (t - ta_true) / r_true) / c_true;
+            let fine = (t * 1000.0).round() / 1000.0;
+            last = est.push_sample(1_000 + sec * 1_000, fine, p, 38.0);
+        }
+        assert!(
+            last.valid && last.r_theta_c_per_w.is_finite() && last.ambient_c.is_finite(),
+            "estimator must recover cleanly after extreme spikes (valid={} steps={})",
+            last.valid,
+            last.steps
         );
     }
 }

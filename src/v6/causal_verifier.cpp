@@ -84,6 +84,44 @@ inline void ewma_step(double& acc, double val, bool first) noexcept {
     }
 }
 
+inline bool sync_fd_if_needed(int fd, bool allow_einval = false) noexcept {
+#ifdef COREFLOW_ENABLE_TEST_HOOKS
+    const char* skip = std::getenv("COREFLOW_TEST_SKIP_FSYNC");
+    if (skip != nullptr && skip[0] == '1' && skip[1] == '\0') {
+        return true;
+    }
+#endif
+    for (;;) {
+        if (::fsync(fd) == 0) return true;
+        if (errno == EINTR) continue;
+        if (allow_einval && (errno == EINVAL || errno == EROFS)) return true;
+        return false;
+    }
+}
+
+// Evaluates net UX benefit against power consumption trade-off.
+// Increasing power draw (> 3%) without meaningful latency/jank/starvation gain
+// MUST NEVER score positive (prevents VerifiedEffective on wasteful boosts).
+inline double apply_power_tradeoff(double ux_gain,
+                                   double pre_power_mw,
+                                   double post_power_mw,
+                                   bool power_ok) noexcept {
+    if (!power_ok) {
+        return std::clamp(ux_gain, -0.35, 0.60);
+    }
+    const double extra_w_frac = (post_power_mw - pre_power_mw) / std::max(pre_power_mw, 500.0);
+    double power_penalty = 0.0;
+    if (extra_w_frac > 0.03) {
+        const double weight = (ux_gain <= 0.02) ? 0.80 : 0.45;
+        power_penalty = std::clamp(extra_w_frac * weight, 0.0, 0.35);
+    }
+    double net = ux_gain - power_penalty;
+    if (ux_gain <= 0.02 && extra_w_frac > 0.03) {
+        net = std::min(net, -0.02);
+    }
+    return std::clamp(net, -0.35, 0.60);
+}
+
 inline bool domain_is_active(CausalDomain d, const CausalObservation& obs) noexcept {
     switch (d) {
         case CausalDomain::ThermalUclampCap: return obs.uclamp_cap_active;
@@ -374,53 +412,85 @@ bool CausalVerifier::evaluate_domain_effect(
         case CausalDomain::CpuGovTuning: {
             if (pre.cpu_util_pct < 20.0) return false;
             if (d_cpu > kMaxMatchedLoadDeltaPct) return false;
-            const bool has_khz = (pre.mean_khz > 100000.0 && post.mean_khz > 100000.0);
-            const bool has_starv = (pre.starv_ok && post.starv_ok && pre.starvation >= 0.12);
-            const bool has_jank = (pre.jank_ok && post.jank_ok && pre.jank_ratio >= 0.025);
-            if (!has_khz && !has_starv && !has_jank) return false;
-            double best = -1.0;
-            if (has_khz) {
-                const double khz_resp = std::abs(post.mean_khz - pre.mean_khz) / std::max(pre.mean_khz, 300000.0);
-                best = std::max(best, std::clamp(khz_resp * 0.8, 0.0, 0.40));
+            // Separate mere actuator motion (mean_khz change) from real system benefit:
+            // VerifiedEffective requires genuine UX/latency relief (starvation, jank, CPU PSI)
+            // OR verified discharging power efficiency gain without UX regression.
+            const bool jank_hr = (pre.jank_ok && post.jank_ok && pre.jank_ratio >= 0.025);
+            const bool starv_hr = (pre.starv_ok && post.starv_ok && pre.starvation >= 0.12);
+            const bool psi_hr = (pre.cpu_psi_ok && post.cpu_psi_ok && pre.cpu_psi >= 5.0);
+            const bool power_ok = (pre.power_ok && post.power_ok);
+            const double pwr_drop = power_ok
+                ? ((pre.power_mw - post.power_mw) / std::max(pre.power_mw, 500.0))
+                : 0.0;
+            const bool ux_regressed =
+                (pre.jank_ok && post.jank_ok && (post.jank_ratio - pre.jank_ratio) >= 0.03) ||
+                (pre.starv_ok && post.starv_ok && (post.starvation - pre.starvation) >= 0.12);
+
+            if (jank_hr || starv_hr || psi_hr) {
+                double ux_gain = -1.0;
+                if (jank_hr) {
+                    ux_gain = std::max(ux_gain, std::clamp((pre.jank_ratio - post.jank_ratio) * 2.5, -0.30, 0.50));
+                }
+                if (starv_hr) {
+                    ux_gain = std::max(ux_gain, std::clamp((pre.starvation - post.starvation) * 1.5, -0.30, 0.50));
+                }
+                if (psi_hr) {
+                    ux_gain = std::max(ux_gain, std::clamp((pre.cpu_psi - post.cpu_psi) / 25.0, -0.25, 0.45));
+                }
+                double benefit = ux_gain;
+                if (power_ok && pwr_drop > 0.03 && !ux_regressed && ux_gain >= -0.01) {
+                    benefit = std::max(benefit, std::clamp(pwr_drop * 0.90, 0.0, 0.50));
+                }
+                out_effect = apply_power_tradeoff(benefit, pre.power_mw, post.power_mw, power_ok);
+                return true;
             }
-            if (has_starv) {
-                best = std::max(best, std::clamp((pre.starvation - post.starvation) * 1.5, -0.30, 0.50));
+
+            if (power_ok) {
+                if (pwr_drop >= 0.04 && !ux_regressed) {
+                    out_effect = std::clamp(pwr_drop, 0.0, 0.50);
+                    return true;
+                }
+                if (pwr_drop <= -0.04) {
+                    // Burned >= 4% extra power at matched load with zero UX headroom to justify it.
+                    out_effect = std::clamp(pwr_drop * 0.80, -0.35, -0.02);
+                    return true;
+                }
             }
-            if (has_jank) {
-                best = std::max(best, std::clamp((pre.jank_ratio - post.jank_ratio) * 2.5, -0.30, 0.50));
-            }
-            out_effect = std::clamp(best, -0.30, 0.60);
-            return true;
+            return false;
         }
         case CausalDomain::SemanticCpuGpuBoost: {
             if (pre.cpu_util_pct < 20.0 && pre.gpu_busy_pct < 20.0) return false;
             if (d_cpu > kMaxMatchedLoadDeltaPct || d_gpu > kMaxMatchedLoadDeltaPct) return false;
-            // Precondition against ceiling effect: only evaluate when pre-window actually had
-            // measurable latency/contention headroom to improve.
+            // Precondition against ceiling effect: evaluate when pre-window had measurable
+            // latency/contention headroom, OR when boost clearly burned extra power (>= 5%)
+            // without any UX headroom to improve.
             const bool jank_hr = (pre.jank_ok && post.jank_ok && pre.jank_ratio >= 0.025);
             const bool starv_hr = (pre.starv_ok && post.starv_ok && pre.starvation >= 0.12);
             const bool psi_hr = (pre.cpu_psi_ok && post.cpu_psi_ok && pre.cpu_psi >= 5.0);
-            if (!jank_hr && !starv_hr && !psi_hr) return false;
+            const bool power_ok = (pre.power_ok && post.power_ok);
 
-            double raw_gain = -1.0;
-            if (jank_hr) {
-                raw_gain = std::max(raw_gain, std::clamp((pre.jank_ratio - post.jank_ratio) * 2.5, -0.30, 0.50));
+            if (jank_hr || starv_hr || psi_hr) {
+                double raw_gain = -1.0;
+                if (jank_hr) {
+                    raw_gain = std::max(raw_gain, std::clamp((pre.jank_ratio - post.jank_ratio) * 2.5, -0.30, 0.50));
+                }
+                if (starv_hr) {
+                    raw_gain = std::max(raw_gain, std::clamp((pre.starvation - post.starvation) * 1.5, -0.30, 0.50));
+                }
+                if (psi_hr) {
+                    raw_gain = std::max(raw_gain, std::clamp((pre.cpu_psi - post.cpu_psi) / 25.0, -0.25, 0.45));
+                }
+                out_effect = apply_power_tradeoff(raw_gain, pre.power_mw, post.power_mw, power_ok);
+                return true;
             }
-            if (starv_hr) {
-                raw_gain = std::max(raw_gain, std::clamp((pre.starvation - post.starvation) * 1.5, -0.30, 0.50));
-            }
-            if (psi_hr) {
-                raw_gain = std::max(raw_gain, std::clamp((pre.cpu_psi - post.cpu_psi) / 25.0, -0.25, 0.45));
-            }
-            double power_penalty = 0.0;
-            if (pre.power_ok && post.power_ok && raw_gain <= 0.015) {
+            if (power_ok) {
                 const double extra_w_frac = (post.power_mw - pre.power_mw) / std::max(pre.power_mw, 500.0);
-                if (extra_w_frac > 0.03) {
-                    power_penalty = std::clamp(extra_w_frac * 0.5, 0.0, 0.25);
+                if (extra_w_frac >= 0.05) {
+                    out_effect = std::clamp(-extra_w_frac * 0.80, -0.35, -0.02);
+                    return true;
                 }
             }
-            out_effect = std::clamp(raw_gain - power_penalty, -0.35, 0.60);
-            return true;
+            return false;
         }
         case CausalDomain::MemoryBusFloor: {
             if (pre.gpu_busy_pct < 30.0 && !(pre.io_psi_ok && pre.io_psi >= 4.0)) return false;
@@ -428,13 +498,24 @@ bool CausalVerifier::evaluate_domain_effect(
             const bool jank_hr = (pre.jank_ok && post.jank_ok && pre.jank_ratio >= 0.025);
             const bool io_hr = (pre.io_psi_ok && post.io_psi_ok && pre.io_psi >= 4.0);
             const bool starv_hr = (pre.starv_ok && post.starv_ok && pre.starvation >= 0.12);
-            if (!jank_hr && !io_hr && !starv_hr) return false;
-            double best = -1.0;
-            if (jank_hr) best = std::max(best, std::clamp((pre.jank_ratio - post.jank_ratio) * 2.5, -0.30, 0.50));
-            if (io_hr) best = std::max(best, std::clamp((pre.io_psi - post.io_psi) / std::max(pre.io_psi, 5.0), -0.30, 0.50));
-            if (starv_hr) best = std::max(best, std::clamp((pre.starvation - post.starvation) * 1.5, -0.30, 0.50));
-            out_effect = std::clamp(best, -0.30, 0.60);
-            return true;
+            const bool power_ok = (pre.power_ok && post.power_ok);
+
+            if (jank_hr || io_hr || starv_hr) {
+                double best = -1.0;
+                if (jank_hr) best = std::max(best, std::clamp((pre.jank_ratio - post.jank_ratio) * 2.5, -0.30, 0.50));
+                if (io_hr) best = std::max(best, std::clamp((pre.io_psi - post.io_psi) / std::max(pre.io_psi, 5.0), -0.30, 0.50));
+                if (starv_hr) best = std::max(best, std::clamp((pre.starvation - post.starvation) * 1.5, -0.30, 0.50));
+                out_effect = apply_power_tradeoff(best, pre.power_mw, post.power_mw, power_ok);
+                return true;
+            }
+            if (power_ok) {
+                const double extra_w_frac = (post.power_mw - pre.power_mw) / std::max(pre.power_mw, 500.0);
+                if (extra_w_frac >= 0.05) {
+                    out_effect = std::clamp(-extra_w_frac * 0.80, -0.35, -0.02);
+                    return true;
+                }
+            }
+            return false;
         }
         case CausalDomain::StorageMemoryTuning: {
             const bool refault_hr = (pre.refault_ps >= 120.0);
@@ -673,8 +754,11 @@ void CausalVerifier::load_locked() noexcept {
 
 bool CausalVerifier::persist_locked() noexcept {
     if (state_dir_.empty() || map_path_.empty()) return false;
+    const int dfd = ::open(state_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (dfd < 0) return false;
     struct stat st{};
-    if (::lstat(state_dir_.c_str(), &st) != 0 || !S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
+    if (::fstat(dfd, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        (void)::close(dfd);
         return false;
     }
 
@@ -694,24 +778,31 @@ bool CausalVerifier::persist_locked() noexcept {
         }
     }
 
-    const std::string tmp_path = map_path_ + ".tmp." + std::to_string(::getpid());
-    (void)::unlink(tmp_path.c_str());
-    const int fd = ::open(tmp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (fd < 0) return false;
-    const bool ok = write_all_fd(fd, payload) && (::fsync(fd) == 0);
-    (void)::close(fd);
-    if (!ok) {
-        (void)::unlink(tmp_path.c_str());
-        return false;
-    }
-    if (::rename(tmp_path.c_str(), map_path_.c_str()) != 0) {
-        (void)::unlink(tmp_path.c_str());
-        return false;
-    }
-    const int dfd = ::open(state_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    if (dfd >= 0) {
-        (void)::fsync(dfd);
+    static constexpr const char* kMapFilename = "device_effectiveness.map";
+    const std::string tmp_name = std::string(kMapFilename) + ".tmp." + std::to_string(::getpid());
+    (void)::unlinkat(dfd, tmp_name.c_str(), 0);
+    const int fd = ::openat(dfd, tmp_name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) {
         (void)::close(dfd);
+        return false;
+    }
+    const bool write_sync_ok = write_all_fd(fd, payload) && sync_fd_if_needed(fd, false);
+    const bool close_ok = (::close(fd) == 0);
+    if (!write_sync_ok || !close_ok) {
+        (void)::unlinkat(dfd, tmp_name.c_str(), 0);
+        (void)::close(dfd);
+        return false;
+    }
+    if (::renameat(dfd, tmp_name.c_str(), dfd, kMapFilename) != 0) {
+        (void)::unlinkat(dfd, tmp_name.c_str(), 0);
+        (void)::close(dfd);
+        return false;
+    }
+    // POSIX crash durability: flush parent directory metadata entry immediately after rename.
+    const bool dir_sync_ok = sync_fd_if_needed(dfd, true);
+    (void)::close(dfd);
+    if (!dir_sync_ok) {
+        return false;
     }
 
     for (auto& tr : trackers_) {
