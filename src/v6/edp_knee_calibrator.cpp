@@ -192,6 +192,17 @@ void EdpKneeCalibrator::observe(const EdpObservation& obs) noexcept {
         }
     }
 
+    // Steady-State Settling Gate: skip unsettled transient bursts before fuel-gauge catches up.
+    if (obs.steady_state_checked && !obs.steady_state_ok) {
+        return;
+    }
+
+    // High-scale near-idle-floor anomaly guard: reject brief CPU-only bursts (scale > 0.55)
+    // while battery fuel-gauge power is still sitting near the static idle floor (< 1.25x idle).
+    if (min_idle_power_mw_ > 0.0 && s > 0.55 && p_mw < min_idle_power_mw_ * 1.25) {
+        return;
+    }
+
     const double norm = (s - kMinScale) / (kMaxScale - kMinScale);
     const size_t idx = std::min<size_t>(
         kNumBins - 1U,
@@ -203,9 +214,12 @@ void EdpKneeCalibrator::observe(const EdpObservation& obs) noexcept {
         bin.ewma_abs_dev_mw = 0.0;
         bin.count = 1U;
     } else {
-        const double alpha = (bin.count < 6U) ? (1.0 / static_cast<double>(bin.count + 1U)) : 0.15;
+        // Bounded rolling EWMA (floor 0.025): stays smooth early on yet remains adaptive
+        // across multi-hour sessions (thousands of samples) so old outliers never freeze a bin.
+        const double alpha = std::max(1.0 / static_cast<double>(bin.count + 1U), kMinBinEwmaAlpha);
+        const double dev_alpha = std::clamp(alpha * 1.5, 0.04, 0.20);
         const double dev = std::abs(p_mw - bin.mean_power_mw);
-        bin.ewma_abs_dev_mw = bin.ewma_abs_dev_mw * 0.80 + dev * 0.20;
+        bin.ewma_abs_dev_mw += dev_alpha * (dev - bin.ewma_abs_dev_mw);
         bin.mean_scale += alpha * (s - bin.mean_scale);
         bin.mean_power_mw += alpha * (p_mw - bin.mean_power_mw);
         if (bin.count < 100000U) ++bin.count;

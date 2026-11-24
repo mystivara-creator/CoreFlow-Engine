@@ -33,6 +33,8 @@ struct EdpObservation {
     bool screen_off{false};
     double cpu_util_pct{-1.0};   // Optional CPU utilization (0..100, -1 if unavailable)
     double gpu_busy_pct{-1.0};   // Optional GPU busy percentage (0..100, -1 if unavailable)
+    bool steady_state_checked{false}; // True when caller enforces multi-tick steady-state settling
+    bool steady_state_ok{true};       // False during abrupt transient bursts before fuel-gauge settles
 };
 
 struct EdpSnapshot {
@@ -58,6 +60,7 @@ public:
     static constexpr double kKneeSlopeThreshold = 1.65;
     static constexpr double kMinKneeScale = 0.55;
     static constexpr double kMaxKneeScale = 0.88;
+    static constexpr double kMinBinEwmaAlpha = 0.025;
     static constexpr uint32_t kMinConfidence = 50U;
     static constexpr uint32_t kFullBlendConfidence = 70U;
     static constexpr uint32_t kMinPopulatedBins = 4U;
