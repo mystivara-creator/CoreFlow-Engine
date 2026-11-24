@@ -55,6 +55,9 @@ pub mod ffi {
         feedforward_freeze: bool,
         symbiotic_cpu_scale: f64,
         starvation_pressure: f64,
+        p99_deadline_util: f64,
+        edp_knee_scale: f64,
+        edp_blend: f64,
     }
     struct UclampTarget {
         util_min: u32,
@@ -120,6 +123,9 @@ pub mod ffi {
         model_ambient_c: f64,
         model_avg_power_w: f64,
         base_target_c: f64,
+        edp_power_exponent: f64,
+        edp_knee_scale: f64,
+        edp_blend: f64,
     }
     struct ThermalEquilibriumOutput {
         effective_scale: f64,

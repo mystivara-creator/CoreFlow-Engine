@@ -32,6 +32,7 @@
 #include "coreflow/v6/causal_verifier.hpp"
 #include "coreflow/v6/chassis_temp_fuser.hpp"
 #include "coreflow/v6/decision_journal.hpp"
+#include "coreflow/v6/edp_knee_calibrator.hpp"
 #include "coreflow/v6/frame_pacing_sensor.hpp"
 #include "coreflow/v6/oem_collaboration_map.hpp"
 #include "coreflow/v6/schedstat_sensor.hpp"
@@ -711,6 +712,11 @@ struct RuntimeStatusData {
     std::string frame_pacing_source{"unavailable"};
     double measured_fps{0.0};
     double jank_ratio{-1.0};
+    // Phase 3: Per-frame p99 deadline telemetry (strictly fail-closed on unproven/non-LTPO)
+    double frame_budget_ms{16.6667};
+    double p99_frame_time_ms{0.0};
+    double p99_deadline_util{-1.0};
+    bool p99_available{false};
     // Universal zero-eBPF schedstat starvation & /proc/vmstat thrashing telemetry
     bool schedstat_supported{false};
     double runqueue_delay_ms{0.0};
@@ -754,6 +760,8 @@ struct RuntimeStatusData {
     uint32_t causal_effective_count{0};
     uint32_t causal_bypassed_count{0};
     uint64_t causal_flush_count{0};
+    // Phase 3: Online Silicon EDP Knee Discovery (`silicon_edp.map`, CFEDP1)
+    v6::EdpSnapshot silicon_edp{};
     std::vector<v6::AppDnaEntry> app_dna_entries{};
     std::vector<HistoryPoint> history{};
 };
@@ -1033,6 +1041,10 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"framePacingSource\":" << json_str(s.frame_pacing_source)
         << ",\"measuredFps\":" << safe_num(s.measured_fps)
         << ",\"jankRatio\":" << (s.jank_ratio >= 0.0 ? std::to_string(safe_num(s.jank_ratio)) : "null")
+        << ",\"frameBudgetMs\":" << safe_num(s.frame_budget_ms, 16.6667)
+        << ",\"p99FrameTimeMs\":" << (s.p99_available ? std::to_string(safe_num(s.p99_frame_time_ms)) : "null")
+        << ",\"p99DeadlineUtil\":" << (s.p99_available && s.p99_deadline_util >= 0.0 ? std::to_string(safe_num(s.p99_deadline_util)) : "null")
+        << ",\"p99Available\":" << (s.p99_available ? "true" : "false")
         << ",\"schedstatSupported\":" << (s.schedstat_supported ? "true" : "false")
         << ",\"runqueueDelayMs\":" << safe_num(s.runqueue_delay_ms)
         << ",\"starvationPressure\":" << (s.starvation_pressure >= 0.0 ? std::to_string(safe_num(s.starvation_pressure)) : "null")
@@ -1112,6 +1124,17 @@ std::string build_status_json(const RuntimeStatusData& s) {
             << '}';
     }
     out << "}}"
+        << ",\"siliconEdp\":{"
+        << "\"calibrated\":" << (s.silicon_edp.calibrated ? "true" : "false")
+        << ",\"confidence\":" << s.silicon_edp.confidence
+        << ",\"blend\":" << safe_num(s.silicon_edp.blend)
+        << ",\"kneeScale\":" << safe_num(s.silicon_edp.knee_scale, 0.78)
+        << ",\"powerExponent\":" << safe_num(s.silicon_edp.power_exponent, 1.8)
+        << ",\"effectiveExponent\":" << safe_num(s.silicon_edp.effective_exponent, 1.8)
+        << ",\"samples\":" << s.silicon_edp.total_samples
+        << ",\"populatedBins\":" << s.silicon_edp.populated_bins
+        << ",\"flushCount\":" << s.silicon_edp.flush_count
+        << "}"
         << ",\"conflictingModules\":" << (s.conflicting_modules_json.empty() ? "[]" : s.conflicting_modules_json)
         << ",\"hardware\":{"
         << "\"socModel\":" << json_str(s.topo.soc_model)
@@ -1700,6 +1723,10 @@ std::string build_sim_tick_json(const RuntimeStatusData& s, uint64_t now_ms, siz
         << ",\"framePacingSource\":" << json_str(s.frame_pacing_source)
         << ",\"measuredFps\":" << safe_num(s.measured_fps)
         << ",\"jankRatio\":" << (s.jank_ratio >= 0.0 ? std::to_string(safe_num(s.jank_ratio)) : "null")
+        << ",\"frameBudgetMs\":" << safe_num(s.frame_budget_ms, 16.6667)
+        << ",\"p99FrameTimeMs\":" << (s.p99_available ? std::to_string(safe_num(s.p99_frame_time_ms)) : "null")
+        << ",\"p99DeadlineUtil\":" << (s.p99_available && s.p99_deadline_util >= 0.0 ? std::to_string(safe_num(s.p99_deadline_util)) : "null")
+        << ",\"p99Available\":" << (s.p99_available ? "true" : "false")
         << ",\"schedstatSupported\":" << (s.schedstat_supported ? "true" : "false")
         << ",\"runqueueDelayMs\":" << safe_num(s.runqueue_delay_ms)
         << ",\"starvationPressure\":" << (s.starvation_pressure >= 0.0 ? std::to_string(safe_num(s.starvation_pressure)) : "null")
@@ -1739,6 +1766,13 @@ std::string build_sim_tick_json(const RuntimeStatusData& s, uint64_t now_ms, siz
         << ",\"causalBypassedCount\":" << s.causal_bypassed_count
         << ",\"causalEffectiveDomains\":" << serialize_string_array(eff_domains)
         << ",\"causalBypassedDomains\":" << serialize_string_array(byp_domains)
+        << ",\"edpCalibrated\":" << (s.silicon_edp.calibrated ? "true" : "false")
+        << ",\"edpConfidence\":" << s.silicon_edp.confidence
+        << ",\"edpKneeScale\":" << safe_num(s.silicon_edp.knee_scale, 0.78)
+        << ",\"edpPowerExponent\":" << safe_num(s.silicon_edp.power_exponent, 1.8)
+        << ",\"edpEffectiveExponent\":" << safe_num(s.silicon_edp.effective_exponent, 1.8)
+        << ",\"edpSamples\":" << s.silicon_edp.total_samples
+        << ",\"edpFlushCount\":" << s.silicon_edp.flush_count
         << "}";
     return out.str();
 }
@@ -1938,6 +1972,8 @@ int main(int argc, char* argv[]) {
     oem_map.initialize(state_dir, topo.kernel_version, rom_fp);
     v6::CausalVerifier causal_verifier;
     causal_verifier.initialize(state_dir, topo.kernel_version, rom_fp);
+    v6::EdpKneeCalibrator edp_calibrator;
+    edp_calibrator.initialize(state_dir, topo.kernel_version, rom_fp);
     v6::ChassisTempFuser chassis_fuser;
     StorageMemoryActuator storage_memory(baseline, procfs_root, &oem_map, &causal_verifier);
     ThermalEnvelopeActuator thermal_envelope(baseline, &oem_map, &causal_verifier);
@@ -2007,6 +2043,7 @@ int main(int argc, char* argv[]) {
     live_status.causal_effective_count = causal_verifier.effective_count();
     live_status.causal_bypassed_count = causal_verifier.bypassed_count();
     live_status.causal_flush_count = causal_verifier.flush_count();
+    live_status.silicon_edp = edp_calibrator.snapshot();
     live_status.ai_backend = std::string(neural.last_prediction().backend);
     live_status.conflicting_modules_json = read_conflicting_modules_json();
     live_status.session.started_steady_ms = clock_steady_ms();
@@ -2129,6 +2166,9 @@ int main(int argc, char* argv[]) {
     double model_tau_ewma = -1.0;
     double model_ta_ewma = -1.0;
     bool model_ewma_init = false;
+    double edp_alpha_ewma = v6::EdpKneeCalibrator::kDefaultExponent;
+    double edp_knee_ewma = 0.78;
+    double edp_blend_ewma = 0.0;
     int last_scale_dir = 0;
     auto preloader = engine::new_app_preloader();
     std::unordered_map<uint64_t, std::string> preloader_pkg_map;
@@ -2194,6 +2234,9 @@ int main(int argc, char* argv[]) {
         d.symbiotic_cpu_scale = std::clamp(symbiotic_plan.cpu_uclamp_scale * boot_dec.ramp_uclamp_scale, 0.88, 1.10);
         d.helper_uclamp_ratio = symbiotic_plan.helper_uclamp_ratio;
         d.starvation_pressure = live_status.starvation_pressure;
+        d.p99_deadline_util = live_status.p99_available ? live_status.p99_deadline_util : -1.0;
+        d.edp_knee_scale = (edp_blend_ewma > 0.001) ? edp_knee_ewma : 0.0;
+        d.edp_blend = edp_blend_ewma;
         return d;
     };
     const auto build_storage_telemetry = [&](const MemorySnapshot& mem) noexcept {
@@ -2720,9 +2763,17 @@ int main(int argc, char* argv[]) {
             if (thermal_guard) scale = std::min(scale, 0.75);
 
             // Phase-matched 30s EWMA of discharging power and applied capacity_scale:
-            // Reconstructing unthrottled demand P_demand = P_ewma / s_ewma^1.8 turns the power-budget
-            // law into s_power = s_ewma * (P_budget / P_ewma)^(1/1.8), which has an exact monotonically
-            // overdamped fixed point at P_ewma == P_budget without negative-feedback unthrottling bounce.
+            // Reconstructing unthrottled demand P_demand = P_ewma / s_ewma^alpha using the exact same
+            // C0-blended silicon EDP exponent passed to Rust compute_thermal_equilibrium turns the
+            // power-budget law into s_power = s_ewma * (P_budget / P_ewma)^(1/alpha), preserving an
+            // exact overdamped fixed point at P_ewma == P_budget without step-cliffs or bounce.
+            const auto edp_now = edp_calibrator.snapshot();
+            live_status.silicon_edp = edp_now;
+            const double edp_ewma_k = 1.0 - std::exp(-std::clamp(elapsed, 0.1, 30.0) / 30.0);
+            edp_alpha_ewma += edp_ewma_k * (std::clamp(edp_now.effective_exponent, 1.35, 2.80) - edp_alpha_ewma);
+            edp_knee_ewma += edp_ewma_k * (std::clamp(edp_now.knee_scale, 0.55, 0.88) - edp_knee_ewma);
+            edp_blend_ewma += edp_ewma_k * (std::clamp(edp_now.blend, 0.0, 1.0) - edp_blend_ewma);
+            const double edp_alpha = std::clamp(edp_alpha_ewma, 1.35, 2.80);
             const double prev_scale = std::isfinite(live_status.capacity_scale)
                 ? std::clamp(live_status.capacity_scale, 0.25, 1.0)
                 : 1.0;
@@ -2742,7 +2793,7 @@ int main(int argc, char* argv[]) {
             }
             const double demand_power_w =
                 (closed_loop_power_ewma_w > 0.0 && std::isfinite(closed_loop_power_ewma_w))
-                    ? (closed_loop_power_ewma_w / std::pow(std::clamp(closed_loop_scale_ewma, 0.45, 1.0), 1.8))
+                    ? (closed_loop_power_ewma_w / std::pow(std::clamp(closed_loop_scale_ewma, 0.45, 1.0), edp_alpha))
                     : live_status.thermal_model.avg_power_w;
 
             // Smooth 10s-decimated RLS thermal_model outputs so discrete 10-second model steps
@@ -2798,7 +2849,10 @@ int main(int argc, char* argv[]) {
                 smooth_model_valid ? model_tau_ewma : -1.0,
                 smooth_model_valid ? model_ta_ewma : -1.0,
                 demand_power_w,
-                kChassisTargetCelsius});
+                kChassisTargetCelsius,
+                edp_alpha,
+                edp_blend_ewma > 0.001 ? edp_knee_ewma : 0.0,
+                edp_blend_ewma});
             live_status.charging_damped = eq.charging_damped;
             live_status.thermal_model_closed_loop = eq.model_closed_loop_active;
             live_status.effective_chassis_target_c = eq.effective_target_c;
@@ -3016,13 +3070,21 @@ int main(int argc, char* argv[]) {
                 !live_status.ctx.media_pipeline_active &&
                 live_status.render_pressure < 0.05 &&
                 gpu_busy.value_or(0.0) < 5.0;
+            const double render_load_ratio = std::clamp(
+                std::max(live_status.render_pressure, gpu_busy.value_or(0.0) / 100.0),
+                0.0, 1.0);
             const auto fps_sample = frame_pacing.sample(
-                topo.refresh_hz, now_ms, active_workload, &frame_bridge, screen_idle_hint);
+                topo.refresh_hz, now_ms, active_workload, &frame_bridge, screen_idle_hint,
+                live_status.runqueue_delay_ms, render_load_ratio);
             live_status.frame_pacing_available = fps_sample.available || frame_pacing.verified();
             live_status.frame_pacing_verified = frame_pacing.verified();
             live_status.frame_pacing_source = frame_pacing.active_source().empty() ? "unavailable" : frame_pacing.active_source();
             live_status.measured_fps = fps_sample.measured_fps;
             live_status.jank_ratio = fps_sample.jank_ratio;
+            live_status.frame_budget_ms = fps_sample.frame_budget_ms;
+            live_status.p99_frame_time_ms = fps_sample.p99_frame_time_ms;
+            live_status.p99_deadline_util = fps_sample.p99_deadline_util;
+            live_status.p99_available = fps_sample.p99_available;
             if (fps_sample.quarantined_fixed_hz && !frame_pacing_quarantine_logged) {
                 frame_pacing_quarantine_logged = true;
                 decision_journal.record(
@@ -3057,6 +3119,9 @@ int main(int argc, char* argv[]) {
             frame_pacing.reset();
             live_status.measured_fps = 0.0;
             live_status.jank_ratio = -1.0;
+            live_status.p99_frame_time_ms = 0.0;
+            live_status.p99_deadline_util = -1.0;
+            live_status.p99_available = false;
             live_status.active_app_bias = 1.0;
             live_status.active_app_efficiency_weight = 1.0;
             // Zero-Wear persistence during ScreenOff ONLY (throttled <= 1x / 15 min & gated on significant drift)
@@ -3065,6 +3130,8 @@ int main(int argc, char* argv[]) {
                 last_state_persist_ms = now_ms;
                 (void)app_dna.flush_if_significant();
                 (void)causal_verifier.flush_if_significant();
+                (void)edp_calibrator.flush_if_significant();
+                live_status.silicon_edp = edp_calibrator.snapshot();
                 if (preloader_dirty && save_preloader_state(*preloader, preloader_pkg_map, state_dir)) {
                     preloader_dirty = false;
                 }
@@ -3216,15 +3283,39 @@ int main(int argc, char* argv[]) {
         {
             double mean_khz = 0.0;
             size_t khz_cnt = 0U;
-            for (uint64_t khz : live_status.cluster_cur_khz) {
+            double freq_ratio_weighted = 0.0;
+            double cap_weight_sum = 0.0;
+            const size_t n_cl = live_status.cluster_cur_khz.size();
+            for (size_t ci = 0U; ci < n_cl; ++ci) {
+                const uint64_t khz = live_status.cluster_cur_khz[ci];
                 if (khz > 0U) {
                     mean_khz += static_cast<double>(khz);
                     ++khz_cnt;
+                    if (ci < topo.cpu_clusters.size() && !topo.cpu_clusters[ci].opps_khz.empty()) {
+                        const uint64_t max_khz = topo.cpu_clusters[ci].opps_khz.back();
+                        if (max_khz > 0U) {
+                            const double w = static_cast<double>(std::max<uint64_t>(topo.cpu_clusters[ci].capacity, 128ULL));
+                            freq_ratio_weighted += w * std::clamp(
+                                static_cast<double>(khz) / static_cast<double>(max_khz), 0.15, 1.0);
+                            cap_weight_sum += w;
+                        }
+                    }
                 }
             }
             if (khz_cnt > 0U) mean_khz /= static_cast<double>(khz_cnt);
 
             const auto batt_causal = longevity.sample_battery_telemetry();
+            if (cap_weight_sum > 0.0 && !screen_off && !boot_dec.boot_settle_active) {
+                v6::EdpObservation eobs{};
+                eobs.now_ms = now_ms;
+                eobs.effective_scale = std::clamp(freq_ratio_weighted / cap_weight_sum, 0.25, 1.0);
+                eobs.power_mw = batt_causal.power_mw;
+                eobs.power_available = batt_causal.available;
+                eobs.charging = batt_causal.charging;
+                eobs.screen_off = screen_off;
+                edp_calibrator.observe(eobs);
+            }
+            live_status.silicon_edp = edp_calibrator.snapshot();
             v6::CausalObservation cobs{};
             cobs.now_ms = now_ms;
             cobs.dt_sec = elapsed;
@@ -3537,6 +3628,7 @@ int main(int argc, char* argv[]) {
     frame_bridge.stop();
     (void)app_dna.flush_if_dirty();
     (void)causal_verifier.flush_if_dirty();
+    (void)edp_calibrator.flush_now();
     if (preloader_dirty) {
         (void)save_preloader_state(*preloader, preloader_pkg_map, state_dir);
     }

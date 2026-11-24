@@ -223,11 +223,19 @@ pub fn compute_thermal_equilibrium(
         power_budget_w = p_budget;
         closed_loop_active = true;
 
-        // Silicon dynamic power law P ~ s^gamma (gamma = 1.8) converts Watt ratio to capacity_scale.
-        // Caller supplies reconstructed unthrottled demand power P_demand = P_ewma / s_ewma^1.8 so
-        // s_power = s_ewma * (P_budget / P_ewma)^(1/1.8) has an exact overdamped fixed point at P_ewma == P_budget.
+        // Silicon dynamic power law P ~ s^gamma converts Watt ratio to capacity_scale.
+        // Uses online-calibrated C0-blended silicon exponent (1.35..2.80, fallback 1.8) matching
+        // daemon P_demand reconstruction so s_power = s_ewma * (P_budget / P_ewma)^(1/gamma)
+        // preserves an exact overdamped fixed point at P_ewma == P_budget on every SoC.
+        let power_gamma = if input.edp_power_exponent.is_finite()
+            && input.edp_power_exponent >= 1.35
+        {
+            input.edp_power_exponent.clamp(1.35, 2.80)
+        } else {
+            1.8
+        };
         let power_ratio = (p_budget / input.model_avg_power_w.max(0.50)).clamp(0.05, 4.0);
-        let s_power = power_ratio.powf(1.0 / 1.8).clamp(0.52, 1.0);
+        let s_power = power_ratio.powf(1.0 / power_gamma).clamp(0.52, 1.0);
         // Zero-step C0 handoff at model_confidence == 45 prevents limit-cycle chatter when confidence hovers at 44..46.
         let conf_weight = ((f64::from(input.model_confidence) - 45.0) / 40.0).clamp(0.0, 1.0);
 
@@ -313,6 +321,9 @@ mod tests {
             model_ambient_c: -1.0,
             model_avg_power_w: 0.0,
             base_target_c: 38.0,
+            edp_power_exponent: 0.0,
+            edp_knee_scale: 0.0,
+            edp_blend: 0.0,
         }
     }
 
@@ -419,6 +430,9 @@ mod tests {
             model_ambient_c: ta,
             model_avg_power_w: pwr,
             base_target_c: 38.0,
+            edp_power_exponent: 0.0,
+            edp_knee_scale: 0.0,
+            edp_blend: 0.0,
         };
 
         // 1. Tropical 34 C ambient: target lifts to 41.0 C (<= 41.5 C cap), so 38.5 C idle
@@ -477,6 +491,9 @@ mod tests {
             model_ambient_c: 26.0,
             model_avg_power_w: p_demand,
             base_target_c: 38.0,
+            edp_power_exponent: 0.0,
+            edp_knee_scale: 0.0,
+            edp_blend: 0.0,
         };
 
         // C0 continuity across onset_c = 37.5 C
@@ -528,5 +545,59 @@ mod tests {
         assert!(!o44.model_closed_loop_active && o45.model_closed_loop_active);
         assert!((o44.effective_target_c - o45.effective_target_c).abs() < 1e-6);
         assert!((o44.effective_scale - o45.effective_scale).abs() < 1e-6);
+    }
+
+    #[test]
+    fn calibrated_edp_exponent_preserves_fixed_point_and_c0_continuity() {
+        let p_sus = (38.0 - 26.0) / 5.5; // 2.1818 W
+        let s_eq: f64 = 0.76;
+
+        let make = |alpha: f64, blend: f64, p_demand: f64| {
+            let mut inp = fallback_eq_input(55.0, 38.0, 38.0, 0.0);
+            inp.model_valid = true;
+            inp.model_confidence = 90;
+            inp.model_r_theta = 5.5;
+            inp.model_tau_s = 180.0;
+            inp.model_ambient_c = 26.0;
+            inp.model_avg_power_w = p_demand;
+            inp.edp_power_exponent = alpha;
+            inp.edp_knee_scale = 0.68;
+            inp.edp_blend = blend;
+            inp
+        };
+
+        // Steep-voltage silicon (alpha = 2.4) needs less frequency cut for the same Watt ratio than flat silicon (1.5)
+        let o_steep = compute_thermal_equilibrium(make(2.4, 1.0, 4.2));
+        let o_flat = compute_thermal_equilibrium(make(1.5, 1.0, 4.2));
+        assert!(o_steep.effective_scale > o_flat.effective_scale + 0.05);
+
+        // Synchronized P_demand = P_meas / s^alpha preserves exact fixed point for ANY calibrated alpha!
+        for alpha in [1.45_f64, 1.80, 2.15, 2.45, 2.75] {
+            let out = compute_thermal_equilibrium(make(alpha, 1.0, p_sus / s_eq.powf(alpha)));
+            assert!(
+                (out.effective_scale - s_eq).abs() < 1e-4,
+                "fixed point broke for alpha={}: got {}",
+                alpha,
+                out.effective_scale
+            );
+        }
+
+        // Smooth C0 blend across confidence 50..70 (alpha 1.80 -> 2.40) has zero step cliff
+        let mut prev = 0.0;
+        for step in 0..=20 {
+            let blend = f64::from(step) / 20.0;
+            let eff_alpha = 1.8 + blend * (2.4 - 1.8);
+            let cur = compute_thermal_equilibrium(make(eff_alpha, blend, 4.2)).effective_scale;
+            if step > 0 {
+                assert!(
+                    (cur - prev).abs() < 0.01,
+                    "step cliff at step {}: {} -> {}",
+                    step,
+                    prev,
+                    cur
+                );
+            }
+            prev = cur;
+        }
     }
 }

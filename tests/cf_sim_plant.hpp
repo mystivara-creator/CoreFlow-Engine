@@ -128,6 +128,8 @@ struct ArchetypeConfig {
     double battery_quantum_c{0.1};
     bool has_skin_sensor{true};
     bool has_xo_therm{false};
+    double silicon_power_alpha{1.8}; // True convex C*V^2*f exponent per virtual SoC
+    double peak_dyn_power_w{4.0};    // Reference peak dynamic power (W) at scale = 1.0
     uint32_t total_ticks{1800};
     uint32_t little_cap{384};
     uint32_t mid_cap{768};
@@ -167,6 +169,10 @@ struct TickSample {
     std::string frame_pacing_source;
     double measured_fps{0.0};
     double jank_ratio{-1.0};
+    double frame_budget_ms{16.6667};
+    double p99_frame_time_ms{0.0};
+    double p99_deadline_util{-1.0};
+    bool p99_available{false};
     bool schedstat_supported{false};
     double runqueue_delay_ms{0.0};
     double starvation_pressure{-1.0};
@@ -196,6 +202,13 @@ struct TickSample {
     uint32_t causal_bypassed_count{0};
     std::vector<std::string> causal_effective_domains;
     std::vector<std::string> causal_bypassed_domains;
+    bool edp_calibrated{false};
+    uint32_t edp_confidence{0};
+    double edp_knee_scale{0.78};
+    double edp_power_exponent{1.8};
+    double edp_effective_exponent{1.8};
+    uint32_t edp_samples{0};
+    uint32_t edp_flush_count{0};
 };
 
 // Lightweight zero-exception filesystem helpers (inode-preserving for sysfs actuators)
@@ -300,6 +313,10 @@ public:
     [[nodiscard]] double chassis_temp_c() const noexcept { return t_chassis_c_; }
     [[nodiscard]] double die_temp_c() const noexcept { return t_die_c_; }
     [[nodiscard]] double last_power_w() const noexcept { return last_power_w_; }
+    [[nodiscard]] double last_unthrottled_power_w() const noexcept { return last_unthrottled_power_w_; }
+    void set_last_uclamp_max(uint32_t uclamp_max) noexcept {
+        last_uclamp_max_ = (uclamp_max >= 128U && uclamp_max <= 1024U) ? uclamp_max : 1024U;
+    }
     [[nodiscard]] const std::unordered_map<std::string, std::string>& factory_baselines() const noexcept {
         return factory_baselines_;
     }
@@ -752,16 +769,25 @@ public:
         const double top_app_cap_frac = read_uclamp_max_fraction(sys_ / "fs/cgroup/top-app/cpu.uclamp.max", 1.0);
         const double bg_cap_frac = read_uclamp_max_fraction(sys_ / "fs/cgroup/background/cpu.uclamp.max", 1.0);
         const double gpu_cap_frac = read_gpu_cap_fraction();
+        const double uclamp_max_frac = static_cast<double>(last_uclamp_max_) / 1024.0;
+        const double eff_top_cap = std::min(top_app_cap_frac, uclamp_max_frac);
 
-        // Effective dynamic power scaling: P_dyn = P_demand * s_eff^1.8 (convex C*V^2*f knee!)
-        const double cpu_eff = std::clamp(0.30 + 0.70 * top_app_cap_frac, 0.35, 1.0);
+        // Per-SoC convex C*V^2*f silicon power scaling: P_dyn = (P_demand - P_base) * s_eff^alpha_soc
+        const double cpu_eff = std::clamp(0.30 + 0.70 * eff_top_cap, 0.35, 1.0);
         const double gpu_eff = std::clamp(0.40 + 0.60 * gpu_cap_frac, 0.45, 1.0);
         const double s_eff = w.is_game ? (0.55 * cpu_eff + 0.45 * gpu_eff) : (0.75 * cpu_eff + 0.25 * gpu_eff);
+        const double alpha = std::clamp(cfg_.silicon_power_alpha, 1.35, 2.80);
         const double p_base = w.screen_off ? 0.35 : 0.65;
         const double p_bg = w.bg_power_w * (0.45 + 0.55 * bg_cap_frac);
-        const double p_dyn = std::max(0.0, w.demand_power_w - p_base) * std::pow(s_eff, 1.8);
+        const double raw_dyn = std::max(0.0, w.demand_power_w - p_base);
+        const double p_dyn = raw_dyn * std::pow(s_eff, alpha);
         const double p_sys = std::clamp(p_base + p_dyn + p_bg, 0.30, 14.0);
         last_power_w_ = p_sys;
+        last_unthrottled_power_w_ = std::clamp(p_base + raw_dyn + w.bg_power_w, 0.30, 14.0);
+        const double raw_freq_ratio = std::clamp(
+            std::pow(std::max(0.02, raw_dyn / std::max(cfg_.peak_dyn_power_w, 1.0)), 1.0 / alpha),
+            0.26, 1.0);
+        last_freq_ratio_ = std::clamp(raw_freq_ratio * s_eff, 0.25, 1.0);
 
         // Check whether coreflowd_sim engaged hardware bypass charging (input_suspend == "1")
         bool bypass_hw_on = false;
@@ -1353,6 +1379,23 @@ private:
         write_file_in_place(bat / "capacity", std::to_string(std::clamp(w.battery_soc_pct, 1, 100)) + "\n");
         const uint64_t current_ua = static_cast<uint64_t>(std::llround(last_power_w_ * 250000.0));
         write_file_in_place(bat / "current_now", std::to_string(current_ua) + "\n");
+
+        // Dynamic CPU cluster scaling_cur_freq reflecting actual silicon load & thermal/EDP caps
+        const auto write_cur_freq = [&](const char* policy, uint64_t max_khz) {
+            const uint64_t khz = static_cast<uint64_t>(std::llround(
+                static_cast<double>(max_khz) * std::clamp(last_freq_ratio_, 0.25, 1.0)));
+            write_file_in_place(
+                sys_ / "devices/system/cpu/cpufreq" / policy / "scaling_cur_freq",
+                std::to_string(khz) + "\n");
+        };
+        if (cfg_.is_two_cluster) {
+            write_cur_freq("policy0", 1800000ULL);
+            write_cur_freq("policy6", 2000000ULL);
+        } else {
+            write_cur_freq("policy0", 1800000ULL);
+            write_cur_freq("policy4", 2600000ULL);
+            write_cur_freq("policy7", 3200000ULL);
+        }
     }
 
     ArchetypeConfig cfg_;
@@ -1364,6 +1407,8 @@ private:
     double t_chassis_c_{31.0};
     double t_die_c_{35.0};
     double last_power_w_{1.5};
+    double last_unthrottled_power_w_{1.5};
+    double last_freq_ratio_{0.55};
     double uptime_sec_{300.0};
     uint64_t cpu_user_ticks_{10000};
     uint64_t cpu_sys_ticks_{2000};
@@ -1373,6 +1418,7 @@ private:
     uint64_t vm_direct_reclaim_{0};
     uint64_t vm_pswpin_{0};
     uint32_t last_uclamp_min_{0};
+    uint32_t last_uclamp_max_{1024};
     std::unordered_map<int32_t, uint64_t> tid_cpu_ticks_;
     std::unordered_map<int32_t, uint64_t> tid_exec_ns_;
     std::unordered_map<int32_t, uint64_t> tid_delay_ns_;
@@ -1408,6 +1454,8 @@ inline std::vector<ArchetypeConfig> build_all_six_archetypes() {
         a.battery_quantum_c = 1.0;
         a.has_skin_sensor = false;
         a.has_xo_therm = true;
+        a.silicon_power_alpha = 2.15;
+        a.peak_dyn_power_w = 4.0;
         a.total_ticks = 1800;
         a.oem_contenders = {
             {"devices/system/cpu/cpufreq/policy7/walt/hispeed_freq", "1900000", "2200000", 15U, 150U, 1480U, false},
@@ -1435,6 +1483,8 @@ inline std::vector<ArchetypeConfig> build_all_six_archetypes() {
         a.gpu_model = "Mali-G720 Immortalis MC12";
         a.panel_kind = PanelClockKind::TierAMtkFpsgo;
         a.initial_uptime_sec = 300.0;
+        a.silicon_power_alpha = 2.05;
+        a.peak_dyn_power_w = 4.0;
         a.total_ticks = 1800;
         a.oem_contenders = {
             {"devices/system/cpu/cpufreq/policy7/schedutil/up_rate_limit_us", "500", "2000", 15U, 60U, 1480U, false},
@@ -1461,6 +1511,8 @@ inline std::vector<ArchetypeConfig> build_all_six_archetypes() {
         a.gpu_model = "Xclipse 940";
         a.panel_kind = PanelClockKind::TierBFixedPanelFps;
         a.initial_uptime_sec = 300.0;
+        a.silicon_power_alpha = 2.40;
+        a.peak_dyn_power_w = 4.0;
         a.total_ticks = 1800;
         a.oem_contenders = {
             {"devices/system/cpu/cpufreq/policy7/schedutil/hispeed_freq", "1700000", "2100000", 10U, 90U, 1480U, false},
@@ -1488,6 +1540,8 @@ inline std::vector<ArchetypeConfig> build_all_six_archetypes() {
         a.gpu_model = "Mali-G715";
         a.panel_kind = PanelClockKind::TierBLtpoVblank;
         a.initial_uptime_sec = 300.0;
+        a.silicon_power_alpha = 2.20;
+        a.peak_dyn_power_w = 4.0;
         a.total_ticks = 1800;
         list.push_back(std::move(a));
     }
@@ -1519,6 +1573,8 @@ inline std::vector<ArchetypeConfig> build_all_six_archetypes() {
         a.battery_quantum_c = 1.0;
         a.has_skin_sensor = false;
         a.has_xo_therm = false;
+        a.silicon_power_alpha = 1.60;
+        a.peak_dyn_power_w = 3.0;
         a.total_ticks = 1800;
         list.push_back(std::move(a));
     }
@@ -1542,6 +1598,8 @@ inline std::vector<ArchetypeConfig> build_all_six_archetypes() {
         a.initial_uptime_sec = 300.0;
         a.initial_chassis_c = 30.0;
         a.initial_die_c = 36.0;
+        a.silicon_power_alpha = 2.10;
+        a.peak_dyn_power_w = 5.2;
         a.total_ticks = 2700;
         list.push_back(std::move(a));
     }

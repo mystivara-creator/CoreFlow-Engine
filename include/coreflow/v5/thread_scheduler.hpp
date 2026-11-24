@@ -47,6 +47,9 @@ struct ThreadDemandContext {
     double symbiotic_cpu_scale{1.0}; // Orthogonal Symbiotic Orchestrator CPU floor multiplier (0.88..1.10)
     double helper_uclamp_ratio{0.65}; // Cooperative Tier-2 helper ratio (0.65 default, up to 0.82 under hotspot spread)
     double starvation_pressure{-1.0}; // Universal schedstat runqueue starvation pressure (0..1, -1 when unavailable)
+    double p99_deadline_util{-1.0};   // Phase 3: verified p99 frame time / VSync budget (-1.0 fail-closed/unavailable)
+    double edp_knee_scale{0.0};       // Phase 3: online silicon EDP knee scale (0.55..0.88 when calibrated)
+    double edp_blend{0.0};            // Phase 3: C0 activation blend across confidence 50..70 (0.0..1.0)
 };
 
 class ThreadSchedulerActuator {

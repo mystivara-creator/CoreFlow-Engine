@@ -332,6 +332,7 @@ void FramePacingSensor::reset() noexcept {
     prev_vblank_ms_ = 0U;
     has_vblank_baseline_ = false;
     last_sample_ms_ = 0U;
+    clear_p99_ring();
     last_sample_ = {};
 }
 
@@ -340,15 +341,19 @@ FramePacingSample FramePacingSensor::sample(
     uint64_t now_ms,
     bool active_workload,
     AndroidFrameEventBridge* bridge,
-    bool screen_idle_hint) noexcept {
+    bool screen_idle_hint,
+    double runqueue_delay_ms,
+    double render_load_ratio) noexcept {
     const double target_hz = static_cast<double>(std::clamp(target_refresh_hz, 30U, 240U));
     FramePacingSample out{};
     out.target_fps = target_hz;
+    out.frame_budget_ms = 1000.0 / target_hz;
     out.verified_commit_source = verified();
     out.quarantined_fixed_hz = quarantined_fixed_hz();
 
     if (source_tier_ == FrameSourceTier::None ||
         tier_b_state_ == TierBVerificationState::QuarantinedFixedHz) {
+        clear_p99_ring();
         last_sample_ = out;
         return out;
     }
@@ -363,6 +368,7 @@ FramePacingSample FramePacingSensor::sample(
         prev_measured_fps_ = -1.0;
         ewma_jitter_ = 0.0;
         has_vblank_baseline_ = false;
+        clear_p99_ring();
         last_sample_ = out;
         return out;
     }
@@ -439,6 +445,7 @@ FramePacingSample FramePacingSensor::sample(
                     // quarantine fail-closed for this boot so fixed-Hz panels never fabricate 0% jank.
                     tier_b_state_ = TierBVerificationState::QuarantinedFixedHz;
                     active_source_ = "fail_closed:fixed_hz_panel";
+                    clear_p99_ring();
                     out.available = false;
                     out.verified_commit_source = false;
                     out.quarantined_fixed_hz = true;
@@ -452,6 +459,7 @@ FramePacingSample FramePacingSensor::sample(
         }
         if (tier_b_state_ != TierBVerificationState::ProvenCommit || !active_workload) {
             // Remain strictly fail-closed until proven AND actively rendering.
+            clear_p99_ring();
             out.available = false;
             out.jank_ratio = -1.0;
             last_sample_ = out;
@@ -459,7 +467,9 @@ FramePacingSample FramePacingSensor::sample(
         }
     }
 
-    if (!active_workload) {
+    // Anti-false-boost guard: static screen / idle hint NEVER pushes into p99 ring or triggers rescue.
+    if (!active_workload || screen_idle_hint) {
+        clear_p99_ring();
         out.available = false;
         out.jank_ratio = -1.0;
         last_sample_ = out;
@@ -470,12 +480,13 @@ FramePacingSample FramePacingSensor::sample(
     out.verified_commit_source = true;
     out.measured_fps = measured;
 
-    // Below 12 FPS on Android indicates a static/paused UI (no frames being submitted),
-    // NOT a janking animation — keep jank_ratio neutral (-1.0) to avoid false boosts.
+    // Below 12 FPS on Android indicates a static/paused UI or LTPO idle cadence (1..10 Hz),
+    // NOT a janking animation — clear p99 ring and keep metrics neutral (-1.0) to prevent false boosts.
     if (measured < 12.0) {
         ewma_jank_ = -1.0;
         prev_measured_fps_ = -1.0;
         ewma_jitter_ = 0.0;
+        clear_p99_ring();
         out.jank_ratio = -1.0;
         last_sample_ = out;
         return out;
@@ -494,6 +505,8 @@ FramePacingSample FramePacingSensor::sample(
         cadence_target = 90.0;
     }
     out.target_fps = cadence_target;
+    const double frame_budget_ms = 1000.0 / std::max(cadence_target, 1.0);
+    out.frame_budget_ms = frame_budget_ms;
 
     const double deficit = std::max(0.0, cadence_target - measured) / std::max(cadence_target, 1.0);
     // Cadence jitter variance against prior sample detects micro-stutter oscillation even when mean FPS looks high.
@@ -512,6 +525,50 @@ FramePacingSample FramePacingSensor::sample(
     const double instant_jank = std::clamp(base_jank + jitter_penalty, 0.0, 1.0);
     ewma_jank_ = (ewma_jank_ < 0.0) ? instant_jank : (ewma_jank_ * 0.65 + instant_jank * 0.35);
     out.jank_ratio = ewma_jank_;
+
+    // Phase 3: Zero-heap Per-Frame p99 Effective Frame-Time Estimation.
+    // Reset ring when cadence anchor shifts (e.g. 120 Hz UI -> 60 FPS game) so budgets never mix.
+    if (p99_cadence_anchor_ > 0.0 &&
+        std::abs(cadence_target - p99_cadence_anchor_) > p99_cadence_anchor_ * 0.10) {
+        clear_p99_ring();
+    }
+    p99_cadence_anchor_ = cadence_target;
+
+    // C0-continuous effective frame time blending VSync-locked work time and missed-VSync interval:
+    // - VSync-locked smooth workload (measured >= 98.5% cadence_target) uses render_load_ratio
+    //   + runqueue_delay_ms + jitter_ms so smooth rendering accurately reports headroom <= 0.80.
+    // - Dropped commits (measured < 94% cadence_target) smoothly transition to 1000/measured_fps
+    //   + runqueue_delay_ms + jitter_ms so tail misses immediately cross >= 0.92 for rescue.
+    const double base_work_ratio = (std::isfinite(render_load_ratio) && render_load_ratio >= 0.0)
+        ? std::clamp(render_load_ratio, 0.35, 0.95)
+        : 0.72;
+    const double rq_ms = (std::isfinite(runqueue_delay_ms) && runqueue_delay_ms > 0.0)
+        ? std::clamp(runqueue_delay_ms, 0.0, 40.0)
+        : 0.0;
+    const double jitter_ms = std::clamp(ewma_jitter_, 0.0, 1.0) * frame_budget_ms;
+    const double t_locked = frame_budget_ms * base_work_ratio + 0.5 * jitter_ms + rq_ms;
+    const double t_miss = (1000.0 / std::max(measured, 1.0)) + 0.5 * jitter_ms + rq_ms;
+    const double miss_blend = std::clamp((0.985 - (measured / std::max(cadence_target, 1.0))) / 0.045, 0.0, 1.0);
+    const double eff_frame_ms = std::clamp(t_locked + miss_blend * std::max(0.0, t_miss - t_locked), 1.0, 120.0);
+
+    p99_ring_[p99_ring_head_] = eff_frame_ms;
+    p99_ring_head_ = (p99_ring_head_ + 1U) % kP99WindowSize;
+    if (p99_ring_len_ < kP99WindowSize) {
+        ++p99_ring_len_;
+    }
+    if (p99_ring_len_ >= kP99MinSamples) {
+        double scratch[kP99WindowSize];
+        for (size_t i = 0U; i < p99_ring_len_; ++i) {
+            scratch[i] = p99_ring_[i];
+        }
+        const size_t rank = static_cast<size_t>(std::ceil(0.99 * static_cast<double>(p99_ring_len_)));
+        const size_t p99_idx = std::min(p99_ring_len_ - 1U, rank > 0U ? (rank - 1U) : 0U);
+        std::nth_element(scratch, scratch + p99_idx, scratch + p99_ring_len_);
+        out.p99_frame_time_ms = scratch[p99_idx];
+        out.p99_deadline_util = std::clamp(out.p99_frame_time_ms / std::max(frame_budget_ms, 1.0), 0.0, 4.0);
+        out.p99_available = true;
+    }
+
     last_sample_ = out;
 
     if (bridge != nullptr && now_ms > 0U) {
