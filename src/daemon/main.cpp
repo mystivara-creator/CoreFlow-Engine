@@ -760,7 +760,7 @@ struct RuntimeStatusData {
     uint32_t causal_effective_count{0};
     uint32_t causal_bypassed_count{0};
     uint64_t causal_flush_count{0};
-    // Phase 3: Online Silicon EDP Knee Discovery (`silicon_edp.map`, CFEDP1)
+    // Phase 3: Online Silicon EDP Knee Discovery (`silicon_edp.map`, CFEDP2)
     v6::EdpSnapshot silicon_edp{};
     std::vector<v6::AppDnaEntry> app_dna_entries{};
     std::vector<HistoryPoint> history{};

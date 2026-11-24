@@ -841,11 +841,11 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
                 const fs::path edp_path = plant.state_dir() / "silicon_edp.map";
                 std::ifstream eifs(edp_path);
                 if (!eifs.is_open()) {
-                    fail("Expected CFEDP1 silicon_edp.map to persist cleanly on shutdown");
+                    fail("Expected CFEDP2 silicon_edp.map to persist cleanly on shutdown");
                 } else {
                     std::string hdr;
                     std::getline(eifs, hdr);
-                    if (hdr.rfind("CFEDP1\t", 0) != 0) fail("silicon_edp.map missing CFEDP1 header");
+                    if (hdr.rfind("CFEDP2\t", 0) != 0) fail("silicon_edp.map missing CFEDP2 header");
                 }
             }
             break;

@@ -1,6 +1,6 @@
 /**
  * @file edp_knee_calibrator.hpp
- * @brief CoreFlow v6.2+ Phase 3: Online Silicon EDP Knee Discovery (`silicon_edp.map`, CFEDP1).
+ * @brief CoreFlow v6.2+ Phase 3: Online Silicon EDP Knee Discovery (`silicon_edp.map`, CFEDP2).
  *
  * Calibrates each device's actual C*V^2*f dynamic power curve P(s) = P_base + k * s^alpha
  * directly from live discharging power and normalized CPU/GPU frequency telemetry:
@@ -68,7 +68,8 @@ public:
 
     EdpKneeCalibrator() noexcept = default;
 
-    // Loads persisted CFEDP1 map if kernel_release and rom_fingerprint match;
+    // Loads persisted CFEDP2 map if kernel_release and rom_fingerprint match;
+    // otherwise auto-resets (including legacy CFEDP1 upgrades and poisoned uncalibrated caches).
     // automatically resets & unlinks on kernel/ROM OTA update.
     void initialize(const std::string& state_dir,
                     const std::string& kernel_release,

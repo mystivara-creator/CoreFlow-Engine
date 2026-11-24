@@ -1,6 +1,6 @@
 /**
  * @file edp_knee_calibrator.cpp
- * @brief CoreFlow v6.2+ Phase 3: Online Silicon EDP Knee Discovery (`silicon_edp.map`, CFEDP1).
+ * @brief CoreFlow v6.2+ Phase 3: Online Silicon EDP Knee Discovery (`silicon_edp.map`, CFEDP2).
  * @license Apache-2.0
  */
 #include "coreflow/v6/edp_knee_calibrator.hpp"
@@ -517,9 +517,10 @@ void EdpKneeCalibrator::load_locked() noexcept {
     if (!header.empty() && header.back() == '\r') header.pop_back();
 
     const std::string expected_header =
-        "CFEDP1\t" + kernel_release_ + "\t" + rom_fingerprint_;
+        "CFEDP2\t" + kernel_release_ + "\t" + rom_fingerprint_;
     if (header != expected_header) {
-        // Kernel or ROM changed via OTA -> auto-reset silicon EDP map to recalibrate cleanly.
+        // Schema bump (e.g. legacy CFEDP1 -> CFEDP2) or Kernel/ROM OTA change ->
+        // auto-reset silicon EDP map to recalibrate cleanly with zero manual cleanup.
         (void)::unlink(map_path_.c_str());
         return;
     }
@@ -586,6 +587,13 @@ void EdpKneeCalibrator::load_locked() noexcept {
     }
 
     recompute_locked();
+    // Self-heal poisoned/stale cache on boot: if a persisted map already has >= 500 samples
+    // across >= 4 bins yet still fails calibration, unlink and start fresh rather than
+    // carrying inverted/noisy historical bins across reboots.
+    if (!calibrated_ && populated_bins_ >= kMinPopulatedBins && total_samples_ >= 500U) {
+        clear_all();
+        return;
+    }
     persisted_calibrated_ = calibrated_;
     persisted_confidence_ = confidence_;
     persisted_knee_scale_ = knee_scale_;
@@ -604,7 +612,7 @@ bool EdpKneeCalibrator::persist_locked() noexcept {
         return false;
     }
 
-    std::string payload = "CFEDP1\t" + kernel_release_ + "\t" + rom_fingerprint_ + "\n";
+    std::string payload = "CFEDP2\t" + kernel_release_ + "\t" + rom_fingerprint_ + "\n";
     char line_buf[192];
     const int mn = std::snprintf(
         line_buf, sizeof(line_buf), "META\t%u\t%.2f\n",

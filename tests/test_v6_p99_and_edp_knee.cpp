@@ -339,7 +339,7 @@ void test_edp_zero_wear_cfedp1_persistence_and_ota_reset() {
     const auto orig = cal.snapshot();
     assert(orig.calibrated && orig.confidence >= 70U);
 
-    // First ScreenOff flush writes CFEDP1 atomically with parent-dir fsync
+    // First ScreenOff flush writes CFEDP2 atomically with parent-dir fsync
     assert(cal.flush_if_significant());
     assert(cal.flush_count() == 1U);
     assert(fs::exists(state / "silicon_edp.map"));
@@ -356,16 +356,48 @@ void test_edp_zero_wear_cfedp1_persistence_and_ota_reset() {
     assert(std::abs(rest.knee_scale - orig.knee_scale) < 0.005);
     assert(std::abs(rest.power_exponent - orig.power_exponent) < 0.005);
 
-    // Reload after OTA ROM update -> auto-resets & unlinks stale CFEDP1 map!
+    // Reload after OTA ROM update -> auto-resets & unlinks stale CFEDP2 map!
     EdpKneeCalibrator ota;
     ota.initialize(state.string(), "6.6.30-android15", "BUILD_B_OTA");
     assert(!ota.snapshot().calibrated);
     assert(ota.snapshot().total_samples == 0U);
     assert(!fs::exists(state / "silicon_edp.map"));
 
+    // Legacy CFEDP1 file from pre-upgrade build -> auto-unlinked with zero manual user action!
+    {
+        std::ofstream legacy(state / "silicon_edp.map", std::ios::trunc);
+        legacy << "CFEDP1\t6.6.30-android15\tBUILD_A\n"
+               << "META\t8764\t1013.75\n"
+               << "BIN\t0\t1200\t0.3200\t1600.00\t180.00\n"
+               << "BIN\t7\t1200\t0.9400\t1500.00\t600.00\n";
+    }
+    assert(fs::exists(state / "silicon_edp.map"));
+    EdpKneeCalibrator upgraded;
+    upgraded.initialize(state.string(), "6.6.30-android15", "BUILD_A");
+    assert(!upgraded.snapshot().calibrated);
+    assert(upgraded.snapshot().total_samples == 0U);
+    assert(!fs::exists(state / "silicon_edp.map"));
+
+    // Poisoned/inverted CFEDP2 file (>= 500 samples, >= 4 bins, !calibrated) -> auto-self-heals on boot!
+    {
+        std::ofstream poisoned(state / "silicon_edp.map", std::ios::trunc);
+        poisoned << "CFEDP2\t6.6.30-android15\tBUILD_A\n"
+                 << "META\t1200\t1000.00\n"
+                 << "BIN\t0\t300\t0.3000\t2200.00\t50.00\n"
+                 << "BIN\t2\t300\t0.5000\t2100.00\t50.00\n"
+                 << "BIN\t4\t300\t0.7000\t1900.00\t50.00\n"
+                 << "BIN\t7\t300\t0.9400\t1600.00\t50.00\n";
+    }
+    assert(fs::exists(state / "silicon_edp.map"));
+    EdpKneeCalibrator healed;
+    healed.initialize(state.string(), "6.6.30-android15", "BUILD_A");
+    assert(!healed.snapshot().calibrated);
+    assert(healed.snapshot().total_samples == 0U);
+    assert(!fs::exists(state / "silicon_edp.map"));
+
     std::error_code ec;
     fs::remove_all(tmp, ec);
-    std::cout << "[PASS] CFEDP1 Zero-Wear atomic persistence (parent-dir fsync) and OTA reset\n";
+    std::cout << "[PASS] CFEDP2 Zero-Wear atomic persistence, OTA reset, legacy CFEDP1 upgrade & self-heal\n";
 }
 
 void test_edp_rejects_idle_cstate_hispeed_spikes_and_handles_fuel_gauge_jitter() {
