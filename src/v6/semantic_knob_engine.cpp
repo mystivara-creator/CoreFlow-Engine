@@ -141,8 +141,9 @@ bool SemanticKnobEngine::is_forbidden_knob_name(std::string_view leaf) noexcept 
 SemanticKnobEngine::SemanticKnobEngine(
     BaselineStore& baseline,
     OemCollaborationMap& oem_map,
-    CentralMutationCoordinator* coordinator) noexcept
-    : baseline_(baseline), oem_map_(oem_map), coordinator_(coordinator) {}
+    CentralMutationCoordinator* coordinator,
+    const CausalVerifier* causal_verifier) noexcept
+    : baseline_(baseline), oem_map_(oem_map), coordinator_(coordinator), causal_verifier_(causal_verifier) {}
 
 bool is_allowlisted_knob_name(std::string_view lower) noexcept {
     constexpr std::string_view kAllowed[] = {
@@ -639,6 +640,8 @@ void SemanticKnobEngine::rollback_all() noexcept {
     }
     last_written_.clear();
     stats_.active_managed = 0U;
+    stats_.active_cpu_gpu_boost = 0U;
+    stats_.active_memory_bus = 0U;
 }
 
 void SemanticKnobEngine::apply(
@@ -667,8 +670,15 @@ void SemanticKnobEngine::apply(
         mode == v5::ContextMode::Efficiency;
     if (release_all) {
         if (!last_written_.empty()) rollback_all();
+        stats_.active_cpu_gpu_boost = 0U;
+        stats_.active_memory_bus = 0U;
         return;
     }
+
+    const bool bypass_boost = causal_verifier_ != nullptr &&
+        causal_verifier_->is_bypassed(CausalDomain::SemanticCpuGpuBoost, thermal_guard);
+    const bool bypass_bus = causal_verifier_ != nullptr &&
+        causal_verifier_->is_bypassed(CausalDomain::MemoryBusFloor, thermal_guard);
 
     const bool is_burst = (mode == v5::ContextMode::LaunchBurst);
     const bool is_gaming = (mode == v5::ContextMode::Gaming);
@@ -711,6 +721,14 @@ void SemanticKnobEngine::apply(
         }
         if (knob.family == KnobFamily::MemoryCache && !knob.is_memory_bus_opp &&
             (avail_ram_ratio < 0.30 || mem_psi >= 8.0)) {
+            should_apply = false;
+        }
+
+        // Online Causal Verification auto-bypass: immediately roll back & skip proven no-op domains.
+        if (bypass_boost && (knob.family == KnobFamily::CpuBoost || knob.family == KnobFamily::GpuLatency)) {
+            should_apply = false;
+        }
+        if (bypass_bus && knob.is_memory_bus_opp) {
             should_apply = false;
         }
 
@@ -811,6 +829,18 @@ void SemanticKnobEngine::apply(
     }
 
     stats_.active_managed = static_cast<uint32_t>(last_written_.size());
+    uint32_t active_boost = 0U;
+    uint32_t active_bus = 0U;
+    for (const auto& knob : knobs_) {
+        if (!last_written_.contains(knob.path)) continue;
+        if (knob.family == KnobFamily::CpuBoost || knob.family == KnobFamily::GpuLatency) {
+            ++active_boost;
+        } else if (knob.is_memory_bus_opp) {
+            ++active_bus;
+        }
+    }
+    stats_.active_cpu_gpu_boost = active_boost;
+    stats_.active_memory_bus = active_bus;
 }
 
 } // namespace coreflow::v6

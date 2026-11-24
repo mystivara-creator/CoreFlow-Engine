@@ -32,9 +32,13 @@ pub struct ThermalModelEstimator {
     step_power_n: u32,
     step_poisoned: bool,
     last_temp_c: f64,
-    // Chain state
+    // Chain state + exact zero-transient LTI transition-tuple filter (eliminates 1 C EIV bias)
     have_prev: bool,
     prev_x: f64,
+    have_filt: bool,
+    filt_x_prev: f64,
+    filt_p: f64,
+    filt_x_next: f64,
     have_t0: bool,
     t0: f64,
     // RLS + environment-shift residual tracker
@@ -44,11 +48,17 @@ pub struct ThermalModelEstimator {
     innovation_ewma: f64,
     shift_streak: u8,
     adapt_steps_remaining: u8,
-    // Excitation ring
+    // Excitation ring + slowly decayed persistent-excitation information bank
     ring_p: [f64; RING],
     ring_t: [f64; RING],
     ring_len: usize,
     ring_head: usize,
+    info_std_p: f64,
+    info_span: f64,
+    // Observed sensor quantization step tracker (distinguishes 0.001 C / 0.1 C / 1.0 C sensors)
+    last_distinct_temp_c: f64,
+    q_step_min: f64,
+    q_step_obs: u32,
     avg_power_w: f64,
 }
 
@@ -62,6 +72,10 @@ pub fn new_thermal_model_estimator() -> Box<ThermalModelEstimator> {
         last_temp_c: 0.0,
         have_prev: false,
         prev_x: 0.0,
+        have_filt: false,
+        filt_x_prev: 0.0,
+        filt_p: 0.0,
+        filt_x_next: 0.0,
         have_t0: false,
         t0: 0.0,
         theta: [0.0; 3],
@@ -74,6 +88,11 @@ pub fn new_thermal_model_estimator() -> Box<ThermalModelEstimator> {
         ring_t: [0.0; RING],
         ring_len: 0,
         ring_head: 0,
+        info_std_p: 0.0,
+        info_span: 0.0,
+        last_distinct_temp_c: 0.0,
+        q_step_min: 1.5,
+        q_step_obs: 0,
         avg_power_w: 0.0,
     };
     m.reset();
@@ -101,6 +120,10 @@ impl ThermalModelEstimator {
         self.step_power_n = 0;
         self.step_poisoned = false;
         self.have_prev = false;
+        self.have_filt = false;
+        self.filt_x_prev = 0.0;
+        self.filt_p = 0.0;
+        self.filt_x_next = 0.0;
         self.have_t0 = false;
         self.theta = [0.9, 0.0, 0.0];
         self.cov = [[0.0; 3]; 3];
@@ -113,7 +136,41 @@ impl ThermalModelEstimator {
         self.adapt_steps_remaining = 0;
         self.ring_len = 0;
         self.ring_head = 0;
+        self.info_std_p = 0.0;
+        self.info_span = 0.0;
+        self.last_distinct_temp_c = 0.0;
+        self.q_step_min = 1.5;
+        self.q_step_obs = 0;
         self.avg_power_w = 0.0;
+    }
+
+    fn quantization_step_est(&self) -> f64 {
+        if self.q_step_obs >= 2 {
+            self.q_step_min.clamp(0.01, 1.5)
+        } else {
+            0.10
+        }
+    }
+
+    fn ring_excitation(&self) -> (f64, f64) {
+        if self.ring_len == 0 {
+            return (0.0, 0.0);
+        }
+        let n = self.ring_len as f64;
+        let mean_p = self.ring_p[..self.ring_len].iter().sum::<f64>() / n;
+        let var_p = self.ring_p[..self.ring_len]
+            .iter()
+            .map(|v| (v - mean_p) * (v - mean_p))
+            .sum::<f64>()
+            / n;
+        let std_p = var_p.sqrt();
+        let (mut tmin, mut tmax) = (f64::MAX, f64::MIN);
+        for &t in &self.ring_t[..self.ring_len] {
+            tmin = tmin.min(t);
+            tmax = tmax.max(t);
+        }
+        let span = if tmax >= tmin { tmax - tmin } else { 0.0 };
+        (std_p, span)
     }
 
     /// `power_w` must be total system power while discharging; pass a negative/NaN value when
@@ -162,7 +219,7 @@ impl ThermalModelEstimator {
         } else {
             0.0
         };
-        let temp = self.last_temp_c;
+        let raw_temp = self.last_temp_c;
         self.step_start_ms = ts_ms;
         self.step_power_sum = 0.0;
         self.step_power_n = 0;
@@ -171,13 +228,28 @@ impl ThermalModelEstimator {
         if poisoned {
             // Break the regression chain: never bridge across charging/unknown power.
             self.have_prev = false;
+            self.have_filt = false;
             return;
         }
         if !self.have_t0 {
             self.have_t0 = true;
-            self.t0 = temp;
+            self.t0 = raw_temp;
         }
-        let x = temp - self.t0;
+        if self.last_distinct_temp_c <= 0.0 {
+            self.last_distinct_temp_c = raw_temp;
+        } else {
+            let delta = (raw_temp - self.last_distinct_temp_c).abs();
+            if delta >= 0.005 {
+                if self.q_step_obs == 0 {
+                    self.q_step_min = delta;
+                } else {
+                    self.q_step_min = self.q_step_min.min(delta);
+                }
+                self.q_step_obs = self.q_step_obs.saturating_add(1);
+                self.last_distinct_temp_c = raw_temp;
+            }
+        }
+        let x_raw = raw_temp - self.t0;
         self.avg_power_w = if self.steps == 0 && !self.have_prev {
             p
         } else {
@@ -185,18 +257,45 @@ impl ThermalModelEstimator {
         };
 
         if self.have_prev {
-            // The transition x_prev -> x is driven by the power averaged over the step just closed.
-            self.rls_update(self.prev_x, p, x);
+            // Exact zero-transient LTI filter on the full transition tuple (x_prev, p, x_next),
+            // activated ONLY when coarse sensor quantization (>= 0.45 C, e.g. 1 C integer battery
+            // without fine board/skin fusion) is observed. Eliminates 1 C errors-in-variables
+            // attenuation bias while preserving zero-lag tracking on fine 0.1 C / 0.001 C sensors.
+            const FILT_ALPHA: f64 = 0.40;
+            let coarse_sensor = self.q_step_obs >= 1 && self.q_step_min >= 0.45;
+            if coarse_sensor {
+                if !self.have_filt {
+                    self.have_filt = true;
+                    self.filt_x_prev = self.prev_x;
+                    self.filt_p = p;
+                    self.filt_x_next = x_raw;
+                } else {
+                    self.filt_x_prev += FILT_ALPHA * (self.prev_x - self.filt_x_prev);
+                    self.filt_p += FILT_ALPHA * (p - self.filt_p);
+                    self.filt_x_next += FILT_ALPHA * (x_raw - self.filt_x_next);
+                }
+                self.rls_update(self.filt_x_prev, self.filt_p, self.filt_x_next);
+            } else {
+                self.have_filt = false;
+                self.rls_update(self.prev_x, p, x_raw);
+            }
             self.steps += 1;
             self.ring_p[self.ring_head] = p;
-            self.ring_t[self.ring_head] = temp;
+            self.ring_t[self.ring_head] = raw_temp;
             self.ring_head = (self.ring_head + 1) % RING;
             if self.ring_len < RING {
                 self.ring_len += 1;
             }
+            if self.ring_len >= 12 {
+                let (win_std_p, win_span) = self.ring_excitation();
+                let adapting = self.shift_streak >= 4 || self.adapt_steps_remaining > 0;
+                let info_decay = if adapting { 0.975 } else { 0.997 };
+                self.info_std_p = (self.info_std_p * info_decay).max(win_std_p);
+                self.info_span = (self.info_span * info_decay).max(win_span);
+            }
         }
         self.have_prev = true;
-        self.prev_x = x;
+        self.prev_x = x_raw;
     }
 
     fn rls_update(&mut self, x_prev: f64, p_prev: f64, x_next: f64) {
@@ -208,9 +307,12 @@ impl ThermalModelEstimator {
             .map(|(a, b)| a * b)
             .sum::<f64>();
         let err = x_next - pred;
+        let q_est = self.quantization_step_est();
+        let shift_thresh = 0.22_f64.max(0.45 * q_est);
+        let clear_thresh = 0.10_f64.max(0.22 * q_est);
         if self.steps >= 12 && err.is_finite() {
             self.innovation_ewma = 0.75 * self.innovation_ewma + 0.25 * err;
-            if self.innovation_ewma.abs() > 0.22 {
+            if self.innovation_ewma.abs() > shift_thresh {
                 self.shift_streak = self.shift_streak.saturating_add(1);
                 // On initial regime-shift detection (e.g. external cooler attached or moving outdoors),
                 // inject physically scaled diagonal covariance (dominantly into ambient intercept c)
@@ -222,8 +324,9 @@ impl ThermalModelEstimator {
                     self.cov[1][1] += 0.008;
                     self.cov[2][2] += 0.40;
                     self.adapt_steps_remaining = 60;
+                    self.have_filt = false;
                 }
-            } else if self.innovation_ewma.abs() <= 0.10 {
+            } else if self.innovation_ewma.abs() <= clear_thresh {
                 self.shift_streak = 0;
             }
         }
@@ -311,22 +414,13 @@ impl ThermalModelEstimator {
         if self.steps < MIN_STEPS || self.ring_len < MIN_STEPS as usize {
             return invalid(self.steps, self.avg_power_w);
         }
-        // Persistent-excitation gates over the recent window.
-        let n = self.ring_len as f64;
-        let mean_p = self.ring_p[..self.ring_len].iter().sum::<f64>() / n;
-        let var_p = self.ring_p[..self.ring_len]
-            .iter()
-            .map(|v| (v - mean_p) * (v - mean_p))
-            .sum::<f64>()
-            / n;
-        let std_p = var_p.sqrt();
-        let (mut tmin, mut tmax) = (f64::MAX, f64::MIN);
-        for &t in &self.ring_t[..self.ring_len] {
-            tmin = tmin.min(t);
-            tmax = tmax.max(t);
-        }
-        let span = tmax - tmin;
-        if std_p < 0.25 || span < 0.8 {
+        // Persistent-excitation gates combining recent 10-minute window with slowly decayed
+        // historical excitation bank (eliminates steady-state "success penalty" when the
+        // controller holds chassis temperature flat at target during long gaming sessions).
+        let (win_std_p, win_span) = self.ring_excitation();
+        let eff_std_p = win_std_p.max(self.info_std_p);
+        let eff_span = win_span.max(self.info_span);
+        if eff_std_p < 0.25 || eff_span < 0.8 {
             return invalid(self.steps, self.avg_power_w);
         }
 
@@ -345,16 +439,20 @@ impl ThermalModelEstimator {
             return invalid(self.steps, self.avg_power_w);
         }
 
+        let q_est = self.quantization_step_est();
+        let damp_floor = 0.12_f64.max(0.25 * q_est);
         let residual_damp = if self.shift_streak >= 6 {
-            (1.0 - (self.innovation_ewma.abs() - 0.12).max(0.0) / 0.55).clamp(0.15, 1.0)
+            (1.0 - (self.innovation_ewma.abs() - damp_floor).max(0.0) / 0.55).clamp(0.15, 1.0)
         } else {
             1.0
         };
-        let conf = (f64::from(self.steps) / 180.0).min(1.0)
-            * (std_p / 1.0).min(1.0)
-            * (span / 3.0).min(1.0)
-            * residual_damp
-            * 100.0;
+        let step_factor = (f64::from(self.steps) / 140.0).min(1.0);
+        let p_factor = (eff_std_p / 0.85).min(1.0);
+        // Coarse integer sensors (q_est ~ 1.0 C) truncate up to 0.5 C at each end of the range;
+        // add a bounded quantization allowance only once genuine span >= 0.8 C is observed.
+        let span_adj = eff_span + 0.35 * q_est.min(1.0);
+        let t_factor = (span_adj / 2.6).min(1.0);
+        let conf = step_factor * p_factor * t_factor * residual_damp * 100.0;
         let sustainable = if target_c.is_finite() {
             ((target_c - ambient) / r_theta).max(0.0)
         } else {
@@ -576,6 +674,60 @@ mod tests {
             last.sustainable_w > 5.0,
             "sustainable_w must surge on Peltier cooler, got Psus={}",
             last.sustainable_w
+        );
+    }
+
+    #[test]
+    fn recovers_and_activates_closed_loop_on_1c_integer_battery_steady_gaming() {
+        // Reproduces real PARROTPRO field dump:
+        //  - Battery thermal zone quantized strictly to 1.0 C integers (no decimals).
+        //  - Phone starts idle at 32 C, enters 15 min heavy gaming warming to ~41 C,
+        //    then holds steady around 40..41 C for another 15 min under thermal pacing.
+        //  - Model MUST stay valid AND clear confidence >= 45 (no steady-state "success penalty").
+        let mut est = new_thermal_model_estimator();
+        let mut t: f64 = 32.0;
+        let mut last = invalid(0, 0.0);
+        let r_true = 4.6;
+        let tau_true = 414.0;
+        let ta_true = 27.5;
+        let c_true = tau_true / r_true;
+
+        for sec in 0..1800u64 {
+            let p = if sec < 120 {
+                1.0
+            } else if sec < 600 {
+                if (sec / 45) % 2 == 0 { 4.2 } else { 2.4 }
+            } else {
+                // Steady-state gaming held near 40..41 C (mild ±0.55 W variation)
+                if (sec / 40) % 2 == 0 { 3.35 } else { 2.25 }
+            };
+            t += (p - (t - ta_true) / r_true) / c_true;
+            // Strict 1.0 C integer quantization (matching thermal_zone52 on PARROTPRO)
+            let measured = t.round();
+            last = est.push_sample(1_000 + sec * 1_000, measured, p, 38.0);
+        }
+        assert!(
+            last.valid,
+            "1 C integer battery sensor must produce a valid model (steps={})",
+            last.steps
+        );
+        assert!(
+            last.confidence >= 50,
+            "1 C steady-state gaming must exceed confidence >= 45 gate (got conf={}, q_step={})",
+            last.confidence,
+            est.quantization_step_est()
+        );
+        assert!(
+            est.quantization_step_est() >= 0.9,
+            "expected detected quantization step ~1.0 C, got {}",
+            est.quantization_step_est()
+        );
+        assert!(
+            (last.ambient_c - ta_true).abs() < 4.5 && last.r_theta_c_per_w > 2.5 && last.r_theta_c_per_w < 8.5,
+            "1 C integer fit should remain physically reasonable: Ta={} R={} tau={}",
+            last.ambient_c,
+            last.r_theta_c_per_w,
+            last.tau_s
         );
     }
 }

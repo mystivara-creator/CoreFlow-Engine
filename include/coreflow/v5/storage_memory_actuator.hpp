@@ -8,6 +8,7 @@
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/v5/context_engine.hpp"
 #include "coreflow/v5/hardware_probe.hpp"
+#include "coreflow/v6/causal_verifier.hpp"
 #include "coreflow/v6/oem_collaboration_map.hpp"
 
 #include <cstdint>
@@ -45,6 +46,7 @@ struct StorageMemoryStats {
     uint64_t predictive_preloads_total{0};
     uint32_t memory_health_pct{100};
     uint32_t contended_nodes{0};
+    bool vm_or_storage_active{false};
 };
 
 class StorageMemoryActuator {
@@ -56,7 +58,8 @@ public:
 
     StorageMemoryActuator(BaselineStore& baseline,
                           std::string procfs_root = "/proc",
-                          v6::OemCollaborationMap* oem_map = nullptr) noexcept;
+                          v6::OemCollaborationMap* oem_map = nullptr,
+                          const v6::CausalVerifier* causal_verifier = nullptr) noexcept;
 
     void apply(const HardwareTopology& topo,
                const ContextDecision& ctx,
@@ -124,6 +127,7 @@ private:
     BaselineStore& baseline_;
     std::string procfs_root_;
     v6::OemCollaborationMap* oem_map_{nullptr};
+    const v6::CausalVerifier* causal_verifier_{nullptr};
     std::unordered_map<std::string, std::string> last_written_;
     std::unordered_map<std::string, ContentionEntry> contended_paths_;
     std::unordered_map<std::string, uint64_t> last_preread_ms_;

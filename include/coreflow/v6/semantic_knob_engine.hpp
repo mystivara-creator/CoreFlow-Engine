@@ -9,6 +9,7 @@
 #include "coreflow/mutation_coordinator.hpp"
 #include "coreflow/v5/context_engine.hpp"
 #include "coreflow/v5/hardware_probe.hpp"
+#include "coreflow/v6/causal_verifier.hpp"
 #include "coreflow/v6/oem_collaboration_map.hpp"
 
 #include <cstdint>
@@ -60,6 +61,8 @@ struct SemanticKnobStats {
     uint32_t storage_knobs{0};
     uint32_t memory_knobs{0};
     uint32_t memory_bus_knobs{0};
+    uint32_t active_cpu_gpu_boost{0};
+    uint32_t active_memory_bus{0};
 };
 
 struct SymbioticHints {
@@ -74,7 +77,8 @@ class SemanticKnobEngine {
 public:
     SemanticKnobEngine(BaselineStore& baseline,
                        OemCollaborationMap& oem_map,
-                       CentralMutationCoordinator* coordinator = nullptr) noexcept;
+                       CentralMutationCoordinator* coordinator = nullptr,
+                       const CausalVerifier* causal_verifier = nullptr) noexcept;
 
     // Dynamically scans safe CPU/WALT/EAS, GPU/Adreno/GED, UFS/Block, VM, and devfreq memory bus
     // subsystems, classifying discovered writable nodes with OEM-relative safe bounds.
@@ -124,6 +128,7 @@ private:
     BaselineStore& baseline_;
     OemCollaborationMap& oem_map_;
     CentralMutationCoordinator* coordinator_{nullptr};
+    const CausalVerifier* causal_verifier_{nullptr};
     std::vector<DiscoveredKnob> knobs_;
     std::unordered_map<std::string, std::string> last_written_;
     SemanticKnobStats stats_{};

@@ -8,6 +8,7 @@
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/v5/context_engine.hpp"
 #include "coreflow/v5/hardware_probe.hpp"
+#include "coreflow/v6/causal_verifier.hpp"
 #include "coreflow/v6/oem_collaboration_map.hpp"
 
 #include <cstdint>
@@ -23,6 +24,8 @@ struct ThermalEnvelopeStats {
     double last_capacity_scale{1.0};
     uint32_t eas_top_app_cap_pct{100};
     uint32_t eas_capped_groups{0};
+    bool gpu_cap_active{false};
+    bool cpu_gov_active{false};
 };
 
 struct EnvelopeTelemetry {
@@ -43,7 +46,8 @@ public:
 
     explicit ThermalEnvelopeActuator(
         BaselineStore& baseline,
-        v6::OemCollaborationMap* oem_map = nullptr) noexcept;
+        v6::OemCollaborationMap* oem_map = nullptr,
+        const v6::CausalVerifier* causal_verifier = nullptr) noexcept;
 
     void apply(const HardwareTopology& topo,
                ContextMode mode,
@@ -97,6 +101,7 @@ private:
 
     BaselineStore& baseline_;
     v6::OemCollaborationMap* oem_map_{nullptr};
+    const v6::CausalVerifier* causal_verifier_{nullptr};
     std::unordered_map<std::string, std::string> last_written_;
     std::unordered_map<std::string, uint64_t> baseline_hispeed_khz_;
     std::unordered_map<std::string, ContentionEntry> contended_paths_;

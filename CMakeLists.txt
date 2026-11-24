@@ -52,6 +52,7 @@ set(COREFLOW_V5_SOURCES
     src/v5/storage_memory_actuator.cpp
     src/v5/thermal_envelope_actuator.cpp
     src/v6/oem_collaboration_map.cpp
+    src/v6/causal_verifier.cpp
     src/v6/semantic_knob_engine.cpp
     src/v6/boot_calm_sanctuary.cpp
     src/v6/frame_pacing_sensor.cpp
@@ -112,6 +113,7 @@ if(CORE_FLOW_BUILD_TESTS)
         tests/test_v5_storage_memory_actuator.cpp
         src/v5/storage_memory_actuator.cpp
         src/v6/oem_collaboration_map.cpp
+        src/v6/causal_verifier.cpp
         src/kernel/baseline_store.cpp
     )
     target_compile_definitions(test_v5_storage_memory_actuator PRIVATE COREFLOW_ENABLE_TEST_HOOKS=1)
@@ -124,6 +126,7 @@ if(CORE_FLOW_BUILD_TESTS)
         tests/test_v5_thermal_envelope.cpp
         src/v5/thermal_envelope_actuator.cpp
         src/v6/oem_collaboration_map.cpp
+        src/v6/causal_verifier.cpp
         src/kernel/baseline_store.cpp
     )
     target_compile_definitions(test_v5_thermal_envelope PRIVATE COREFLOW_ENABLE_TEST_HOOKS=1)
@@ -143,6 +146,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_v6_semantic_copilot
         tests/test_v6_semantic_copilot.cpp
         src/v6/oem_collaboration_map.cpp
+        src/v6/causal_verifier.cpp
         src/v6/semantic_knob_engine.cpp
         src/v5/hardware_probe.cpp
         src/kernel/mount_topology.cpp
@@ -154,6 +158,22 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_v6_semantic_copilot PRIVATE pthread)
     endif()
     add_test(NAME V6SemanticCopilotTest COMMAND test_v6_semantic_copilot)
+
+    add_executable(test_v6_causal_verifier
+        tests/test_v6_causal_verifier.cpp
+        src/v6/causal_verifier.cpp
+        src/v6/oem_collaboration_map.cpp
+        src/v6/semantic_knob_engine.cpp
+        src/v5/thermal_envelope_actuator.cpp
+        src/v5/storage_memory_actuator.cpp
+        src/kernel/baseline_store.cpp
+        src/kernel/mutation_coordinator.cpp
+    )
+    target_compile_definitions(test_v6_causal_verifier PRIVATE COREFLOW_ENABLE_TEST_HOOKS=1)
+    if(NOT ANDROID)
+        target_link_libraries(test_v6_causal_verifier PRIVATE pthread)
+    endif()
+    add_test(NAME V6CausalVerifierTest COMMAND test_v6_causal_verifier)
 
     add_executable(test_v6_closed_loop_intelligence
         tests/test_v6_closed_loop_intelligence.cpp

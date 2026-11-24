@@ -29,6 +29,8 @@
 #include "coreflow/v5/thread_scheduler.hpp"
 #include "coreflow/v6/app_dna_store.hpp"
 #include "coreflow/v6/boot_calm_sanctuary.hpp"
+#include "coreflow/v6/causal_verifier.hpp"
+#include "coreflow/v6/chassis_temp_fuser.hpp"
 #include "coreflow/v6/decision_journal.hpp"
 #include "coreflow/v6/frame_pacing_sensor.hpp"
 #include "coreflow/v6/oem_collaboration_map.hpp"
@@ -677,6 +679,8 @@ struct RuntimeStatusData {
     // Online RC chassis model (rust/src/thermal_model.rs) driving closed-loop P_budget when confidence >= 45.
     engine::ThermalModelResult thermal_model{};
     bool thermal_model_closed_loop{false};
+    bool thermal_chassis_fused{false};
+    bool thermal_battery_coarse_1c{false};
     double effective_chassis_target_c{38.0};
     double power_budget_mw{-1.0};
     std::optional<double> gpu_busy_pct{};
@@ -745,6 +749,11 @@ struct RuntimeStatusData {
     // Unified Zero-Profile Autonomous Engine telemetry
     bool low_battery_eco{false};
     std::string autonomous_regime{"idle_cool"};
+    // Online Causal Verification (`device_effectiveness.map`, CFEM1)
+    std::array<v6::CausalDomainSnapshot, v6::CausalVerifier::kDomainCount> causal_domains{};
+    uint32_t causal_effective_count{0};
+    uint32_t causal_bypassed_count{0};
+    uint64_t causal_flush_count{0};
     std::vector<v6::AppDnaEntry> app_dna_entries{};
     std::vector<HistoryPoint> history{};
 };
@@ -978,6 +987,8 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"targetCelsius\":" << safe_num(kChassisTargetCelsius)
         << ",\"effectiveTargetCelsius\":" << safe_num(s.effective_chassis_target_c, kChassisTargetCelsius)
         << ",\"closedLoopActive\":" << (s.thermal_model_closed_loop ? "true" : "false")
+        << ",\"chassisFused\":" << (s.thermal_chassis_fused ? "true" : "false")
+        << ",\"batteryCoarse1C\":" << (s.thermal_battery_coarse_1c ? "true" : "false")
         << ",\"powerBudgetMw\":" << (s.power_budget_mw >= 0.0 ? std::to_string(safe_num(s.power_budget_mw)) : "null")
         << ",\"rThetaCPerW\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.r_theta_c_per_w)) : "null")
         << ",\"tauSec\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.tau_s)) : "null")
@@ -1085,6 +1096,22 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"couplingMask\":" << static_cast<unsigned>(s.coupling_mask)
         << ",\"memoryBusNodes\":" << s.topo.memory_bus_nodes.size()
         << "}"
+        << ",\"causalVerification\":{"
+        << "\"effectiveCount\":" << s.causal_effective_count
+        << ",\"bypassedCount\":" << s.causal_bypassed_count
+        << ",\"flushCount\":" << s.causal_flush_count
+        << ",\"domains\":{";
+    for (size_t i = 0U; i < v6::CausalVerifier::kDomainCount; ++i) {
+        if (i != 0U) out << ',';
+        const auto& d = s.causal_domains[i];
+        out << json_str(v6::CausalVerifier::domain_key(static_cast<v6::CausalDomain>(i))) << ":{"
+            << "\"state\":" << json_str(v6::CausalVerifier::state_name(d.state))
+            << ",\"samples\":" << d.samples
+            << ",\"score\":" << safe_num(d.score)
+            << ",\"confidence\":" << d.confidence
+            << '}';
+    }
+    out << "}}"
         << ",\"conflictingModules\":" << (s.conflicting_modules_json.empty() ? "[]" : s.conflicting_modules_json)
         << ",\"hardware\":{"
         << "\"socModel\":" << json_str(s.topo.soc_model)
@@ -1659,6 +1686,8 @@ std::string build_sim_tick_json(const RuntimeStatusData& s, uint64_t now_ms, siz
         << ",\"modelValid\":" << (s.thermal_model.valid ? "true" : "false")
         << ",\"modelConfidence\":" << s.thermal_model.confidence
         << ",\"modelClosedLoop\":" << (s.thermal_model_closed_loop ? "true" : "false")
+        << ",\"chassisFused\":" << (s.thermal_chassis_fused ? "true" : "false")
+        << ",\"batteryCoarse1C\":" << (s.thermal_battery_coarse_1c ? "true" : "false")
         << ",\"modelAmbientC\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.ambient_c)) : "null")
         << ",\"modelRTheta\":" << (s.thermal_model.valid ? std::to_string(safe_num(s.thermal_model.r_theta_c_per_w)) : "null")
         << ",\"easTopAppCapPct\":" << s.envelope_stats.eas_top_app_cap_pct
@@ -1693,9 +1722,23 @@ std::string build_sim_tick_json(const RuntimeStatusData& s, uint64_t now_ms, siz
         << ",\"managedEnvelopeNodes\":" << s.envelope_stats.managed_nodes
         << ",\"semanticKnobsActive\":" << s.semantic_stats.active_managed
         << ",\"baselineNodes\":" << s.baseline_nodes
-        << ",\"journalEntries\":" << journal_entries
-        << ",\"lockedNodes\":" << s.locked_nodes
+        << ",\"journalEntries\":" << journal_entries;
+    std::vector<std::string> eff_domains;
+    std::vector<std::string> byp_domains;
+    for (size_t i = 0U; i < v6::CausalVerifier::kDomainCount; ++i) {
+        const auto dom = static_cast<v6::CausalDomain>(i);
+        if (s.causal_domains[i].state == v6::CausalState::VerifiedEffective) {
+            eff_domains.emplace_back(v6::CausalVerifier::domain_key(dom));
+        } else if (s.causal_domains[i].state == v6::CausalState::BypassedIneffective) {
+            byp_domains.emplace_back(v6::CausalVerifier::domain_key(dom));
+        }
+    }
+    out << ",\"lockedNodes\":" << s.locked_nodes
         << ",\"quarantinedNodes\":" << s.quarantined_nodes
+        << ",\"causalEffectiveCount\":" << s.causal_effective_count
+        << ",\"causalBypassedCount\":" << s.causal_bypassed_count
+        << ",\"causalEffectiveDomains\":" << serialize_string_array(eff_domains)
+        << ",\"causalBypassedDomains\":" << serialize_string_array(byp_domains)
         << "}";
     return out.str();
 }
@@ -1890,12 +1933,15 @@ int main(int argc, char* argv[]) {
             ? ThreadSchedulerActuator::ApplierFn([](int32_t, uint32_t, uint32_t) noexcept { return 0; })
             : ThreadSchedulerActuator::ApplierFn{});
     (void)thread_scheduler.probe_support();
+    const std::string rom_fp = v6::OemCollaborationMap::discover_rom_fingerprint(procfs_root);
     v6::OemCollaborationMap oem_map;
-    oem_map.initialize(state_dir, topo.kernel_version,
-                       v6::OemCollaborationMap::discover_rom_fingerprint(procfs_root));
-    StorageMemoryActuator storage_memory(baseline, procfs_root, &oem_map);
-    ThermalEnvelopeActuator thermal_envelope(baseline, &oem_map);
-    v6::SemanticKnobEngine semantic_knobs(baseline, oem_map, &coordinator);
+    oem_map.initialize(state_dir, topo.kernel_version, rom_fp);
+    v6::CausalVerifier causal_verifier;
+    causal_verifier.initialize(state_dir, topo.kernel_version, rom_fp);
+    v6::ChassisTempFuser chassis_fuser;
+    StorageMemoryActuator storage_memory(baseline, procfs_root, &oem_map, &causal_verifier);
+    ThermalEnvelopeActuator thermal_envelope(baseline, &oem_map, &causal_verifier);
+    v6::SemanticKnobEngine semantic_knobs(baseline, oem_map, &coordinator, &causal_verifier);
     semantic_knobs.discover(topo, sysfs_root, procfs_root);
     v6::FramePacingSensor frame_pacing;
     frame_pacing.discover(sysfs_root, procfs_root, topo.vblank_irq_token);
@@ -1957,6 +2003,10 @@ int main(int argc, char* argv[]) {
     live_status.app_dna_learned = app_dna.learned_count();
     live_status.app_dna_flush_count = app_dna.flush_count();
     live_status.app_dna_entries = app_dna.snapshot_entries();
+    live_status.causal_domains = causal_verifier.snapshot_all();
+    live_status.causal_effective_count = causal_verifier.effective_count();
+    live_status.causal_bypassed_count = causal_verifier.bypassed_count();
+    live_status.causal_flush_count = causal_verifier.flush_count();
     live_status.ai_backend = std::string(neural.last_prediction().backend);
     live_status.conflicting_modules_json = read_conflicting_modules_json();
     live_status.session.started_steady_ms = clock_steady_ms();
@@ -2440,6 +2490,17 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Zero-DC-bias complementary chassis fuser: smoothly interpolates 1°C integer battery sensors
+        // using fine skin / board_average (xo-therm / ap_therm) AC detail without altering DC truth.
+        // Hard thermal safety cutoffs (>= 44C guard, >= 58C emergency) & batteryTemp stay on raw batt_temp.
+        const double fused_chassis_c = chassis_fuser.update(
+            static_cast<double>(batt_temp),
+            skin_temp,
+            static_cast<double>(tb.profile.board_average),
+            elapsed);
+        live_status.thermal_chassis_fused = chassis_fuser.fused_active();
+        live_status.thermal_battery_coarse_1c = chassis_fuser.battery_coarse_1c();
+
         const auto record_history_and_publish = [&]() {
             live_status.battery = longevity.sample_battery_telemetry();
             live_status.low_battery_eco = compute_low_battery_eco(live_status.battery);
@@ -2486,6 +2547,10 @@ int main(int argc, char* argv[]) {
             live_status.thermal_stepdown_lead = symbiotic_plan.thermal_stepdown_lead;
             live_status.coupling_mask = symbiotic_plan.coupling_mask;
             live_status.app_dna_flush_count = app_dna.flush_count();
+            live_status.causal_domains = causal_verifier.snapshot_all();
+            live_status.causal_effective_count = causal_verifier.effective_count();
+            live_status.causal_bypassed_count = causal_verifier.bypassed_count();
+            live_status.causal_flush_count = causal_verifier.flush_count();
             live_status.episodes = decision_journal.recent(16U);
             ++live_status.session.scale_samples;
             live_status.session.scale_sum += live_status.capacity_scale;
@@ -2509,7 +2574,8 @@ int main(int argc, char* argv[]) {
             // temperature (tau = 15s) so 1-second CPU die bursts never trigger fake ±25°/m swings.
             double raw_trend_c = -1.0;
             const double slow_chassis_c =
-                (std::isfinite(batt_temp) && batt_temp > 0.0f) ? static_cast<double>(batt_temp)
+                (std::isfinite(fused_chassis_c) && fused_chassis_c > 0.0) ? fused_chassis_c
+                : (std::isfinite(batt_temp) && batt_temp > 0.0f) ? static_cast<double>(batt_temp)
                 : (std::isfinite(skin_temp) && skin_temp > 0.0) ? skin_temp
                 : -1.0;
             if (slow_chassis_c > 0.0 && std::isfinite(soc_temp) && soc_temp > 0.0f) {
@@ -2712,9 +2778,14 @@ int main(int argc, char* argv[]) {
             const uint32_t smooth_model_conf = static_cast<uint32_t>(
                 std::clamp(std::llround(model_conf_ewma), 0LL, 100LL));
 
+            const double eq_batt_c =
+                (std::isfinite(batt_temp) && batt_temp >= 44.0f) ? static_cast<double>(batt_temp)
+                : (chassis_fuser.fused_active() && std::isfinite(fused_chassis_c) && fused_chassis_c > 0.0)
+                    ? fused_chassis_c
+                    : static_cast<double>(batt_temp);
             const auto eq = engine::compute_thermal_equilibrium({
                 static_cast<double>(soc_temp),
-                static_cast<double>(batt_temp),
+                eq_batt_c,
                 skin_temp,
                 live_status.thermal_velocity_cpm,
                 scale,
@@ -2993,6 +3064,7 @@ int main(int argc, char* argv[]) {
                 (last_state_persist_ms == 0U || now_ms >= last_state_persist_ms + 900'000ULL)) {
                 last_state_persist_ms = now_ms;
                 (void)app_dna.flush_if_significant();
+                (void)causal_verifier.flush_if_significant();
                 if (preloader_dirty && save_preloader_state(*preloader, preloader_pkg_map, state_dir)) {
                     preloader_dirty = false;
                 }
@@ -3141,6 +3213,62 @@ int main(int argc, char* argv[]) {
         live_status.storage_stats = storage_memory.stats();
         live_status.envelope_stats = thermal_envelope.stats();
         live_status.semantic_stats = semantic_knobs.stats();
+        {
+            double mean_khz = 0.0;
+            size_t khz_cnt = 0U;
+            for (uint64_t khz : live_status.cluster_cur_khz) {
+                if (khz > 0U) {
+                    mean_khz += static_cast<double>(khz);
+                    ++khz_cnt;
+                }
+            }
+            if (khz_cnt > 0U) mean_khz /= static_cast<double>(khz_cnt);
+
+            const auto batt_causal = longevity.sample_battery_telemetry();
+            v6::CausalObservation cobs{};
+            cobs.now_ms = now_ms;
+            cobs.dt_sec = elapsed;
+            cobs.screen_off = screen_off;
+            cobs.boot_settle = boot_dec.boot_settle_active;
+            cobs.thermal_guard = effective_thermal_guard;
+            cobs.inspection_mode = config.inspection_mode;
+            cobs.uclamp_cap_active = (live_status.envelope_stats.eas_top_app_cap_pct < 96U);
+            cobs.gpu_cap_active = live_status.envelope_stats.gpu_cap_active;
+            cobs.cpu_gov_active = live_status.envelope_stats.cpu_gov_active;
+            cobs.semantic_boost_active = (live_status.semantic_stats.active_cpu_gpu_boost > 0U);
+            cobs.memory_bus_active = (live_status.semantic_stats.active_memory_bus > 0U);
+            cobs.storage_memory_active = live_status.storage_stats.vm_or_storage_active;
+            cobs.cpu_util_pct = cpu_util;
+            cobs.gpu_busy_pct = gpu_busy.value_or(0.0);
+            cobs.power_available = batt_causal.available;
+            cobs.charging = batt_causal.charging;
+            cobs.power_mw = batt_causal.power_mw;
+            cobs.thermal_velocity_cpm = live_status.thermal_velocity_cpm;
+            cobs.mean_cluster_khz = mean_khz;
+            cobs.jank_ratio = live_status.jank_ratio;
+            cobs.starvation_pressure = live_status.starvation_pressure;
+            cobs.cpu_psi = cpu_psi.value_or(-1.0);
+            cobs.io_psi = io_psi.value_or(-1.0);
+            cobs.mem_psi = mem_psi.value_or(-1.0);
+            cobs.refault_file_per_sec = live_status.refault_file_per_sec;
+            cobs.direct_reclaim_per_sec = live_status.direct_reclaim_per_sec;
+
+            const auto cres = causal_verifier.observe(cobs);
+            if (cres.newly_bypassed_mask != 0U) {
+                for (size_t di = 0U; di < v6::CausalVerifier::kDomainCount; ++di) {
+                    if ((cres.newly_bypassed_mask & (1U << di)) == 0U) continue;
+                    const auto dom = static_cast<v6::CausalDomain>(di);
+                    const auto snap = causal_verifier.domain_snapshot(dom);
+                    decision_journal.record(
+                        clock_epoch_ms(), "causal", "CausalBypass",
+                        std::string("Auto-bypassed ineffective actuator ") +
+                            v6::CausalVerifier::domain_key(dom) +
+                            " (" + std::to_string(snap.samples) + " trials, score=" +
+                            std::to_string(safe_num(snap.score)) + "); rolled back via BaselineStore",
+                        "rolled_back", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+                }
+            }
+        }
         record_history_and_publish();
     };
 
@@ -3408,6 +3536,7 @@ int main(int argc, char* argv[]) {
     input_source.stop();
     frame_bridge.stop();
     (void)app_dna.flush_if_dirty();
+    (void)causal_verifier.flush_if_dirty();
     if (preloader_dirty) {
         (void)save_preloader_state(*preloader, preloader_pkg_map, state_dir);
     }
