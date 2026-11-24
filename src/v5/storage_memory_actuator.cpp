@@ -124,13 +124,18 @@ std::string format_quantized_uclamp_pct(double pct) {
 StorageMemoryActuator::StorageMemoryActuator(
     BaselineStore& baseline,
     std::string procfs_root,
-    v6::OemCollaborationMap* oem_map) noexcept
-    : baseline_(baseline), procfs_root_(std::move(procfs_root)), oem_map_(oem_map) {}
+    v6::OemCollaborationMap* oem_map,
+    const v6::CausalVerifier* causal_verifier) noexcept
+    : baseline_(baseline),
+      procfs_root_(std::move(procfs_root)),
+      oem_map_(oem_map),
+      causal_verifier_(causal_verifier) {}
 
 void StorageMemoryActuator::reset_contention() noexcept {
     contended_paths_.clear();
     last_written_.clear();
     stats_.contended_nodes = oem_map_ ? oem_map_->active_count() : 0U;
+    stats_.vm_or_storage_active = false;
 }
 
 std::vector<std::string> StorageMemoryActuator::contended_paths() const {
@@ -335,9 +340,17 @@ void StorageMemoryActuator::apply(
         ? std::clamp(telemetry.starvation_pressure, 0.0, 1.0)
         : 0.0;
     const bool calm_mode = (ctx.mode == ContextMode::Efficiency || ctx.mode == ContextMode::ScreenOff);
+    const double avail_ratio_pre = telemetry.memory.valid ? telemetry.memory.available_ratio() : 0.45;
+    const bool emergency_reclaim = telemetry.direct_reclaim_storm ||
+                                   direct_reclaim_ps >= 64.0 ||
+                                   mem_psi >= 15.0 ||
+                                   avail_ratio_pre < 0.18;
+    const bool bypass_storage_vm = causal_verifier_ != nullptr &&
+        causal_verifier_->is_bypassed(v6::CausalDomain::StorageMemoryTuning,
+                                      telemetry.thermal_guard || emergency_reclaim);
 
     // 1. Demand-Driven UFS/eMMC Burst Readahead + Adaptive Background Isolation (Release-on-Calm)
-    if (enable_storage_burst && ctx.mode != ContextMode::Excluded) {
+    if (enable_storage_burst && !bypass_storage_vm && ctx.mode != ContextMode::Excluded) {
         // Under severe page-cache thrashing (>= 0.45), hold read_ahead_kb at OEM baseline so
         // speculative sequential I/O never evicts hot foreground working-set pages.
         const bool need_ra_burst = (thrashing < 0.45) &&
@@ -430,15 +443,12 @@ void StorageMemoryActuator::apply(
 
     // 2. Demand-Driven Anti-Stutter Memory Guard (Respect OEM MGLRU Policy + Two-Regime Thrashing Defense)
     if (enable_memory_guard && ctx.mode != ContextMode::Excluded) {
-        const double avail_ratio = telemetry.memory.valid ? telemetry.memory.available_ratio() : 0.45;
+        const double avail_ratio = avail_ratio_pre;
         const double mem_psi_norm = std::clamp(mem_psi / 100.0, 0.0, 1.0);
         const double zram_ratio = (topo.total_ram_bytes > 0U && topo.zram_active)
             ? std::clamp(static_cast<double>(topo.zram_bytes) / static_cast<double>(topo.total_ram_bytes), 0.0, 1.5)
             : 0.0;
-        const bool reclaim_storm = telemetry.direct_reclaim_storm ||
-                                   direct_reclaim_ps >= 64.0 ||
-                                   mem_psi >= 15.0 ||
-                                   avail_ratio < 0.18;
+        const bool reclaim_storm = emergency_reclaim;
 
         // Compute live Memory Health % (100 = plentiful unfragmented RAM, drops with RAM/swap/PSI/thrashing)
         const double swap_used = telemetry.memory.valid ? telemetry.memory.swap_used_ratio() : 0.0;
@@ -448,6 +458,17 @@ void StorageMemoryActuator::apply(
             - mem_psi_norm * 40.0
             - thrashing * 30.0;
         stats_.memory_health_pct = static_cast<uint32_t>(std::clamp(std::lround(health_raw), 10L, 100L));
+
+        if (bypass_storage_vm) {
+            rollback_managed_node(topo.vm.mglru_enabled_path);
+            rollback_managed_node(topo.vm.mglru_min_ttl_path);
+            rollback_managed_node(topo.vm.page_cluster_path);
+            rollback_managed_node(topo.vm.swappiness_path);
+            rollback_managed_node(topo.vm.compaction_proactiveness_path);
+            rollback_managed_node(topo.vm.watermark_scale_factor_path);
+            stats_.vm_or_storage_active = !last_written_.empty();
+            return;
+        }
 
         // Respect OEM kernel MM policy: only tune MGLRU min_ttl_ms if the kernel/ROM already has
         // MGLRU enabled (never force-flip OEM 0x0000 on HyperOS 4 / custom mi_reclaim kernels).
@@ -557,6 +578,7 @@ void StorageMemoryActuator::apply(
         rollback_managed_node(topo.vm.compaction_proactiveness_path);
         rollback_managed_node(topo.vm.watermark_scale_factor_path);
     }
+    stats_.vm_or_storage_active = !last_written_.empty();
 }
 
 uint64_t StorageMemoryActuator::prefetch_app_assets(

@@ -146,6 +146,8 @@ TickSample parse_tick_json(std::string_view json) {
     s.model_valid = json_get_bool(json, "modelValid");
     s.model_confidence = static_cast<uint32_t>(json_get_u64(json, "modelConfidence"));
     s.model_closed_loop = json_get_bool(json, "modelClosedLoop");
+    s.chassis_fused = json_get_bool(json, "chassisFused");
+    s.battery_coarse_1c = json_get_bool(json, "batteryCoarse1C");
     s.model_ambient_c = json_get_double(json, "modelAmbientC", -1.0);
     s.model_r_theta = json_get_double(json, "modelRTheta", -1.0);
     s.eas_top_app_cap_pct = static_cast<uint32_t>(json_get_u64(json, "easTopAppCapPct", 100U));
@@ -183,6 +185,10 @@ TickSample parse_tick_json(std::string_view json) {
     s.journal_entries = static_cast<uint32_t>(json_get_u64(json, "journalEntries"));
     s.locked_nodes = static_cast<uint32_t>(json_get_u64(json, "lockedNodes"));
     s.quarantined_nodes = static_cast<uint32_t>(json_get_u64(json, "quarantinedNodes"));
+    s.causal_effective_count = static_cast<uint32_t>(json_get_u64(json, "causalEffectiveCount"));
+    s.causal_bypassed_count = static_cast<uint32_t>(json_get_u64(json, "causalBypassedCount"));
+    s.causal_effective_domains = json_get_string_array(json, "causalEffectiveDomains");
+    s.causal_bypassed_domains = json_get_string_array(json, "causalBypassedDomains");
     return s;
 }
 
@@ -324,6 +330,9 @@ struct ArchetypeResult {
     uint32_t post_yield_write_wars{0};
     uint32_t boot_settle_sysfs_violations{0};
     uint32_t model_closed_loop_ticks{0};
+    bool chassis_fused_seen{false};
+    uint32_t causal_effective_count{0};
+    uint32_t causal_bypassed_count{0};
     bool non_ltpo_quarantined{false};
     bool ltpo_promoted{false};
     bool bypass_tested{false};
@@ -395,6 +404,11 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
     uint32_t boot_settle_ticks = 0U;
     bool exited_boot_settle = false;
     bool saw_tier_a_verified = false;
+    bool saw_coarse_1c_batt = false;
+    bool saw_uclamp_effective = false;
+    bool saw_semantic_bypassed = false;
+    uint32_t semantic_bypassed_tick = 0U;
+    uint32_t post_bypass_stub_writes = 0U;
     double peak_starvation = -1.0;
     uint32_t starve_peak_uclamp_min = 0U;
     uint32_t fake_jank_ticks_non_ltpo = 0U;
@@ -488,9 +502,25 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
         res.final_effective_target_c = tick.effective_target_c;
         res.max_effective_target_c = std::max(res.max_effective_target_c, tick.effective_target_c);
         res.oem_yielded_nodes = std::max(res.oem_yielded_nodes, tick.oem_yielded_nodes);
+        res.causal_effective_count = std::max(res.causal_effective_count, tick.causal_effective_count);
+        res.causal_bypassed_count = std::max(res.causal_bypassed_count, tick.causal_bypassed_count);
+        if (tick.chassis_fused) res.chassis_fused_seen = true;
+        if (tick.battery_coarse_1c) saw_coarse_1c_batt = true;
         if (tick.thermal_guard) ++res.thermal_guard_ticks;
         if (tick.thermal_emergency) ++res.thermal_emergency_ticks;
         if (tick.model_valid && tick.model_closed_loop) ++res.model_closed_loop_ticks;
+
+        for (const auto& ed : tick.causal_effective_domains) {
+            if (ed == "thermal_uclamp_cap") saw_uclamp_effective = true;
+        }
+        for (const auto& bd : tick.causal_bypassed_domains) {
+            if (bd == "semantic_cpu_gpu_boost") {
+                if (!saw_semantic_bypassed) {
+                    saw_semantic_bypassed = true;
+                    semantic_bypassed_tick = t;
+                }
+            }
+        }
 
         const char* trace_env = std::getenv("CF_SIM_TRACE");
         const bool trace_this = (trace_env != nullptr && (std::string_view(trace_env) == "all" || std::string_view(trace_env) == res.name));
@@ -527,11 +557,12 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
         }
         if (trace_this && (t % 60U == 0U)) {
             std::fprintf(stderr,
-                "[TRACE][%s][60s] t=%u scale=%.4f bat=%.2f soc=%.2f p=%.1f mv=%d cl=%d conf=%u tgt=%.2f ta=%.2f r=%.2f bdg=%.0f pwr=%.2f\n",
+                "[TRACE][%s][60s] t=%u scale=%.4f bat=%.2f soc=%.2f p=%.1f mv=%d cl=%d conf=%u fused=%d tgt=%.2f ta=%.2f r=%.2f bdg=%.0f pwr=%.2f ceff=%u cbyp=%u\n",
                 res.name.c_str(), t, tick.capacity_scale, plant.chassis_temp_c(), plant.die_temp_c(),
                 tick.thermal_pressure, tick.model_valid ? 1 : 0, tick.model_closed_loop ? 1 : 0,
-                tick.model_confidence, tick.effective_target_c, tick.model_ambient_c,
-                tick.model_r_theta, tick.power_budget_mw, plant.last_power_w());
+                tick.model_confidence, tick.chassis_fused ? 1 : 0, tick.effective_target_c, tick.model_ambient_c,
+                tick.model_r_theta, tick.power_budget_mw, plant.last_power_w(),
+                tick.causal_effective_count, tick.causal_bypassed_count);
         }
         prev_scale = tick.capacity_scale;
 
@@ -554,6 +585,15 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
                 if (t >= 145U && t < 220U) {
                     if (tick.starvation_pressure > peak_starvation) peak_starvation = tick.starvation_pressure;
                     starve_peak_uclamp_min = std::max(starve_peak_uclamp_min, tick.uclamp_min);
+                }
+                // Once semantic_cpu_gpu_boost is auto-bypassed, verify ged_boost_enable & gpu_boost_level
+                // roll back cleanly to "0" and stay untouched on all subsequent ticks (t > bypass + 1).
+                if (saw_semantic_bypassed && t > semantic_bypassed_tick + 1U) {
+                    const std::string ged_en = read_file_trimmed(plant.sys_root() / "module/ged/parameters/ged_boost_enable");
+                    const std::string ged_lv = read_file_trimmed(plant.sys_root() / "module/ged/parameters/gpu_boost_level");
+                    if (ged_en != "0" || ged_lv != "0") {
+                        ++post_bypass_stub_writes;
+                    }
                 }
                 break;
 
@@ -738,7 +778,9 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
             }
             if (!saw_tier_a_verified) fail("Expected Tier A SDE measured_fps to be verified");
             if (res.oem_yielded_nodes < 1U) fail("Expected mi_thermald contended node(s) to reach permanent OEM yield");
-            if (res.model_closed_loop_ticks < 200U) fail("Expected RLS thermal model to reach closed-loop active");
+            if (!saw_coarse_1c_batt) fail("Expected 1C integer battery sensor quantization to be detected on PARROTPRO replica");
+            if (!res.chassis_fused_seen) fail("Expected zero-DC-bias ChassisTempFuser (1C battery + xo-therm) to engage");
+            if (res.model_closed_loop_ticks < 200U) fail("Expected RLS thermal model to reach closed-loop active on 1C+xo-therm");
             break;
 
         case ArchetypeId::MediaTekDimensity:
@@ -747,6 +789,27 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
             if (starve_peak_uclamp_min < 450U) fail("Expected starvation rescue to elevate uclampMin >= 450 (got " + std::to_string(starve_peak_uclamp_min) + ")");
             if (res.oem_yielded_nodes < 1U) fail("Expected mtk_fpsgo contended node to reach permanent OEM yield");
             if (res.model_closed_loop_ticks < 200U) fail("Expected RLS thermal model to reach closed-loop active");
+            if (!saw_uclamp_effective) fail("Expected CausalVerifier to prove thermal_uclamp_cap effective");
+            if (!saw_semantic_bypassed) fail("Expected CausalVerifier to auto-bypass stubbed semantic_cpu_gpu_boost after >=5 trials");
+            if (post_bypass_stub_writes > 0U) fail("Stubbed semantic_cpu_gpu_boost was not rolled back cleanly after bypass (" + std::to_string(post_bypass_stub_writes) + " ticks)");
+            {
+                const fs::path cfem_path = plant.state_dir() / "device_effectiveness.map";
+                std::ifstream ifs(cfem_path);
+                if (!ifs.is_open()) {
+                    fail("Expected CFEM1 device_effectiveness.map to persist cleanly on shutdown");
+                } else {
+                    std::ostringstream ss;
+                    ss << ifs.rdbuf();
+                    const std::string content = ss.str();
+                    if (content.rfind("CFEM1\t", 0) != 0) fail("device_effectiveness.map missing CFEM1 header");
+                    if (content.find("thermal_uclamp_cap\teffective\t") == std::string::npos) {
+                        fail("device_effectiveness.map missing thermal_uclamp_cap=effective");
+                    }
+                    if (content.find("semantic_cpu_gpu_boost\tbypassed\t") == std::string::npos) {
+                        fail("device_effectiveness.map missing semantic_cpu_gpu_boost=bypassed");
+                    }
+                }
+            }
             break;
 
         case ArchetypeId::SamsungExynosSdhms:
@@ -790,6 +853,9 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
             if (regime_b_max_ra_kb > 128U) fail("Direct-reclaim storm failed to clamp read_ahead_kb <= 128 (got " + std::to_string(regime_b_max_ra_kb) + ")");
             if (regime_b_max_preread > 0U) fail("Direct-reclaim storm failed to block prefetch");
             if (screen_off_ticks < 200U) fail("Expected clean ScreenOff transition on legacy budget device");
+            if (!saw_coarse_1c_batt) fail("Expected pure 1C integer battery sensor quantization to be detected");
+            if (res.chassis_fused_seen) fail("Pure 1C device without skin/xo-therm must NOT claim chassisFused=true");
+            if (res.model_closed_loop_ticks < 150U) fail("Expected Rust pure-1C RLS fallback to activate closedLoopActive (ticks=" + std::to_string(res.model_closed_loop_ticks) + ")");
             break;
 
         case ArchetypeId::GamingBypassAmbientCooler:
@@ -863,6 +929,9 @@ void write_json_report(const std::string& path,
             << "      \"oemYieldedNodes\": " << r.oem_yielded_nodes << ",\n"
             << "      \"postYieldWriteWars\": " << r.post_yield_write_wars << ",\n"
             << "      \"modelClosedLoopTicks\": " << r.model_closed_loop_ticks << ",\n"
+            << "      \"chassisFused\": " << (r.chassis_fused_seen ? "true" : "false") << ",\n"
+            << "      \"causalEffectiveCount\": " << r.causal_effective_count << ",\n"
+            << "      \"causalBypassedCount\": " << r.causal_bypassed_count << ",\n"
             << "      \"nonLtpoQuarantined\": " << (r.non_ltpo_quarantined ? "true" : "false") << ",\n"
             << "      \"ltpoPromoted\": " << (r.ltpo_promoted ? "true" : "false") << ",\n"
             << "      \"rollbackClean\": " << (r.rollback_clean ? "true" : "false") << ",\n"
@@ -958,6 +1027,7 @@ int main(int argc, char* argv[]) {
               << std::setw(7) << "Guard"
               << std::setw(9) << "Yield/W"
               << std::setw(9) << "ClosedLp"
+              << std::setw(8) << "Causal"
               << "CFJ4\n";
     for (const auto& r : results) {
         if (!r.passed) all_passed = false;
@@ -969,7 +1039,8 @@ int main(int argc, char* argv[]) {
                   << std::setw(7) << r.max_reversals_per_min
                   << std::setw(7) << r.thermal_guard_ticks
                   << std::setw(9) << (std::to_string(r.oem_yielded_nodes) + "/" + std::to_string(r.post_yield_write_wars))
-                  << std::setw(9) << r.model_closed_loop_ticks
+                  << std::setw(9) << (std::to_string(r.model_closed_loop_ticks) + (r.chassis_fused_seen ? "F" : ""))
+                  << std::setw(8) << (std::to_string(r.causal_effective_count) + "/" + std::to_string(r.causal_bypassed_count))
                   << (r.rollback_clean ? "CLEAN" : "DIRTY") << "\n";
         for (const auto& f : r.failures) {
             std::cerr << "  [FAIL][" << r.name << "] " << f << "\n";

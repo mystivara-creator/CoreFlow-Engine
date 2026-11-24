@@ -60,11 +60,11 @@ Lokasi kode:
 
 | Lapis | File utama |
 |---|---|
-| Sense | `src/v5/hardware_probe.cpp`, `src/kernel/thermal_monitor.cpp`, `src/v6/frame_pacing_sensor.cpp`, `src/v6/schedstat_sensor.cpp`, `src/v6/vmstat_thrashing_sensor.cpp`, `src/v5/context_engine.cpp` |
-| Understand | `rust/src/thermal_trend.rs`, `rust/src/thermal_model.rs`, `src/kernel/neural_predictor.cpp`, `src/v6/app_dna_store.cpp`, `rust/src/orchestrator.rs` |
+| Sense | `src/v5/hardware_probe.cpp`, `src/kernel/thermal_monitor.cpp`, `include/coreflow/v6/chassis_temp_fuser.hpp`, `src/v6/frame_pacing_sensor.cpp`, `src/v6/schedstat_sensor.cpp`, `src/v6/vmstat_thrashing_sensor.cpp`, `src/v5/context_engine.cpp` |
+| Understand | `rust/src/thermal_trend.rs`, `rust/src/thermal_model.rs`, `src/kernel/neural_predictor.cpp`, `src/v6/app_dna_store.cpp`, `src/v6/causal_verifier.cpp`, `rust/src/orchestrator.rs` |
 | Decide | `rust/src/controller.rs`, `rust/src/thermal_trend.rs` (`compute_thermal_equilibrium`), `rust/src/uclamp.rs` |
 | Act | `src/v5/thread_scheduler.cpp`, `src/v5/thermal_envelope_actuator.cpp`, `src/v5/storage_memory_actuator.cpp`, `src/v6/semantic_knob_engine.cpp` |
-| Guard | `src/kernel/mutation_coordinator.cpp`, `src/kernel/baseline_store.cpp`, `src/v6/oem_collaboration_map.cpp`, `src/v6/boot_calm_sanctuary.cpp` |
+| Guard | `src/kernel/mutation_coordinator.cpp`, `src/kernel/baseline_store.cpp`, `src/v6/oem_collaboration_map.cpp`, `src/v6/boot_calm_sanctuary.cpp`, `src/v6/causal_verifier.cpp` |
 | Loop | `src/daemon/main.cpp` (reactor + timerfd), `src/daemon/reactor.cpp` |
 
 ## 3. Fisika di balik keputusan
@@ -73,12 +73,14 @@ Lokasi kode:
 2. **Termal itu RC:** \(T_{chassis} \approx T_{amb} + P_{sustained}\cdot R_\theta\), dengan konstanta waktu menit, bukan detik. Konsekuensinya:
    - Die melonjak cepat (detik), baterai/casing lambat (menit).
    - Keputusan termal harus memakai sinyal lambat (EWMA τ=15 s), bukan suhu die mentah.
+   - **Tahan kuantisasi 1°C bulat & bebas "Success Penalty"**: Pada fuel-gauge yang melompat 1°C bulat (mis. `thermal_zone52` baterai), `ChassisTempFuser` memadukan jangkar DC baterai fisik dengan detail AC terbatas (±0,65°C) dari sensor board/skin miliderajat (`skin` / `xo-therm` / `ap_therm`) dengan **nol bias DC** (sementara batas keselamatan keras ≥ 44°C / ≥ 58°C tetap membaca baterai fisik mentah). Di lapisan Rust (`thermal_model.rs`), filter transisi LTI bebas-bias + detektor kuantisasi `q_step_est` + memori eksitasi *information-bank* memastikan `confidence` tetap menembus gate `>= 45` dan mengaktifkan `closedLoopActive` meski suhu gaming telah tertahan datar di 41°C — bahkan pada perangkat minimal tanpa sensor `xo-therm`.
    - **Anggaran daya receding-horizon tertutup (`P_budget`)**: Ketika `ThermalModelEstimator` telah konvergen (`confidence >= 45`, saat discharging), CoreFlow menghitung target adaptif \(T_{\text{target,eff}} = \text{clamp}(\max(38.0,\ T_a + 7.0),\ 38.0,\ 41.5^\circ\text{C})\) dan anggaran daya fisik:
      $$P_{\text{budget}}(t) = \frac{T_{\text{target,eff}} - T_a}{R_\theta} + \frac{\tau \cdot (T_{\text{target,eff}} - T_{\text{chassis}})}{R_\theta \cdot H}$$
      lalu memetakannya ke `capacity_scale` via hukum daya silikon \(P \propto s^{1.8}\). Dengan *adaptive forgetting* + *soft covariance injection* di `thermal_model.rs`, estimator otomatis beradaptasi ketika pengguna berpindah suhu ruangan (AC vs luar ruangan tropis) atau memasang *external Peltier cooler*.
 3. **Responsif = latensi antrean & deadline, bukan frekuensi puncak:** Yang menentukan rasa mulus adalah seberapa cepat thread kritis (UI/Render/SurfaceFlinger) mendapat CPU tanpa menunggu di runqueue. `SchedstatSensor` mengukur `run_delay_ns` aktual dari `/proc/<pid>/task/<tid>/schedstat` (universal di semua nama thread/engine tanpa eBPF) untuk memicu penyelamatan `uclamp.min` per-TID dan isolasi background secara langsung — bahkan ketika panel fixed-Hz non-LTPO tidak menyediakan sensor FPS commit.
 4. **Memori anti-freeze dua-regime (`/proc/vmstat`):** `VmstatThrashingSensor` membedakan **eviksi page-cache awal** (`workingset_refault_file` tinggi saat RAM masih tersedia → naikkan pelindung MGLRU `min_ttl_ms` hingga 1200 ms + dorong halaman anonim dingin ke ZRAM) vs **badai direct-reclaim** (`pgsteal_direct >= 64/s` → langsung nolkan `min_ttl_ms`, hentikan `read_ahead_kb` burst & prefetch agar alokasi UI tidak membeku).
 5. **Little's Law (\(L=\lambda W\))** dipakai Orchestrator (menggabungkan `render_pressure`, CPU PSI, dan `starvation_pressure`) untuk menentukan siapa bottleneck (CPU, GPU, atau memori/IO) sehingga daya diberikan ke yang membuat pipeline macet, bukan ke semuanya.
+6. **Verifikasi Kausal Daring (`CausalVerifier`, `device_effectiveness.map` / `CFEM1`):** Mengamati manfaat sistem nyata pada 6 domain aktuator (`thermal_uclamp_cap`, `thermal_gpu_cap`, `cpu_gov_tuning`, `semantic_cpu_gpu_boost`, `memory_bus_floor`, `storage_memory_tuning`) lewat *natural-experiment matched pre/post windows* (0 alokasi heap, tanpa menyuntikkan stutter buatan). Penilaian memisahkan gerak aktuator mentah dari perbaikan UX nyata (`jank_ratio`, `starvation_pressure`, PSI) atau efisiensi daya — kenaikan daya tanpa perbaikan latensi/jank tidak pernah lolos `VerifiedEffective`. Bila sebuah domain terbukti *no-op* atau boros daya (`>= 5` trial terpadan dengan `score <= 0.02`), CoreFlow menandainya `BypassedIneffective`, langsung me-rollback node sysfs terkait lewat `BaselineStore`, mencatat episode `CausalBypass`, dan melewati penulisan sia-sia pada sesi berikutnya — sambil menjaga jalur keselamatan `THERMAL_GUARD` / `THERMAL_EMERGENCY` / `direct_reclaim_storm` 100% imun. Persistensi Zero-Wear `CFEM1` hanya menulis atomik (`fsync` file + `renameat` + `fsync` direktori induk) saat `ScreenOff` (bila ada perubahan status/drift signifikan) dan shutdown bersih, serta otomatis reset saat update kernel/ROM.
 
 ## 4. Variabel kendali tunggal
 
@@ -90,18 +92,18 @@ sinyal beban + tekanan termal + P_budget RC ──► Controller + Equilibrium �
 
 | Aktuator | Terjemahan dari `capacity_scale` |
 |---|---|
-| ThermalEnvelope | ceiling frekuensi CPU/GPU, `hispeed_load`; `top-app` / `foreground` / `system-background` `cpu.uclamp.max` |
-| StorageMemory | `background/cpu.uclamp.max` ke kapasitas core Little saat hangat/starvation; readahead, 2-regime MGLRU & swappiness berbasis `/proc/vmstat` |
+| ThermalEnvelope | ceiling frekuensi CPU/GPU, `hispeed_load`; `top-app` / `foreground` / `system-background` `cpu.uclamp.max` (menghormati `CausalVerifier` di luar `THERMAL_GUARD`) |
+| StorageMemory | `background/cpu.uclamp.max` ke kapasitas core Little saat hangat/starvation; readahead, 2-regime MGLRU & swappiness berbasis `/proc/vmstat` (menghormati `CausalVerifier` di luar badai reclaim) |
 | ThreadScheduler | uclamp min/max per-TID (dibatasi skalar, dengan penyelamatan jank & `schedstat` runqueue starvation) |
-| Knob semantik | agresivitas sched/vm |
+| Knob semantik | agresivitas sched/vm/GPU/DDR (otomatis rollback bila `CausalVerifier` menandai *no-op*) |
 
 Aturan prioritas (urutan menang bila konflik):
 
-1. **Keselamatan keras:** baterai ≥ 58 °C atau die ≥ 95 °C → semuanya rollback ke baseline.
+1. **Keselamatan keras:** baterai fisik mentah ≥ 58 °C atau die ≥ 95 °C → semuanya rollback ke baseline.
 2. **Latensi pengguna:** `LaunchBurst`, jank terverifikasi ≥ 3%, `schedstat` starvation ≥ 0.20, atau suhu dingin → cap/floor `top-app` dan thread kritis langsung diangkat (kecuali `THERMAL_GUARD` aktif).
-3. **Termal:** saat hangat atau melampaui `P_budget` → cap daya sesuai skalar (`THERMAL_GUARD` tetap mengunci penuh pada chassis ≥ 44 °C / die ≥ 76 °C).
+3. **Termal:** saat hangat atau melampaui `P_budget` → cap daya sesuai skalar (`THERMAL_GUARD` tetap mengunci penuh pada baterai fisik mentah ≥ 44 °C / die ≥ 76 °C, kebal terhadap bypass kausal).
 4. **Baterai:** Low-Battery Eco (≤ 20%) memangkas sedikit tanpa merusak scroll.
-5. **Efisiensi idle:** mode `Efficiency` / `ScreenOff` melepas boost, mempertahankan cap EAS hangat, dan menidurkan seluruh sensor (0 syscall).
+5. **Efisiensi idle:** mode `Efficiency` / `ScreenOff` melepas boost, mempertahankan cap EAS hangat, melakukan flush Zero-Wear (`AppDNA` + `CFEM1` bila berubah signifikan), dan menidurkan seluruh sensor (0 syscall).
 
 ## 5. Konteks (pengganti "profil")
 
@@ -114,7 +116,7 @@ Aturan prioritas (urutan menang bila konflik):
 ## 6. Invarian yang tidak boleh dilanggar
 
 1. **Satu jalur tulis.** Semua penulisan node lewat `MutationCoordinator` → `BaselineStore` (CFJ4) dengan readback. Tidak ada tulis liar.
-2. **Selalu bisa kembali.** Nilai pabrik disimpan sebelum tulis pertama; "release-on-calm" mengembalikan saat tenang.
+2. **Selalu bisa kembali.** Nilai pabrik disimpan sebelum tulis pertama; "release-on-calm" dan `CausalBypass` mengembalikan saat tenang atau aktuator terbukti *no-op*.
 3. **Satu pemilik per node.** Dua aktuator tidak boleh menulis node yang sama. Di v6.1.0-R, node cap `top-app`, `foreground`, `system-background`, `background` dipaksa berbeda (lihat commit `62cf513`).
 4. **Yield ke OEM.** Jika OEM menulis balik node yang sama, CoreFlow mundur dan mencatatnya (`oemYieldedPaths`), dan tidak berperang.
 5. **Penemuan dinamis.** Tidak ada path vendor yang di-hardcode; path ditemukan dari mountinfo/sysfs. Satu-satunya konvensi tetap adalah nama grup AOSP kanonik (`top-app`, `foreground`, `background`).
@@ -128,22 +130,22 @@ Aturan prioritas (urutan menang bila konflik):
 | Apa yang sebenarnya ditulis? | `journal.entries` (path, nilai pabrik, nilai aktif) |
 | Apakah OEM melawan? | `oemYieldedPaths`, `contendedPaths` |
 | Seberapa cepat memanas? | `thermalVelocityCpm` (sudah di-EWMA) |
-| Apakah closed-loop RC aktif & berapa anggaran dayanya? | `thermalModel` (`valid`, `closedLoopActive`, `effectiveTargetCelsius`, `powerBudgetMw`, `rThetaCPerW`, `tauSec`, `ambientCelsius`, `sustainablePowerMw`, `confidence`) |
+| Apakah closed-loop RC aktif & fusi sensor 1°C berjalan? | `thermalModel` (`valid`, `closedLoopActive`, `chassisFused`, `batteryCoarse1C`, `effectiveTargetCelsius`, `powerBudgetMw`, `rThetaCPerW`, `tauSec`, `ambientCelsius`, `sustainablePowerMw`, `confidence`) |
+| Aktuator mana yang terbukti efektif atau *no-op* di SoC ini? | `causalVerification` (`effectiveCount`, `bypassedCount`, `flushCount`, `domains.{thermal_uclamp_cap,thermal_gpu_cap,cpu_gov_tuning,semantic_cpu_gpu_boost,memory_bus_floor,storage_memory_tuning}`) |
 | Apakah sensor FPS terverifikasi atau panel fixed-Hz fail-closed? | `hyperFluid` (`framePacingAvailable`, `framePacingVerified`, `framePacingSource`, `measuredFps`, `jankRatio`) |
 | Apakah ada CPU runqueue starvation atau RAM thrashing? | `hyperFluid` (`schedstatSupported`, `runqueueDelayMs`, `starvationPressure`, `vmstatSupported`, `refaultFilePerSec`, `directReclaimPerSec`, `thrashingPressure`, `directReclaimStorm`) |
-| Mengapa mode berganti? | `episodes` (`ModeShift`, `LaunchBurst`, `ThermalRecovered`, `FramePacingFailClosed`) |
+| Mengapa mode berganti / aktuator di-bypass? | `episodes` (`ModeShift`, `LaunchBurst`, `ThermalRecovered`, `FramePacingFailClosed`, `CausalBypass`) |
 | Apakah ada gangguan? | Self-Audit 6 cek, AVC denials |
 
 ## 8. Celah jujur (belum selesai / belum terbukti)
 
-1. **Validasi lapangan 30 menit pasca-boot pada perangkat fisik.** Seluruh 6 arketipe lintas-OEM kini terverifikasi deterministik di CI oleh **Virtual SoC Farm (`CF-Sim`)** (`tests/cf_sim_plant.hpp` + `tests/cf_sim_farm.cpp` menjalankan binary `coreflowd_sim` sungguhan dengan jam virtual dipercepat), namun validasi lapangan 20–30 menit pada perangkat fisik tetap dianjurkan untuk mengonfirmasi kurva `R_theta`/`tau`/`ambientCelsius` di dunia nyata.
-2. **Belum ada verifikasi kausal daring (`device_effectiveness.map`).** `CF-Sim` membuktikan 0 osilasi, 0 perang tulis OEM, 0 false `THERMAL_GUARD`, karantina non-LTPO fail-closed, dan rollback `CFJ4` bersih lintas 6 arketipe SoC/OEM di CI; pengukuran efektivitas kausal *on-device* per aktuator menjadi langkah lanjutan berikutnya.
-3. **Belum ada distribusi frame-time per-frame (`p95`/`p99`).** `FramePacingSensor` kini fail-closed aman di panel non-LTPO dan dibantu `SchedstatSensor` `run_delay`, namun belum mengukur distribusi *per-commit frame time* `p99` terhadap batas VSync secara langsung.
+1. **Validasi lapangan lanjutan pasca-Fase 2B pada beragam perangkat fisik.** Seluruh 6 arketipe lintas-OEM — termasuk replika sensor baterai 1°C + `xo-therm` (PARROTPRO), pure-1°C tanpa `xo-therm`, dan verifikasi kausal *no-op* `CFEM1` — telah terverifikasi deterministik di CI oleh **Virtual SoC Farm (`CF-Sim`)**, namun uji lapangan tambahan pada perangkat non-Qualcomm (Dimensity/Exynos/Tensor) tetap bermanfaat untuk kalibrasi jangka panjang.
+2. **Belum ada distribusi frame-time per-frame (`p95`/`p99`).** `FramePacingSensor` kini fail-closed aman di panel non-LTPO dan dibantu `SchedstatSensor` `run_delay`, namun belum mengukur distribusi *per-commit frame time* `p99` terhadap batas VSync secara langsung.
 
 ## 9. Arah penyempurnaan (urutan usulan)
 
-1. **Validasi lapangan Fase 1 + Fase 2**: Ambil dump 30 menit pada perangkat fisik sekaligus jaga scorecard 6 arketipe `CF-Sim` (`cf-sim-report.json`) hijau di setiap PR (Host, ASan+UBSan, TSan).
-2. **Fase 2B — Online Causal Verification (`device_effectiveness.map`)**: Ukur efektivitas aktual (penurunan Watt / suhu / starvation) tiap aktuator secara daring dan nonaktifkan otomatis aktuator tanpa dampak di SoC tertentu.
-3. **Fase 3 — Per-Frame `p99` Deadline Control & Online Silicon EDP Knee**: Jadikan margin deadline VSync (`p99`) sebagai fungsi tujuan resmi bersama profil kurva efisiensi $C \cdot V^2 \cdot f$ per-perangkat.
+1. **Validasi lapangan Fase 2B**: Konfirmasi `closedLoopActive = true`, `chassisFused = true`, dan skor `causalVerification` pada perangkat nyata (PARROTPRO 15–30 menit gaming) sekaligus jaga scorecard 6 arketipe `CF-Sim` (`cf-sim-report.json`) hijau di setiap PR (Host, ASan+UBSan, TSan).
+2. **Fase 3 — Per-Frame `p99` Deadline Control & Online Silicon EDP Knee**: Jadikan margin deadline VSync (`p99`) sebagai fungsi tujuan resmi bersama profil kurva efisiensi $C \cdot V^2 \cdot f$ per-perangkat.
+3. **Pembaruan UI / Dashboard**: Tampilkan status `chassisFused`, `closedLoopActive`, dan tabel efektivitas kausal `causalVerification` secara transparan di WebUI Android.
 
 

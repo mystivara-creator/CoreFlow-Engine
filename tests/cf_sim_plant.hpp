@@ -125,6 +125,9 @@ struct ArchetypeConfig {
     double initial_die_c{35.0};
     double r_die_c_per_w{4.0};
     double tau_die_s{8.0};
+    double battery_quantum_c{0.1};
+    bool has_skin_sensor{true};
+    bool has_xo_therm{false};
     uint32_t total_ticks{1800};
     uint32_t little_cap{384};
     uint32_t mid_cap{768};
@@ -150,6 +153,8 @@ struct TickSample {
     bool model_valid{false};
     uint32_t model_confidence{0};
     bool model_closed_loop{false};
+    bool chassis_fused{false};
+    bool battery_coarse_1c{false};
     double model_ambient_c{-1.0};
     double model_r_theta{-1.0};
     uint32_t eas_top_app_cap_pct{100};
@@ -187,6 +192,10 @@ struct TickSample {
     uint32_t journal_entries{0};
     uint32_t locked_nodes{0};
     uint32_t quarantined_nodes{0};
+    uint32_t causal_effective_count{0};
+    uint32_t causal_bypassed_count{0};
+    std::vector<std::string> causal_effective_domains;
+    std::vector<std::string> causal_bypassed_domains;
 };
 
 // Lightweight zero-exception filesystem helpers (inode-preserving for sysfs actuators)
@@ -449,19 +458,22 @@ public:
                     w.demand_power_w = 2.4;
                     w.actual_fps = 120.0;
                 } else if (t_sec < 1500U) {
+                    // Natural combat/exploration waves (90s each, 8 cycles) with matched load delta <= 16%
+                    // and measurable CPU contention headroom:
+                    //  - thermal_uclamp_cap genuinely cuts convex power (P ~ s^1.8) -> VerifiedEffective
+                    //  - stubbed ged_boost_enable / gpu_boost_level yields 0% contention lift -> BypassedIneffective
                     const bool combat = ((t_sec - 25U) / 90U) % 2U == 0U;
-                    // Runqueue starvation spike window at t=140..220s
                     const bool starve_window = (t_sec >= 140U && t_sec < 220U);
                     w.fg_pid = 2003;
                     w.fg_pkg = "com.tencent.ig";
                     w.is_game = true;
-                    w.cpu_util_pct = combat ? 76.0 : 50.0;
-                    w.gpu_busy_pct = combat ? 76.0 : 50.0;
-                    w.render_exec_ratio = combat ? 0.65 : 0.45;
-                    w.run_delay_ms_per_sec = starve_window ? 240.0 : (combat ? 4.0 : 1.5);
-                    w.cpu_psi = starve_window ? 16.0 : (combat ? 6.0 : 2.0);
-                    w.demand_power_w = combat ? 4.0 : 1.9;
-                    w.bg_power_w = 0.35;
+                    w.cpu_util_pct = combat ? 72.0 : 58.0;
+                    w.gpu_busy_pct = combat ? 74.0 : 60.0;
+                    w.render_exec_ratio = combat ? 0.65 : 0.48;
+                    w.run_delay_ms_per_sec = starve_window ? 240.0 : (combat ? 22.0 : 18.0);
+                    w.cpu_psi = starve_window ? 16.0 : (combat ? 10.0 : 9.0);
+                    w.demand_power_w = combat ? 4.1 : 1.45;
+                    w.bg_power_w = 0.30;
                     w.actual_fps = starve_window ? 96.0 : 120.0;
                 } else {
                     w.fg_pid = 2001;
@@ -1033,7 +1045,12 @@ private:
         make_tz(0, "cpu-0-0-usr", 88000, 5000, 115000);
         make_tz(1, "gpuss-0-usr", 86000, 5000, 112000);
         make_tz(2, "battery", 46000, 3000, 58000);
-        make_tz(3, "skin-msm-therm-usr", 46000, 3000, 55000);
+        if (cfg_.has_skin_sensor) {
+            make_tz(3, "skin-msm-therm-usr", 46000, 3000, 55000);
+        }
+        if (cfg_.has_xo_therm) {
+            make_tz(4, "xo-therm", 65000, 5000, 85000);
+        }
 
         const fs::path bat = sys_ / "class/power_supply/battery";
         write_file_in_place(bat / "type", "Battery\n");
@@ -1307,19 +1324,31 @@ private:
             }
         }
 
-        // Thermal sensors (quantized realistically to 0.1°C) with virtual mtime progression
-        const int chassis_deci = static_cast<int>(std::llround(t_chassis_c_ * 10.0));
+        // Thermal sensors: battery quantized to cfg_.battery_quantum_c (0.1C or 1.0C integer steps
+        // replicating PARROTPRO thermal_zone52), optional skin sensor, and optional 0.001C xo-therm.
+        const double batt_q = std::max(0.1, cfg_.battery_quantum_c);
+        const double batt_quantized_c = std::round(t_chassis_c_ / batt_q) * batt_q;
+        const int batt_mc = static_cast<int>(std::llround(batt_quantized_c * 1000.0));
+        const int batt_deci = static_cast<int>(std::llround(batt_quantized_c * 10.0));
         const int die_deci = static_cast<int>(std::llround(t_die_c_ * 10.0));
         const int gpu_deci = static_cast<int>(std::llround((t_die_c_ - 2.0) * 10.0));
         const int skin_deci = static_cast<int>(std::llround((t_chassis_c_ - 0.3) * 10.0));
         write_sensor_with_mtime(sys_ / "class/thermal/thermal_zone0/temp", std::to_string(die_deci * 100) + "\n", now_ms);
         write_sensor_with_mtime(sys_ / "class/thermal/thermal_zone1/temp", std::to_string(gpu_deci * 100) + "\n", now_ms);
-        write_sensor_with_mtime(sys_ / "class/thermal/thermal_zone2/temp", std::to_string(chassis_deci * 100) + "\n", now_ms);
-        write_sensor_with_mtime(sys_ / "class/thermal/thermal_zone3/temp", std::to_string(skin_deci * 100) + "\n", now_ms);
+        write_sensor_with_mtime(sys_ / "class/thermal/thermal_zone2/temp", std::to_string(batt_mc) + "\n", now_ms);
+        if (cfg_.has_skin_sensor) {
+            write_sensor_with_mtime(sys_ / "class/thermal/thermal_zone3/temp", std::to_string(skin_deci * 100) + "\n", now_ms);
+        }
+        if (cfg_.has_xo_therm) {
+            // Millidegree board/XO thermistor with realistic +2.8C static offset & mild die coupling
+            const double xo_c = t_chassis_c_ + 2.8 + 0.08 * std::max(0.0, t_die_c_ - t_chassis_c_);
+            const int xo_mc = static_cast<int>(std::llround(xo_c * 1000.0));
+            write_sensor_with_mtime(sys_ / "class/thermal/thermal_zone4/temp", std::to_string(xo_mc) + "\n", now_ms);
+        }
 
         // Power supply / battery telemetry (voltage = 4.0V => current_uA = P_sys * 250000)
         const fs::path bat = sys_ / "class/power_supply/battery";
-        write_sensor_with_mtime(bat / "temp", std::to_string(chassis_deci) + "\n", now_ms);
+        write_sensor_with_mtime(bat / "temp", std::to_string(batt_deci) + "\n", now_ms);
         write_file_in_place(bat / "status", w.charging ? "Charging\n" : "Discharging\n");
         write_file_in_place(bat / "capacity", std::to_string(std::clamp(w.battery_soc_pct, 1, 100)) + "\n");
         const uint64_t current_ua = static_cast<uint64_t>(std::llround(last_power_w_ * 250000.0));
@@ -1375,6 +1404,10 @@ inline std::vector<ArchetypeConfig> build_all_six_archetypes() {
         a.initial_uptime_sec = 15.0; // Cold boot -> triggers BOOT_SETTLE sanctuary!
         a.initial_chassis_c = 30.0;
         a.initial_die_c = 36.0;
+        // Replicates real PARROTPRO hardware: 1°C integer battery + 0.001°C millidegree xo-therm
+        a.battery_quantum_c = 1.0;
+        a.has_skin_sensor = false;
+        a.has_xo_therm = true;
         a.total_ticks = 1800;
         a.oem_contenders = {
             {"devices/system/cpu/cpufreq/policy7/walt/hispeed_freq", "1900000", "2200000", 15U, 150U, 1480U, false},
@@ -1482,6 +1515,10 @@ inline std::vector<ArchetypeConfig> build_all_six_archetypes() {
         a.gpu_model = "Mali-G52 MC2";
         a.panel_kind = PanelClockKind::TierBFixedVblank;
         a.initial_uptime_sec = 300.0;
+        // Pure 1°C integer battery sensor with NO skin / xo-therm auxiliary sensor
+        a.battery_quantum_c = 1.0;
+        a.has_skin_sensor = false;
+        a.has_xo_therm = false;
         a.total_ticks = 1800;
         list.push_back(std::move(a));
     }
