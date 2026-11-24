@@ -18,8 +18,8 @@ int main() {
     input.thermal_pressure = NAN;
     assert(!controller->step(input).valid);
 
-    // 2. Rust EAS UClamp Planner + Thermal-Velocity Pre-Damping + Closed-Loop Jank, App DNA, Feed-Forward & Starvation
-    UclampInput u_steady{3, 3, 1.0, false, 384, 768, 1024, 120, 8.0, 60.0, 0.45, 0.0, -1.0, 1.0, false, 1.0, -1.0};
+    // 2. Rust EAS UClamp Planner + Thermal-Velocity Pre-Damping + Closed-Loop Jank, App DNA, Feed-Forward, Starvation & Phase 3 p99/EDP
+    UclampInput u_steady{3, 3, 1.0, false, 384, 768, 1024, 120, 8.0, 60.0, 0.45, 0.0, -1.0, 1.0, false, 1.0, -1.0, -1.0, 0.0, 0.0};
     auto t_steady = compute_uclamp_target(u_steady);
     assert(t_steady.util_min > 0 && t_steady.util_min <= t_steady.util_max && t_steady.util_max == 1024);
     UclampInput u_heating = u_steady;
@@ -27,7 +27,7 @@ int main() {
     auto t_damped = compute_uclamp_target(u_heating);
     assert(t_damped.util_min < t_steady.util_min);
 
-    UclampInput u_interactive{1, 0, 1.0, false, 384, 768, 1024, 120, 5.0, 20.0, 0.25, 0.0, -1.0, 1.0, false, 1.0, -1.0};
+    UclampInput u_interactive{1, 0, 1.0, false, 384, 768, 1024, 120, 5.0, 20.0, 0.25, 0.0, -1.0, 1.0, false, 1.0, -1.0, -1.0, 0.0, 0.0};
     auto t_bal = compute_uclamp_target(u_interactive);
 
     UclampInput u_smooth = u_interactive;
@@ -53,6 +53,21 @@ int main() {
     auto t_starved = compute_uclamp_target(u_starved);
     assert(t_starved.util_min > t_frozen.util_min);
 
+    // Phase 3 p99 deadline rescue & EDP knee cap over cxx FFI
+    UclampInput u_p99_rescue = u_interactive;
+    u_p99_rescue.p99_deadline_util = 1.20;
+    auto t_p99_rescue = compute_uclamp_target(u_p99_rescue);
+    assert(t_p99_rescue.util_min > t_bal.util_min + 30U);
+
+    UclampInput u_edp_warm = u_steady;
+    u_edp_warm.capacity_scale = 0.80;
+    u_edp_warm.thermal_velocity_cpm = 1.2;
+    u_edp_warm.p99_deadline_util = 0.70;
+    u_edp_warm.edp_knee_scale = 0.72;
+    u_edp_warm.edp_blend = 1.0;
+    auto t_edp_warm = compute_uclamp_target(u_edp_warm);
+    assert(t_edp_warm.util_max <= 740U);
+
     UclampInput u_jank = u_interactive;
     u_jank.jank_ratio = 0.14;
     u_jank.app_uclamp_bias = 1.12;
@@ -70,23 +85,23 @@ int main() {
     assert(res.seconds_to_trip > 100.0);
     trend->reset();
 
-    // 4. Rust Dual-Timescale Thermal Equilibrium (fallback + closed-loop RC P_budget & ambient/cooler adaptation)
-    auto eq_burst = compute_thermal_equilibrium({72.0, 34.0, 35.0, 1.0, 0.96, false, false, true, false, 0, -1.0, -1.0, -1.0, 0.0, 38.0});
-    auto eq_sustained = compute_thermal_equilibrium({72.0, 34.0, 35.0, 1.0, 0.96, false, false, false, false, 0, -1.0, -1.0, -1.0, 0.0, 38.0});
+    // 4. Rust Dual-Timescale Thermal Equilibrium (fallback + closed-loop RC P_budget & calibrated EDP exponent)
+    auto eq_burst = compute_thermal_equilibrium({72.0, 34.0, 35.0, 1.0, 0.96, false, false, true, false, 0, -1.0, -1.0, -1.0, 0.0, 38.0, 0.0, 0.0, 0.0});
+    auto eq_sustained = compute_thermal_equilibrium({72.0, 34.0, 35.0, 1.0, 0.96, false, false, false, false, 0, -1.0, -1.0, -1.0, 0.0, 38.0, 0.0, 0.0, 0.0});
     assert(eq_burst.effective_scale > eq_sustained.effective_scale && !eq_burst.charging_damped && !eq_burst.equilibrium_guard);
     assert(!eq_burst.model_closed_loop_active);
-    auto eq_chg = compute_thermal_equilibrium({52.0, 41.0, 41.0, 1.2, 0.90, true, false, false, false, 0, -1.0, -1.0, -1.0, 0.0, 38.0});
-    auto eq_byp = compute_thermal_equilibrium({52.0, 41.0, 41.0, 1.2, 0.90, true, true, false, false, 0, -1.0, -1.0, -1.0, 0.0, 38.0});
+    auto eq_chg = compute_thermal_equilibrium({52.0, 41.0, 41.0, 1.2, 0.90, true, false, false, false, 0, -1.0, -1.0, -1.0, 0.0, 38.0, 0.0, 0.0, 0.0});
+    auto eq_byp = compute_thermal_equilibrium({52.0, 41.0, 41.0, 1.2, 0.90, true, true, false, false, 0, -1.0, -1.0, -1.0, 0.0, 38.0, 0.0, 0.0, 0.0});
     assert(eq_chg.charging_damped && !eq_byp.charging_damped);
     assert(eq_chg.effective_scale < eq_byp.effective_scale);
 
     // Closed-loop tropical ambient (Ta=34 C -> target 41 C) vs external cooler (Ta=18 C -> target 38 C, high P_budget)
-    auto eq_tropical = compute_thermal_equilibrium({45.0, 38.5, 38.5, 0.0, 1.0, false, false, false, true, 85, 5.5, 480.0, 34.0, 1.1, 38.0});
+    auto eq_tropical = compute_thermal_equilibrium({45.0, 38.5, 38.5, 0.0, 1.0, false, false, false, true, 85, 5.5, 480.0, 34.0, 1.1, 38.0, 2.1, 0.76, 1.0});
     assert(eq_tropical.model_closed_loop_active);
     assert(std::abs(eq_tropical.effective_target_c - 41.0) < 1e-6);
     assert(std::abs(eq_tropical.effective_scale - 1.0) < 1e-6);
 
-    auto eq_cooler = compute_thermal_equilibrium({56.0, 38.5, 38.5, -0.3, 1.0, false, false, false, true, 90, 3.5, 320.0, 18.0, 4.0, 38.0});
+    auto eq_cooler = compute_thermal_equilibrium({56.0, 38.5, 38.5, -0.3, 1.0, false, false, false, true, 90, 3.5, 320.0, 18.0, 4.0, 38.0, 2.1, 0.76, 1.0});
     assert(eq_cooler.model_closed_loop_active);
     assert(std::abs(eq_cooler.effective_target_c - 38.0) < 1e-6);
     assert(eq_cooler.power_budget_w > 5.0 && eq_cooler.effective_scale >= 0.99);

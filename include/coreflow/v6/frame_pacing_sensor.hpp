@@ -18,6 +18,8 @@
 
 #include "coreflow/frame_bridge.hpp"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -43,11 +45,18 @@ struct FramePacingSample {
     double jank_ratio{-1.0}; // -1.0 when idle/unproven/unavailable; 0.0..1.0 when active & verified
     bool verified_commit_source{false};
     bool quarantined_fixed_hz{false};
+    // Phase 3: Per-frame p99 deadline telemetry (strictly fail-closed when unproven/quarantined/static-idle)
+    double frame_budget_ms{16.6667};
+    double p99_frame_time_ms{0.0};
+    double p99_deadline_util{-1.0}; // -1.0 when unavailable/fail-closed/static-idle; > 0.0 when verified & active
+    bool p99_available{false};
 };
 
 class FramePacingSensor {
 public:
     static constexpr uint32_t kFixedHzQuarantineStrikes = 3U;
+    static constexpr size_t kP99WindowSize = 64U;
+    static constexpr size_t kP99MinSamples = 3U;
 
     FramePacingSensor() noexcept = default;
 
@@ -57,20 +66,24 @@ public:
                   const std::string& procfs_root = "/proc",
                   const std::string& cached_vblank_irq_token = "") noexcept;
 
-    // Samples current presentation cadence and computes an EWMA-smoothed jank ratio
-    // incorporating cadence jitter variance (strictly 0 heap allocations in the hot path).
+    // Samples current presentation cadence, computes an EWMA-smoothed jank ratio, and updates
+    // the zero-heap 64-entry p99 effective frame-time ring buffer (incorporating cadence jitter,
+    // render saturation, and schedstat runqueue_delay_ms).
     //
     // Pass `screen_idle_hint = true` during calm screen-ON Efficiency windows so Tier B
     // sources can be proven commit-driven (drops < 18 Hz / < 50% target_hz) or quarantined
-    // as fixed-Hz non-LTPO scanout clocks (>= 92% target_hz for 3 consecutive idle probes).
+    // as fixed-Hz non-LTPO scanout clocks (>= 92% target_hz for 3 consecutive idle probes),
+    // and so static/LTPO idle drops NEVER pollute the p99 ring buffer or cause false boosts.
     [[nodiscard]] FramePacingSample sample(
         uint32_t target_refresh_hz,
         uint64_t now_ms,
         bool active_workload,
         AndroidFrameEventBridge* bridge = nullptr,
-        bool screen_idle_hint = false) noexcept;
+        bool screen_idle_hint = false,
+        double runqueue_delay_ms = 0.0,
+        double render_load_ratio = -1.0) noexcept;
 
-    // Resets transient EWMA / IRQ baselines (preserves per-boot Tier-B verification/quarantine state).
+    // Resets transient EWMA / IRQ / p99 ring baselines (preserves per-boot Tier-B verification/quarantine state).
     void reset() noexcept;
 
     [[nodiscard]] bool supported() const noexcept {
@@ -96,6 +109,12 @@ public:
     [[nodiscard]] const std::string& active_source() const noexcept { return active_source_; }
 
 private:
+    void clear_p99_ring() noexcept {
+        p99_ring_head_ = 0U;
+        p99_ring_len_ = 0U;
+        p99_cadence_anchor_ = 0.0;
+    }
+
     std::vector<std::string> verified_fps_paths_;
     std::vector<std::string> unverified_fps_paths_;
     std::string proc_interrupts_path_;
@@ -112,6 +131,11 @@ private:
     uint64_t prev_vblank_ms_{0};
     bool has_vblank_baseline_{false};
     uint64_t last_sample_ms_{0};
+    // Fixed stack ring buffer for deterministic zero-heap p99 effective frame-time estimation.
+    std::array<double, kP99WindowSize> p99_ring_{};
+    size_t p99_ring_head_{0U};
+    size_t p99_ring_len_{0U};
+    double p99_cadence_anchor_{0.0};
 };
 
 } // namespace coreflow::v6

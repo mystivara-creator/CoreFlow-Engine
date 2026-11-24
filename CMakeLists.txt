@@ -53,6 +53,7 @@ set(COREFLOW_V5_SOURCES
     src/v5/thermal_envelope_actuator.cpp
     src/v6/oem_collaboration_map.cpp
     src/v6/causal_verifier.cpp
+    src/v6/edp_knee_calibrator.cpp
     src/v6/semantic_knob_engine.cpp
     src/v6/boot_calm_sanctuary.cpp
     src/v6/frame_pacing_sensor.cpp
@@ -195,6 +196,20 @@ if(CORE_FLOW_BUILD_TESTS)
         src/v6/vmstat_thrashing_sensor.cpp
     )
     add_test(NAME V6UniversalSensorsTest COMMAND test_v6_universal_sensors)
+
+    add_executable(test_v6_p99_and_edp_knee
+        tests/test_v6_p99_and_edp_knee.cpp
+        src/v6/frame_pacing_sensor.cpp
+        src/v6/edp_knee_calibrator.cpp
+        src/v5/thread_scheduler.cpp
+        src/kernel/frame_bridge.cpp
+    )
+    target_compile_definitions(test_v6_p99_and_edp_knee PRIVATE COREFLOW_ENABLE_TEST_HOOKS=1)
+    target_link_libraries(test_v6_p99_and_edp_knee PRIVATE coreflow_rust m)
+    if(NOT ANDROID)
+        target_link_libraries(test_v6_p99_and_edp_knee PRIVATE pthread)
+    endif()
+    add_test(NAME V6P99AndEdpKneeTest COMMAND test_v6_p99_and_edp_knee)
 
     # Foundational Infrastructure & Safety Tests
     add_executable(test_mount_topology

@@ -160,6 +160,10 @@ TickSample parse_tick_json(std::string_view json) {
     s.frame_pacing_source = json_get_string(json, "framePacingSource");
     s.measured_fps = json_get_double(json, "measuredFps", 0.0);
     s.jank_ratio = json_get_double(json, "jankRatio", -1.0);
+    s.frame_budget_ms = json_get_double(json, "frameBudgetMs", 16.6667);
+    s.p99_frame_time_ms = json_get_double(json, "p99FrameTimeMs", 0.0);
+    s.p99_deadline_util = json_get_double(json, "p99DeadlineUtil", -1.0);
+    s.p99_available = json_get_bool(json, "p99Available");
     s.schedstat_supported = json_get_bool(json, "schedstatSupported");
     s.runqueue_delay_ms = json_get_double(json, "runqueueDelayMs", 0.0);
     s.starvation_pressure = json_get_double(json, "starvationPressure", -1.0);
@@ -189,6 +193,13 @@ TickSample parse_tick_json(std::string_view json) {
     s.causal_bypassed_count = static_cast<uint32_t>(json_get_u64(json, "causalBypassedCount"));
     s.causal_effective_domains = json_get_string_array(json, "causalEffectiveDomains");
     s.causal_bypassed_domains = json_get_string_array(json, "causalBypassedDomains");
+    s.edp_calibrated = json_get_bool(json, "edpCalibrated");
+    s.edp_confidence = static_cast<uint32_t>(json_get_u64(json, "edpConfidence"));
+    s.edp_knee_scale = json_get_double(json, "edpKneeScale", 0.78);
+    s.edp_power_exponent = json_get_double(json, "edpPowerExponent", 1.8);
+    s.edp_effective_exponent = json_get_double(json, "edpEffectiveExponent", 1.8);
+    s.edp_samples = static_cast<uint32_t>(json_get_u64(json, "edpSamples"));
+    s.edp_flush_count = static_cast<uint32_t>(json_get_u64(json, "edpFlushCount"));
     return s;
 }
 
@@ -333,6 +344,12 @@ struct ArchetypeResult {
     bool chassis_fused_seen{false};
     uint32_t causal_effective_count{0};
     uint32_t causal_bypassed_count{0};
+    bool edp_calibrated{false};
+    uint32_t edp_confidence{0};
+    double edp_knee_scale{0.78};
+    double edp_power_exponent{1.8};
+    uint32_t p99_active_ticks{0};
+    double warm_watt_savings_pct{0.0};
     bool non_ltpo_quarantined{false};
     bool ltpo_promoted{false};
     bool bypass_tested{false};
@@ -413,6 +430,11 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
     uint32_t starve_peak_uclamp_min = 0U;
     uint32_t fake_jank_ticks_non_ltpo = 0U;
     uint32_t verified_ticks_non_ltpo = 0U;
+    uint32_t fake_p99_ticks_non_ltpo = 0U;
+    uint32_t ltpo_idle_p99_violations = 0U;
+    double warm_power_sum_w = 0.0;
+    double warm_unthrottled_sum_w = 0.0;
+    uint32_t warm_power_ticks = 0U;
 
     // Tensor LTPO checks
     uint32_t probation_verified_ticks = 0U;
@@ -481,6 +503,7 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
         }
         const TickSample tick = parse_tick_json(std::string_view(line).substr(5U));
         plant.note_uclamp_min_feedback(tick.uclamp_min);
+        plant.set_last_uclamp_max(tick.uclamp_max);
 
         // Verify 0 writes to any node that was ALREADY permanently yielded before this tick!
         for (const auto& yielded_path : permanently_yielded_before_step) {
@@ -504,6 +527,18 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
         res.oem_yielded_nodes = std::max(res.oem_yielded_nodes, tick.oem_yielded_nodes);
         res.causal_effective_count = std::max(res.causal_effective_count, tick.causal_effective_count);
         res.causal_bypassed_count = std::max(res.causal_bypassed_count, tick.causal_bypassed_count);
+        if (tick.p99_available) ++res.p99_active_ticks;
+        if (tick.edp_calibrated) {
+            res.edp_calibrated = true;
+            res.edp_confidence = std::max(res.edp_confidence, tick.edp_confidence);
+            res.edp_knee_scale = tick.edp_knee_scale;
+            res.edp_power_exponent = tick.edp_power_exponent;
+        }
+        if (!w.screen_off && !w.charging && plant.chassis_temp_c() >= 38.0 && w.demand_power_w >= 2.5) {
+            warm_power_sum_w += plant.last_power_w();
+            warm_unthrottled_sum_w += plant.last_unthrottled_power_w();
+            ++warm_power_ticks;
+        }
         if (tick.chassis_fused) res.chassis_fused_seen = true;
         if (tick.battery_coarse_1c) saw_coarse_1c_batt = true;
         if (tick.thermal_guard) ++res.thermal_guard_ticks;
@@ -557,12 +592,13 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
         }
         if (trace_this && (t % 60U == 0U)) {
             std::fprintf(stderr,
-                "[TRACE][%s][60s] t=%u scale=%.4f bat=%.2f soc=%.2f p=%.1f mv=%d cl=%d conf=%u fused=%d tgt=%.2f ta=%.2f r=%.2f bdg=%.0f pwr=%.2f ceff=%u cbyp=%u\n",
+                "[TRACE][%s][60s] t=%u scale=%.4f bat=%.2f soc=%.2f p=%.1f mv=%d cl=%d conf=%u fused=%d tgt=%.2f ta=%.2f r=%.2f bdg=%.0f pwr=%.2f ceff=%u cbyp=%u edp=%d(%.2f/%.2f)\n",
                 res.name.c_str(), t, tick.capacity_scale, plant.chassis_temp_c(), plant.die_temp_c(),
                 tick.thermal_pressure, tick.model_valid ? 1 : 0, tick.model_closed_loop ? 1 : 0,
                 tick.model_confidence, tick.chassis_fused ? 1 : 0, tick.effective_target_c, tick.model_ambient_c,
                 tick.model_r_theta, tick.power_budget_mw, plant.last_power_w(),
-                tick.causal_effective_count, tick.causal_bypassed_count);
+                tick.causal_effective_count, tick.causal_bypassed_count,
+                tick.edp_calibrated ? 1 : 0, tick.edp_knee_scale, tick.edp_power_exponent);
         }
         prev_scale = tick.capacity_scale;
 
@@ -603,6 +639,7 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
                 }
                 if (tick.frame_pacing_verified) ++verified_ticks_non_ltpo;
                 if (tick.jank_ratio >= 0.0) ++fake_jank_ticks_non_ltpo;
+                if (tick.p99_available) ++fake_p99_ticks_non_ltpo;
                 if (t >= 125U && t < 240U) {
                     if (tick.starvation_pressure > peak_starvation) peak_starvation = tick.starvation_pressure;
                     starve_peak_uclamp_min = std::max(starve_peak_uclamp_min, tick.uclamp_min);
@@ -619,6 +656,9 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
                 }
                 if (t >= 35U && tick.frame_pacing_verified) {
                     res.ltpo_promoted = true;
+                }
+                if (((t >= 20U && t < 38U) || t >= 1520U) && tick.p99_available) {
+                    ++ltpo_idle_p99_violations;
                 }
                 if (t >= 50U && t < 100U) {
                     smooth_peak_uclamp_min = std::max(smooth_peak_uclamp_min, tick.uclamp_min);
@@ -640,6 +680,7 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
                 }
                 if (tick.frame_pacing_verified) ++verified_ticks_non_ltpo;
                 if (tick.jank_ratio >= 0.0) ++fake_jank_ticks_non_ltpo;
+                if (tick.p99_available) ++fake_p99_ticks_non_ltpo;
                 if (t >= 100U && t < 210U) {
                     regime_a_peak_thrashing = std::max(regime_a_peak_thrashing, tick.thrashing_pressure);
                 }
@@ -701,6 +742,9 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
 
     res.phase_b_min_budget_mw = (phase_b_min_budget_mw < 1e8) ? phase_b_min_budget_mw : 0.0;
     res.phase_c_peak_budget_mw = std::max(0.0, phase_c_peak_budget_mw);
+    if (warm_power_ticks > 0U && warm_unthrottled_sum_w > 1e-6) {
+        res.warm_watt_savings_pct = 100.0 * (1.0 - (warm_power_sum_w / warm_unthrottled_sum_w));
+    }
 
     // Shutdown & verify 100% clean CFJ4 rollback
     bool stopped_ok = false;
@@ -766,6 +810,17 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
     if (res.peak_chassis_c > 42.5) {
         fail("Chassis temperature exceeded safe convergence ceiling: " + std::to_string(res.peak_chassis_c) + " C");
     }
+    // Phase 3 universal EDP knee & Watt efficiency assertions
+    if (!res.edp_calibrated) {
+        fail("Online Silicon EDP Knee Calibrator failed to converge (confidence=" + std::to_string(res.edp_confidence) + ")");
+    }
+    if (res.edp_knee_scale < 0.55 || res.edp_knee_scale > 0.88) {
+        fail("EDP knee scale out of safe bounds [0.55, 0.88]: " + std::to_string(res.edp_knee_scale));
+    }
+    if (warm_power_ticks >= 30U && res.warm_watt_savings_pct < 5.0) {
+        fail("Expected measurable warm-phase Watt savings >= 5% via closed-loop EDP pacing (got " +
+             std::to_string(res.warm_watt_savings_pct) + "%)");
+    }
 
     // Archetype-specific mandatory assertions
     switch (plant.config().id) {
@@ -777,14 +832,27 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
                 fail("Sysfs mutation occurred during BOOT_SETTLE sanctuary");
             }
             if (!saw_tier_a_verified) fail("Expected Tier A SDE measured_fps to be verified");
+            if (res.p99_active_ticks < 100U) fail("Expected Tier A p99 deadline control active (ticks=" + std::to_string(res.p99_active_ticks) + ")");
             if (res.oem_yielded_nodes < 1U) fail("Expected mi_thermald contended node(s) to reach permanent OEM yield");
             if (!saw_coarse_1c_batt) fail("Expected 1C integer battery sensor quantization to be detected on PARROTPRO replica");
             if (!res.chassis_fused_seen) fail("Expected zero-DC-bias ChassisTempFuser (1C battery + xo-therm) to engage");
             if (res.model_closed_loop_ticks < 200U) fail("Expected RLS thermal model to reach closed-loop active on 1C+xo-therm");
+            {
+                const fs::path edp_path = plant.state_dir() / "silicon_edp.map";
+                std::ifstream eifs(edp_path);
+                if (!eifs.is_open()) {
+                    fail("Expected CFEDP1 silicon_edp.map to persist cleanly on shutdown");
+                } else {
+                    std::string hdr;
+                    std::getline(eifs, hdr);
+                    if (hdr.rfind("CFEDP1\t", 0) != 0) fail("silicon_edp.map missing CFEDP1 header");
+                }
+            }
             break;
 
         case ArchetypeId::MediaTekDimensity:
             if (!saw_tier_a_verified) fail("Expected Tier A mtk_fpsgo to be verified");
+            if (res.p99_active_ticks < 100U) fail("Expected Tier A mtk_fpsgo p99 deadline control active");
             if (peak_starvation < 0.25) fail("Expected SchedstatSensor to detect runqueue starvation (peak=" + std::to_string(peak_starvation) + ")");
             if (starve_peak_uclamp_min < 450U) fail("Expected starvation rescue to elevate uclampMin >= 450 (got " + std::to_string(starve_peak_uclamp_min) + ")");
             if (res.oem_yielded_nodes < 1U) fail("Expected mtk_fpsgo contended node to reach permanent OEM yield");
@@ -816,6 +884,7 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
             if (!res.non_ltpo_quarantined) fail("Expected fixed-Hz 120 Hz panel to be quarantined fail_closed:fixed_hz_panel");
             if (verified_ticks_non_ltpo > 0U) fail("Non-LTPO fixed-Hz panel falsely became verified");
             if (fake_jank_ticks_non_ltpo > 0U) fail("Non-LTPO fixed-Hz panel emitted fake jank ratio on " + std::to_string(fake_jank_ticks_non_ltpo) + " tick(s)");
+            if (fake_p99_ticks_non_ltpo > 0U) fail("Non-LTPO fixed-Hz panel emitted fake p99 on " + std::to_string(fake_p99_ticks_non_ltpo) + " tick(s)");
             if (peak_starvation < 0.25) fail("Expected SchedstatSensor fallback to catch game lag under quarantined panel");
             if (starve_peak_uclamp_min < 450U) fail("Expected SchedstatSensor to lift uclampMin >= 450 (got " + std::to_string(starve_peak_uclamp_min) + ")");
             if (res.oem_yielded_nodes < 1U) fail("Expected SDHMS contended node(s) to reach permanent OEM yield");
@@ -827,6 +896,10 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
             }
             if (res.non_ltpo_quarantined) fail("Dynamic LTPO 1-120 Hz panel was falsely quarantined as fixed-Hz");
             if (!res.ltpo_promoted) fail("Dynamic LTPO 2 Hz idle probe failed to promote VBlank source to ProvenCommit");
+            if (res.p99_active_ticks < 100U) fail("Expected promoted LTPO VBlank to enable p99 deadline control");
+            if (ltpo_idle_p99_violations > 0U) {
+                fail("Static LTPO 2 Hz idle falsely emitted p99 on " + std::to_string(ltpo_idle_p99_violations) + " tick(s)");
+            }
             if (cadence60_max_jank < 0.0 || cadence60_max_jank >= 0.03) {
                 fail("Locked 60 FPS cadence anchor on 120 Hz panel failed (max_jank=" + std::to_string(cadence60_max_jank) + ")");
             }
@@ -843,8 +916,8 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
             if (saw_schedstat_supported) fail("Expected schedstatSupported=false on legacy kernel");
             if (!saw_vmstat_supported) fail("Expected legacy /proc/vmstat to be supported");
             if (!res.non_ltpo_quarantined) fail("Expected fixed 60 Hz non-LTPO panel to be quarantined fail-closed");
-            if (verified_ticks_non_ltpo > 0U || fake_jank_ticks_non_ltpo > 0U) {
-                fail("Fixed 60 Hz non-LTPO panel emitted fake frame-pacing data");
+            if (verified_ticks_non_ltpo > 0U || fake_jank_ticks_non_ltpo > 0U || fake_p99_ticks_non_ltpo > 0U) {
+                fail("Fixed 60 Hz non-LTPO panel emitted fake frame-pacing/p99 data");
             }
             if (regime_a_peak_thrashing < 0.45) {
                 fail("Legacy /proc/vmstat Regime A refault thrashing not detected (peak=" + std::to_string(regime_a_peak_thrashing) + ")");
@@ -861,6 +934,7 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
         case ArchetypeId::GamingBypassAmbientCooler:
             res.bypass_tested = phase_d_bypass_75_ok && phase_d_hw_suspend_1_ok &&
                                 phase_d_uvlo_19_ok && phase_d_bypass_resumed_30_ok;
+            if (res.p99_active_ticks < 200U) fail("Expected Tier A 144Hz gaming p99 deadline control active");
             if (!phase_a_closed_loop_ok || std::abs(phase_a_end_target_c - 38.0) > 0.2) {
                 fail("Phase A (26C) failed to converge closed-loop target=38.0C (got " + std::to_string(phase_a_end_target_c) + ")");
             }
@@ -932,6 +1006,11 @@ void write_json_report(const std::string& path,
             << "      \"chassisFused\": " << (r.chassis_fused_seen ? "true" : "false") << ",\n"
             << "      \"causalEffectiveCount\": " << r.causal_effective_count << ",\n"
             << "      \"causalBypassedCount\": " << r.causal_bypassed_count << ",\n"
+            << "      \"edpCalibrated\": " << (r.edp_calibrated ? "true" : "false") << ",\n"
+            << "      \"edpKneeScale\": " << r.edp_knee_scale << ",\n"
+            << "      \"edpPowerExponent\": " << r.edp_power_exponent << ",\n"
+            << "      \"p99ActiveTicks\": " << r.p99_active_ticks << ",\n"
+            << "      \"warmWattSavingsPct\": " << r.warm_watt_savings_pct << ",\n"
             << "      \"nonLtpoQuarantined\": " << (r.non_ltpo_quarantined ? "true" : "false") << ",\n"
             << "      \"ltpoPromoted\": " << (r.ltpo_promoted ? "true" : "false") << ",\n"
             << "      \"rollbackClean\": " << (r.rollback_clean ? "true" : "false") << ",\n"
@@ -1028,9 +1107,19 @@ int main(int argc, char* argv[]) {
               << std::setw(9) << "Yield/W"
               << std::setw(9) << "ClosedLp"
               << std::setw(8) << "Causal"
+              << std::setw(12) << "EDP(k/a)"
+              << std::setw(8) << "W-Save"
               << "CFJ4\n";
     for (const auto& r : results) {
         if (!r.passed) all_passed = false;
+        char edp_buf[32];
+        if (r.edp_calibrated) {
+            std::snprintf(edp_buf, sizeof(edp_buf), "%.2f/%.2f", r.edp_knee_scale, r.edp_power_exponent);
+        } else {
+            std::snprintf(edp_buf, sizeof(edp_buf), "uncal");
+        }
+        char wsave_buf[16];
+        std::snprintf(wsave_buf, sizeof(wsave_buf), "%.1f%%", r.warm_watt_savings_pct);
         std::cout << std::left << std::setw(30) << r.name
                   << std::setw(7) << (r.passed ? "PASS" : "FAIL")
                   << std::setw(8) << (std::to_string(r.wall_sec).substr(0, 4) + "s")
@@ -1041,6 +1130,8 @@ int main(int argc, char* argv[]) {
                   << std::setw(9) << (std::to_string(r.oem_yielded_nodes) + "/" + std::to_string(r.post_yield_write_wars))
                   << std::setw(9) << (std::to_string(r.model_closed_loop_ticks) + (r.chassis_fused_seen ? "F" : ""))
                   << std::setw(8) << (std::to_string(r.causal_effective_count) + "/" + std::to_string(r.causal_bypassed_count))
+                  << std::setw(12) << edp_buf
+                  << std::setw(8) << wsave_buf
                   << (r.rollback_clean ? "CLEAN" : "DIRTY") << "\n";
         for (const auto& f : r.failures) {
             std::cerr << "  [FAIL][" << r.name << "] " << f << "\n";

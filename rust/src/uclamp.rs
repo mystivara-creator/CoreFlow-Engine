@@ -105,6 +105,7 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
     //   UNLESS feedforward_freeze or runqueue starvation_rescue is active,
     //   which freezes trimming pre-emptively before frames can miss T_budget = 1000 / Hz ms.
     // - Measured jank (>= 3% missed frames) -> inject proportional rescue headroom immediately.
+    let jank_rescue = input.jank_ratio.is_finite() && input.jank_ratio >= 0.03;
     let jank_factor = if input.jank_ratio.is_finite() && input.jank_ratio >= 0.0 {
         if input.jank_ratio < 0.015 && input.mode != MODE_LAUNCH_BURST {
             if input.feedforward_freeze || starvation_rescue {
@@ -122,6 +123,40 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
         }
     } else {
         1.0
+    };
+
+    // Phase 3 Per-Frame p99 Deadline Control (strictly fail-closed when p99_deadline_util < 0):
+    // - Comfortable headroom (<= 0.80): smooth proportional trim up to -12% (frozen during
+    //   feedforward_freeze, starvation_rescue, jank_rescue, or LaunchBurst).
+    // - Neutral deadband (0.80..0.92): 1.0 (zero chatter).
+    // - Deadline threat (>= 0.92): proportional rescue up to +22% (overrides smooth jank trim).
+    let p99_valid = input.p99_deadline_util.is_finite() && input.p99_deadline_util >= 0.0;
+    let p99_rescue = p99_valid && input.p99_deadline_util >= 0.92;
+    let p99_factor = if p99_valid {
+        let u = input.p99_deadline_util;
+        if u <= 0.80 && input.mode != MODE_LAUNCH_BURST {
+            if input.feedforward_freeze || starvation_rescue || jank_rescue {
+                1.0
+            } else {
+                let headroom = ((0.80 - u) / 0.30).clamp(0.0, 1.0);
+                1.0 - headroom * 0.12
+            }
+        } else if u >= 0.92 {
+            let sev = ((u - 0.92) / 0.35).clamp(0.0, 1.0);
+            1.0 + sev * 0.22
+        } else {
+            1.0
+        }
+    } else {
+        1.0
+    };
+
+    let frame_factor = if p99_factor > 1.0 {
+        (jank_factor.max(1.0) * p99_factor).min(1.32)
+    } else if p99_factor < 1.0 {
+        (jank_factor * p99_factor).max(0.78)
+    } else {
+        jank_factor
     };
 
     // Universal schedstat runqueue starvation rescue (works across all engines & non-LTPO panels):
@@ -150,33 +185,68 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
 
     // Thermal-velocity pre-damping: gently ease floor (up to 12%) when heating rapidly (>= +1.8 C/min)
     // so sustained workloads stay smooth instead of slamming into OEM cliff-throttling.
-    let velocity_damping = if input.thermal_velocity_cpm.is_finite() && input.thermal_velocity_cpm > 1.8
-    {
-        let excess = (input.thermal_velocity_cpm - 1.8).clamp(0.0, 6.0);
+    let thermal_vel = if input.thermal_velocity_cpm.is_finite() {
+        input.thermal_velocity_cpm
+    } else {
+        0.0
+    };
+    let velocity_damping = if thermal_vel > 1.8 {
+        let excess = (thermal_vel - 1.8).clamp(0.0, 6.0);
         1.0 - (excess / 6.0) * 0.12
     } else {
         1.0
     };
 
-    let mut target_max = (big_cap * bounded_scale).round().clamp(0.0, 1024.0) as u32;
+    // Phase 3 Silicon EDP Knee ceiling preference on uclamp.max (C0-continuous):
+    // When silicon EDP knee is calibrated (edp_blend > 0) and chassis is warm or heating while
+    // frame deadlines are comfortably met, smoothly guide uclamp.max toward the silicon EDP knee
+    // (0.55..0.88) to trim the inefficient upper C*V^2*f cliff without hurting p99 responsiveness.
+    let edp_blend = if input.edp_blend.is_finite() {
+        input.edp_blend.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let effective_max_scale = if edp_blend > 0.0
+        && input.edp_knee_scale.is_finite()
+        && input.edp_knee_scale >= 0.40
+    {
+        let knee = input.edp_knee_scale.clamp(0.55, 0.88);
+        let warm_from_scale = ((0.96 - bounded_scale) / 0.16).clamp(0.0, 1.0);
+        let warm_from_vel = ((thermal_vel - 0.35) / 0.85).clamp(0.0, 1.0);
+        let warm_blend = warm_from_scale.max(warm_from_vel);
+        let deadline_ok = if input.mode == MODE_LAUNCH_BURST || starvation_rescue || jank_rescue {
+            0.0
+        } else if p99_valid {
+            ((0.95 - input.p99_deadline_util) / 0.10).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let knee_weight = edp_blend * warm_blend * deadline_ok;
+        let knee_target = bounded_scale.min(knee);
+        bounded_scale - (bounded_scale - knee_target) * knee_weight
+    } else {
+        bounded_scale
+    };
+
+    let mut target_max = (big_cap * effective_max_scale).round().clamp(0.0, 1024.0) as u32;
     let max_safe_floor = big_cap * 0.75;
     let base_min = (anchor_floor
         * profile_bias
-        * jank_factor
+        * frame_factor
         * starvation_boost
         * app_bias
         * symbiotic_scale
         * bounded_scale.clamp(0.50, 1.0))
     .min(max_safe_floor);
     // Warm-zone Little-cluster steering: when chassis is in Cool-Glide (scale < 0.92) during
-    // light Interactive scrolling/browsing (render < 0.35, no jank, no runqueue starvation), trim
-    // floor smoothly so routine UI work stays on cool Little cores instead of waking hot Big cores.
-    let jank_rescue = input.jank_ratio.is_finite() && input.jank_ratio >= 0.03;
+    // light Interactive scrolling/browsing (render < 0.35, no jank, no runqueue starvation, no p99 rescue),
+    // trim floor smoothly so routine UI work stays on cool Little cores instead of waking hot Big cores.
     let warm_efficiency = if input.mode == MODE_INTERACTIVE
         && bounded_scale < 0.92
         && render_norm < 0.35
         && !jank_rescue
         && !starvation_rescue
+        && !p99_rescue
     {
         (bounded_scale / 0.92).clamp(0.65, 1.0)
     } else {
@@ -221,6 +291,9 @@ mod tests {
             feedforward_freeze: false,
             symbiotic_cpu_scale: 1.0,
             starvation_pressure: -1.0,
+            p99_deadline_util: -1.0,
+            edp_knee_scale: 0.0,
+            edp_blend: 0.0,
         }
     }
 
@@ -392,5 +465,70 @@ mod tests {
         let t_guarded = compute_uclamp_target(make(0.75, true));
         assert!(t_guarded.util_max <= 768);
         assert!(t_guarded.util_min <= 269);
+    }
+
+    #[test]
+    fn p99_deadline_control_trims_rescues_and_fails_closed() {
+        let make = |p99: f64, freeze: bool, jank: f64, guard: bool| {
+            let mut inp = base_input(MODE_INTERACTIVE);
+            inp.p99_deadline_util = p99;
+            inp.feedforward_freeze = freeze;
+            inp.jank_ratio = jank;
+            inp.thermal_guard = guard;
+            inp
+        };
+
+        let t_fc = compute_uclamp_target(make(-1.0, false, -1.0, false));
+        // Neutral deadband (0.80..0.92) produces exact same floor as fail-closed
+        let t_neutral = compute_uclamp_target(make(0.86, false, -1.0, false));
+        assert_eq!(t_neutral.util_min, t_fc.util_min);
+
+        // Comfortable headroom (<= 0.80) trims smoothly up to -12%
+        let t_comfy = compute_uclamp_target(make(0.50, false, -1.0, false));
+        assert!(t_comfy.util_min < t_neutral.util_min);
+        assert!(t_comfy.util_min >= (t_neutral.util_min * 86) / 100);
+
+        // Feed-forward freeze cancels p99 trim immediately
+        let t_frozen = compute_uclamp_target(make(0.50, true, -1.0, false));
+        assert_eq!(t_frozen.util_min, t_neutral.util_min);
+
+        // Deadline threat (>= 0.92) rescues proportionally up to +22% even if average jank looks smooth
+        let t_threat = compute_uclamp_target(make(1.25, false, 0.0, false));
+        assert!(
+            t_threat.util_min > t_neutral.util_min + 40,
+            "p99 tail threat must override smooth avg jank: neutral={} threat={}",
+            t_neutral.util_min,
+            t_threat.util_min
+        );
+
+        // Hard thermal_guard still wins over p99 rescue
+        let t_guard = compute_uclamp_target(make(1.25, false, 0.0, true));
+        assert!(t_guard.util_max <= 768);
+        assert!(t_guard.util_min <= 269);
+    }
+
+    #[test]
+    fn edp_knee_c0_caps_warm_uclamp_max_and_releases_on_p99_threat() {
+        let make = |blend: f64, p99: f64| {
+            let mut inp = base_input(MODE_GAMING);
+            inp.capacity_scale = 0.80;
+            inp.thermal_velocity_cpm = 1.2;
+            inp.p99_deadline_util = p99;
+            inp.edp_knee_scale = 0.72;
+            inp.edp_blend = blend;
+            inp
+        };
+
+        let t0 = compute_uclamp_target(make(0.0, 0.72));
+        let t_mid = compute_uclamp_target(make(0.5, 0.72));
+        let t_full = compute_uclamp_target(make(1.0, 0.72));
+
+        // Monotonic C0 smooth cap toward knee = 0.72 (737)
+        assert!(t0.util_max > t_mid.util_max && t_mid.util_max > t_full.util_max);
+        assert!((i64::from(t_full.util_max) - 737).abs() <= 2);
+
+        // When p99 threatens deadline (>= 0.95), EDP knee cap releases cleanly back to capacity_scale
+        let t_urgent = compute_uclamp_target(make(1.0, 0.98));
+        assert_eq!(t_urgent.util_max, t0.util_max);
     }
 }

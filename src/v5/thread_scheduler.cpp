@@ -104,6 +104,9 @@ ThreadUclampTarget ThreadSchedulerActuator::compute_target(
         .feedforward_freeze = demand.feedforward_freeze,
         .symbiotic_cpu_scale = demand.symbiotic_cpu_scale,
         .starvation_pressure = demand.starvation_pressure,
+        .p99_deadline_util = demand.p99_deadline_util,
+        .edp_knee_scale = demand.edp_knee_scale,
+        .edp_blend = demand.edp_blend,
     };
     const auto out = coreflow::engine::compute_uclamp_target(in);
     return {out.util_min, out.util_max};
