@@ -3344,7 +3344,8 @@ int main(int argc, char* argv[]) {
             cobs.boot_settle = boot_dec.boot_settle_active;
             cobs.thermal_guard = effective_thermal_guard;
             cobs.inspection_mode = config.inspection_mode;
-            cobs.uclamp_cap_active = (live_status.envelope_stats.eas_top_app_cap_pct < 96U);
+            cobs.uclamp_cap_active = (live_status.envelope_stats.eas_top_app_cap_pct <= v6::CausalVerifier::kMaxUclampTrialCapPct);
+            cobs.uclamp_cap_pct = live_status.envelope_stats.eas_top_app_cap_pct;
             cobs.gpu_cap_active = live_status.envelope_stats.gpu_cap_active;
             cobs.cpu_gov_active = live_status.envelope_stats.cpu_gov_active;
             cobs.semantic_boost_active = (live_status.semantic_stats.active_cpu_gpu_boost > 0U);

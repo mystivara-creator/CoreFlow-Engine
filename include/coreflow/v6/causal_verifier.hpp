@@ -60,6 +60,7 @@ struct CausalObservation {
 
     // Actuator domain engagement states for the current tick
     bool uclamp_cap_active{false};
+    uint32_t uclamp_cap_pct{0U};       // 0 = unspecified; 1..100 = active top-app uclamp.max cap %
     bool gpu_cap_active{false};
     bool cpu_gov_active{false};
     bool semantic_boost_active{false};
@@ -103,6 +104,9 @@ public:
     static constexpr uint32_t kMinPostSamplesShort = 4U;
     static constexpr double kMaxMatchedLoadDeltaPct = 24.0;
     static constexpr double kMaxGapResetSec = 15.0;
+    static constexpr double kMinUclampTrialPowerMw = 2400.0;
+    static constexpr double kMinUclampTrialCpuUtilPct = 50.0;
+    static constexpr uint32_t kMaxUclampTrialCapPct = 85U;
 
     CausalVerifier() noexcept = default;
 
@@ -163,6 +167,7 @@ private:
         double mem_psi{0.0};
         double refault_ps{0.0};
         double reclaim_ps{0.0};
+        uint32_t uclamp_cap_pct{0U};
     };
 
     struct DomainTracker {
@@ -205,6 +210,7 @@ private:
         double sum_mem_psi{0.0};
         double sum_refault{0.0};
         double sum_reclaim{0.0};
+        uint32_t min_uclamp_cap_pct{0U};
     };
 
     static void update_pre_window(DomainTracker& tr, const CausalObservation& obs) noexcept;
