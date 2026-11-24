@@ -424,6 +424,111 @@ void test_edp_rejects_idle_cstate_hispeed_spikes_and_handles_fuel_gauge_jitter()
     std::cout << "[PASS] EdpKneeCalibrator rejects idle C-state hispeed spikes & converges with fuel-gauge jitter\n";
 }
 
+void test_edp_multi_hour_mixed_workload_and_rolling_ewma_adaptation() {
+    // Replicates multi-hour PARROTPRO session (thousands of samples) mixing:
+    // - Static idle floor (~980 mW)
+    // - GPU-heavy gaming & moderate interactive loads across all scale bins
+    // - Hundreds of brief CPU-only bursts with GPU idle (74% CPU, 6% GPU, 1013.75 mW)
+    //   and unsettled transients (steady_state_ok = false)
+    // Verifies siliconEdp stays calibrated (never collapses to fail_closed confidence=15)
+    // AND bounded rolling EWMA (alpha >= 0.025) remains adaptive after >2000 samples.
+    EdpKneeCalibrator cal;
+    cal.initialize("", "6.6.118-android15-8", "PARROTPRO_HYPEROS3");
+    uint64_t now_ms = 10000ULL;
+
+    static constexpr double kScales[7] = {0.30, 0.42, 0.54, 0.66, 0.78, 0.88, 0.96};
+    for (int round = 0; round < 320; ++round) { // > 2200 steady samples across 7 bins
+        // 1. Calm idle sample anchoring static floor ~980 mW
+        now_ms += 6000ULL;
+        {
+            EdpObservation idle{};
+            idle.now_ms = now_ms;
+            idle.effective_scale = 0.28;
+            idle.power_mw = 980.0;
+            idle.power_available = true;
+            idle.cpu_util_pct = 8.0;
+            idle.gpu_busy_pct = 2.0;
+            idle.steady_state_checked = true;
+            idle.steady_state_ok = true;
+            cal.observe(idle);
+        }
+
+        // 2. Normal steady workloads (GPU-heavy upper bins + interactive mid/low bins)
+        for (size_t i = 0; i < 7U; ++i) {
+            now_ms += 6000ULL;
+            const double s = kScales[i];
+            EdpObservation obs{};
+            obs.now_ms = now_ms;
+            obs.effective_scale = s;
+            obs.power_mw = 920.0 + 4000.0 * std::pow(s, 2.35);
+            obs.power_available = true;
+            obs.cpu_util_pct = 24.0 + s * 52.0;
+            obs.gpu_busy_pct = 15.0 + s * 70.0;
+            obs.steady_state_checked = true;
+            obs.steady_state_ok = true;
+            cal.observe(obs);
+        }
+
+        // 3. Inject PARROTPRO real-world anomaly: CPU 74.27%, GPU 6%, scale 0.85, power 1013.75 mW
+        //    (both unsettled transient and high-scale near-idle-floor burst) -> MUST be rejected!
+        now_ms += 6000ULL;
+        {
+            EdpObservation burst{};
+            burst.now_ms = now_ms;
+            burst.effective_scale = 0.85;
+            burst.power_mw = 1013.75;
+            burst.power_available = true;
+            burst.cpu_util_pct = 74.27;
+            burst.gpu_busy_pct = 6.0;
+            burst.steady_state_checked = true;
+            burst.steady_state_ok = true;
+            cal.observe(burst);
+        }
+        now_ms += 6000ULL;
+        {
+            EdpObservation unsettled{};
+            unsettled.now_ms = now_ms;
+            unsettled.effective_scale = 0.92;
+            unsettled.power_mw = 1400.0;
+            unsettled.power_available = true;
+            unsettled.cpu_util_pct = 68.0;
+            unsettled.gpu_busy_pct = 10.0;
+            unsettled.steady_state_checked = true;
+            unsettled.steady_state_ok = false; // unsettled transient
+            cal.observe(unsettled);
+        }
+    }
+
+    const auto after_long = cal.snapshot();
+    assert(after_long.total_samples >= 2000U);
+    assert(after_long.calibrated && after_long.confidence >= 70U);
+    assert(after_long.power_exponent >= 2.05 && after_long.power_exponent <= 2.65);
+    assert(after_long.knee_scale >= 0.60 && after_long.knee_scale <= 0.85);
+
+    // 4. Verify bounded rolling EWMA (alpha >= 0.025) adapts cleanly even after >2000 samples
+    //    when shifting to a flatter silicon power curve (alpha = 1.55)
+    for (int r = 0; r < 140; ++r) {
+        for (double s : kScales) {
+            now_ms += 6000ULL;
+            EdpObservation obs{};
+            obs.now_ms = now_ms;
+            obs.effective_scale = s;
+            obs.power_mw = 920.0 + 3600.0 * std::pow(s, 1.55);
+            obs.power_available = true;
+            obs.cpu_util_pct = 30.0 + s * 50.0;
+            obs.gpu_busy_pct = 20.0 + s * 60.0;
+            obs.steady_state_checked = true;
+            obs.steady_state_ok = true;
+            cal.observe(obs);
+        }
+    }
+    const auto adapted = cal.snapshot();
+    assert(adapted.calibrated && adapted.confidence >= 70U);
+    assert(adapted.power_exponent < after_long.power_exponent - 0.35);
+
+    std::cout << "[PASS] EdpKneeCalibrator survives multi-hour mixed workload & adapts via bounded rolling EWMA\n";
+}
+
 } // namespace
 
 int main() {
@@ -433,6 +538,7 @@ int main() {
     test_edp_numerical_safety_and_fail_closed_degenerate_curves();
     test_edp_zero_wear_cfedp1_persistence_and_ota_reset();
     test_edp_rejects_idle_cstate_hispeed_spikes_and_handles_fuel_gauge_jitter();
+    test_edp_multi_hour_mixed_workload_and_rolling_ewma_adaptation();
     std::cout << "ALL V6 PHASE 3 P99 DEADLINE & SILICON EDP KNEE TESTS PASSED!\n";
     return 0;
 }

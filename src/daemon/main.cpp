@@ -2171,6 +2171,7 @@ int main(int argc, char* argv[]) {
     double edp_blend_ewma = 0.0;
     double edp_obs_scale_ewma = -1.0;
     double edp_obs_power_ewma = -1.0;
+    uint32_t edp_steady_streak = 0U;
     int last_scale_dir = 0;
     auto preloader = engine::new_app_preloader();
     std::unordered_map<uint64_t, std::string> preloader_pkg_map;
@@ -3310,17 +3311,36 @@ int main(int argc, char* argv[]) {
             if (cap_weight_sum > 0.0 && !screen_off && !boot_dec.boot_settle_active &&
                 batt_causal.available && !batt_causal.charging &&
                 std::isfinite(batt_causal.power_mw) && batt_causal.power_mw >= 150.0) {
-                const double raw_freq_scale = std::clamp(freq_ratio_weighted / cap_weight_sum, 0.25, 1.0);
-                // Phase-match instantaneous scaling_cur_freq against Android's 2-5s battery fuel-gauge
-                // averaging window (tau = 4.0s) and forward CPU/GPU utilization so clock-gated C-state
-                // idle hispeed_freq spikes never invert mid/high scale bins.
+                const double raw_cpu_freq_scale = std::clamp(freq_ratio_weighted / cap_weight_sum, 0.25, 1.0);
+                // Domain-aware silicon load scale (CPU active frequency + GPU utilization):
+                // prevents GPU-heavy gaming under EAS cap from landing in a lower scale bin than
+                // brief CPU-only bursts with idle GPU (e.g. 74% CPU / 6% GPU at 1.0 W).
+                const double cpu_duty = std::clamp(cpu_util / 100.0, 0.0, 1.0);
+                const double cpu_active_scale = raw_cpu_freq_scale * (0.45 + 0.55 * std::sqrt(cpu_duty));
+                const double gpu_active_scale = gpu_busy.has_value()
+                    ? std::clamp(gpu_busy.value() / 100.0, 0.0, 1.0)
+                    : cpu_active_scale;
+                const double raw_silicon_scale = std::clamp(
+                    0.65 * cpu_active_scale + 0.35 * gpu_active_scale, 0.25, 1.0);
+
+                // Phase-match silicon scale against Android's 2-5s battery fuel-gauge averaging window
+                // (tau = 4.0s) and require >= 2 consecutive settled ticks before admitting to EDP bins.
                 if (edp_obs_scale_ewma <= 0.0 || !std::isfinite(edp_obs_scale_ewma)) {
-                    edp_obs_scale_ewma = raw_freq_scale;
+                    edp_obs_scale_ewma = raw_silicon_scale;
                     edp_obs_power_ewma = batt_causal.power_mw;
+                    edp_steady_streak = 0U;
                 } else {
+                    const bool scale_settled = std::abs(raw_silicon_scale - edp_obs_scale_ewma) <= 0.12;
+                    const bool power_settled =
+                        std::abs(batt_causal.power_mw - edp_obs_power_ewma) <= 0.25 * std::max(edp_obs_power_ewma, 300.0);
                     const double obs_k = 1.0 - std::exp(-std::clamp(elapsed, 0.1, 15.0) / 4.0);
-                    edp_obs_scale_ewma += obs_k * (raw_freq_scale - edp_obs_scale_ewma);
+                    edp_obs_scale_ewma += obs_k * (raw_silicon_scale - edp_obs_scale_ewma);
                     edp_obs_power_ewma += obs_k * (batt_causal.power_mw - edp_obs_power_ewma);
+                    if (scale_settled && power_settled) {
+                        if (edp_steady_streak < 1000U) ++edp_steady_streak;
+                    } else {
+                        edp_steady_streak = 0U;
+                    }
                 }
                 v6::EdpObservation eobs{};
                 eobs.now_ms = now_ms;
@@ -3331,10 +3351,13 @@ int main(int argc, char* argv[]) {
                 eobs.screen_off = false;
                 eobs.cpu_util_pct = cpu_util;
                 eobs.gpu_busy_pct = gpu_busy.value_or(0.0);
+                eobs.steady_state_checked = true;
+                eobs.steady_state_ok = (edp_steady_streak >= 2U);
                 edp_calibrator.observe(eobs);
             } else if (screen_off || batt_causal.charging) {
                 edp_obs_scale_ewma = -1.0;
                 edp_obs_power_ewma = -1.0;
+                edp_steady_streak = 0U;
             }
             live_status.silicon_edp = edp_calibrator.snapshot();
             v6::CausalObservation cobs{};
