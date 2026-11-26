@@ -546,6 +546,16 @@ bool SemanticKnobEngine::write_knob(
                     domain, knob.path, prev->second, live, false, true, attempts, reason, now_ms);
                 return false;
             }
+            // Slow-cadence persistent OEM daemon detection (e.g. HyperOS 4 perfd/joyose rewriting
+            // WALT boost/colocation every 4-15s, just outside the 5s fast circuit-breaker window):
+            // after 6 cumulative rewrites on the same node, roll back cleanly and yield to
+            // OemCollaborationMap to guarantee 0 perpetual write-wars.
+            if (coordinator_->node_tamper_count(knob.path) >= 6U) {
+                (void)baseline_.rollback(knob.path);
+                oem_map_.record_contention(knob.path, live, now_ms);
+                last_written_.erase(knob.path);
+                return false;
+            }
             // Reclaim-First: restore our target value, verify readback, and re-lock 0444.
             const std::string reclaim_target = target.empty() ? prev->second : target;
             bool reclaimed = false;

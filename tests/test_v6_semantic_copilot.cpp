@@ -379,6 +379,27 @@ int main() {
         assert(oem_escalate_map.is_blocked(gpu_adrenoboost.string(), 57000));
         assert(::lstat(gpu_adrenoboost.c_str(), &st_restored) == 0 && (st_restored.st_mode & 0777) == 0644);
         oem_engine.rollback_all();
+
+        // 9. Slow-cadence persistent OEM daemon (e.g. HyperOS 4 perfd/joyose rewriting WALT every 15s,
+        //    outside the 5s fast circuit-breaker window): after 5 cumulative overwrites, CFAE must
+        //    cleanly roll back, unlock 0444, and yield to OemCollaborationMap (0 perpetual write-wars).
+        CentralMutationCoordinator slow_coord;
+        OemCollaborationMap slow_oem_map;
+        SemanticKnobEngine slow_engine(baseline, slow_oem_map, &slow_coord);
+        slow_engine.discover(bus_topo, sys.string(), proc.string());
+        slow_engine.apply(ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, 0.50, 0.5, 100000, false, bus_hints);
+        assert(read_file(gpu_adrenoboost) == "2");
+        for (uint64_t step = 1; step <= 6; ++step) {
+            assert(::chmod(gpu_adrenoboost.c_str(), 0644) == 0);
+            write_file(gpu_adrenoboost, "0\n");
+            slow_engine.apply(ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, 0.50, 0.5,
+                              100000 + step * 15000ULL, false, bus_hints);
+        }
+        assert(slow_coord.breaker_trip_count(gpu_adrenoboost.string()) == 0U);
+        assert(slow_coord.node_tamper_count(gpu_adrenoboost.string()) == 6U);
+        assert(slow_oem_map.is_blocked(gpu_adrenoboost.string(), 191000));
+        assert(::lstat(gpu_adrenoboost.c_str(), &st_restored) == 0 && (st_restored.st_mode & 0777) == 0644);
+        slow_engine.rollback_all();
     }
 
     (void)::unsetenv("COREFLOW_TEST_STATE_DIR");

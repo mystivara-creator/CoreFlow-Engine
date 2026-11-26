@@ -517,6 +517,9 @@ TamperGuardAction CentralMutationCoordinator::evaluate_tamper_reclaim(
              }),
              ts.end());
     ts.push_back(now_ms);
+    if (tracker.total_tamper_hits < 100000U) {
+        ++tracker.total_tamper_hits;
+    }
     const uint32_t attempts = static_cast<uint32_t>(ts.size());
     if (out_attempts != nullptr) *out_attempts = attempts;
 
@@ -599,6 +602,12 @@ uint32_t CentralMutationCoordinator::breaker_trip_count(const std::string& node_
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = tamper_trackers_.find(node_path);
     return it == tamper_trackers_.end() ? 0U : it->second.breaker_trips;
+}
+
+uint32_t CentralMutationCoordinator::node_tamper_count(const std::string& node_path) const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = tamper_trackers_.find(node_path);
+    return it == tamper_trackers_.end() ? 0U : it->second.total_tamper_hits;
 }
 
 void CentralMutationCoordinator::reset() noexcept {

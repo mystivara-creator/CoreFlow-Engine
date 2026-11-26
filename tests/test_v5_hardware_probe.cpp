@@ -192,6 +192,26 @@ int main() {
         assert(cg_topo.cgroups.top_app_uclamp_max_path != cg_topo.cgroups.background_uclamp_max_path);
     }
 
+    // 4. Display refresh_hz discovery for Qualcomm/HyperOS DRM formats (p120, p-120, 120Hz)
+    //    and live dynamic_fps leaf that starts at 0 at boot then transitions to 120Hz.
+    {
+        const fs::path disp_root = root / "disp_test";
+        const fs::path dsys = disp_root / "sys";
+        const fs::path dproc = disp_root / "proc";
+        fs::create_directories(dproc);
+        write_file(dsys / "class/drm/card0-DSI-1/status", "connected\n");
+        write_file(dsys / "class/drm/card0-DSI-1/modes", "1220x2712p120\n1220x2712p60\n");
+        write_file(dsys / "class/mi_display/disp-DSI-0/dynamic_fps", "0\n");
+        HardwareProbe dprobe(dsys.string(), dproc.string());
+        const HardwareTopology dtopo = dprobe.discover();
+        assert(dtopo.refresh_hz == 120U);
+        assert(!dtopo.refresh_rate_paths.empty());
+        // Live dynamic_fps updates from 0 -> 120 after display wakes up
+        write_file(dsys / "class/mi_display/disp-DSI-0/dynamic_fps", "120\n");
+        const auto live_hz = dprobe.read_live_refresh_hz(dtopo);
+        assert(live_hz.has_value() && *live_hz == 120U);
+    }
+
     fs::remove_all(root);
     std::cout << "v5 HardwareProbe tests passed\n";
     return 0;

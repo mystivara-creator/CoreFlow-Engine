@@ -3079,12 +3079,32 @@ int main(int argc, char* argv[]) {
             const auto fps_sample = frame_pacing.sample(
                 topo.refresh_hz, now_ms, active_workload, &frame_bridge, screen_idle_hint,
                 live_status.runqueue_delay_ms, render_load_ratio);
+            // If display mode sysfs fell back to 60Hz (common on Xiaomi/HyperOS DRM panels)
+            // yet verified Tier-A measured_fps exceeds current refresh_hz (e.g. 119.8 fps on a
+            // 120Hz panel), auto-upgrade refresh_hz to the matching standard panel tier so p99
+            // frameBudgetMs (8.33ms) and OverScroller fling hold stay accurate with 0 extra syscalls.
+            if (frame_pacing.verified() && fps_sample.available &&
+                fps_sample.measured_fps > static_cast<double>(topo.refresh_hz) + 5.0) {
+                const double m = fps_sample.measured_fps;
+                const uint32_t snapped_hz =
+                    m >= 200.0 ? 240U :
+                    m >= 152.0 ? 165U :
+                    m >= 132.0 ? 144U :
+                    m >= 102.0 ? 120U :
+                    m >= 78.0  ? 90U  : topo.refresh_hz;
+                if (snapped_hz > topo.refresh_hz) {
+                    topo.refresh_hz = snapped_hz;
+                    live_status.topo.refresh_hz = snapped_hz;
+                }
+            }
             live_status.frame_pacing_available = fps_sample.available || frame_pacing.verified();
             live_status.frame_pacing_verified = frame_pacing.verified();
             live_status.frame_pacing_source = frame_pacing.active_source().empty() ? "unavailable" : frame_pacing.active_source();
             live_status.measured_fps = fps_sample.measured_fps;
             live_status.jank_ratio = fps_sample.jank_ratio;
-            live_status.frame_budget_ms = fps_sample.frame_budget_ms;
+            live_status.frame_budget_ms = (topo.refresh_hz > 0U)
+                ? (1000.0 / static_cast<double>(std::clamp(topo.refresh_hz, 30U, 240U)))
+                : fps_sample.frame_budget_ms;
             live_status.p99_frame_time_ms = fps_sample.p99_frame_time_ms;
             live_status.p99_deadline_util = fps_sample.p99_deadline_util;
             live_status.p99_available = fps_sample.p99_available;
