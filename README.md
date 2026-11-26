@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/coreflow-v6-banner.svg" width="100%" alt="CFAE System Framework / CoreFlow Engine v6.1.0-R">
+  <img src="docs/assets/coreflow-v6-banner.svg" width="100%" alt="CFAE System Framework / CoreFlow Engine v6.1.1">
 </p>
 
 <p align="center">

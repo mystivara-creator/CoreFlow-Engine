@@ -2,6 +2,13 @@
 
 # CFAE System Framework Release History
 
+## v6.1.1 — Physics-Driven Thermal/EDP Control, Causal Verification & Companion Sync
+- **Closed-Loop RC Thermal Model & Power Budget (`P_budget`):** Online RLS chassis thermal resistance (`R_θ`), time constant (`τ`), and sustainable power estimation with dual-layer 1°C integer battery quantization fusion (`ChassisTempFuser`) — automatically adapts headroom to ambient temperature and external coolers.
+- **Per-Frame `p99` Deadline Control & Online Silicon EDP Knee (`CFEDP2`):** Zero-heap 64-entry `p99` frame deadline controller with static-screen/LTPO idle protection, coupled with steady-state CPU+GPU silicon EDP knee calibration, bounded rolling bin EWMA, and boot-time self-healing (`CFEDP2` auto-upgrade).
+- **Online Causal Verification (`CFEM2`):** Natural-experiment verification across 6 actuator domains with automatic rollback and bypass of ineffective OEM knobs, high-SNR load preconditions, `VerifiedEffective` hysteresis, and `CFEM2` auto-upgrade.
+- **Accuracy & OEM Co-op Polish:** Eliminated false-positive `GAMING` ("3D Auto") detection on non-game UI/media apps, added live 90/120/144Hz panel refresh rate detection (`p120`/`Hz` DRM parsing + Tier-A `measured_fps` auto-snap), and added slow-cadence OEM daemon auto-yield (`perfd`/`joyose` WALT contention).
+- **Companion App Sync (`v6.1.1`):** Added live RC Thermal Model, Silicon EDP Knee, `p99`/runqueue telemetry, and 6-domain `CFEM2` causal status cards in Home, Live AI Feed, and Dialogue Console.
+
 ## v6.1.0-R — Unified 100% Zero-Profile Autonomous Engine
 - **100% Zero-Profile Autonomy:** Eliminated all manual global profiles (`Balanced / Smoothness / Gaming / Battery`) and legacy manual per-app override buckets across C++23 daemon, Rust core, Companion App, Quick Settings Tile, Floating HUD, and MD3 WebUI. Legacy config keys parse cleanly without error while `excluded_apps` (Stock OEM) is 100% preserved.
 - **Physics-Driven Real-Time Adaptation:** Refresh-rate-adaptive `OverScroller` fling hold (`60Hz: 750ms`, `90Hz: 850ms`, `120Hz+: 950ms`, `Low-Battery Eco: 500ms`), tightened automatic frame-drop Jank Rescue (`>= 3%`), automatic 2-tick 3D game-engine thread detection, **Multi-Cgroup EAS Thermal-Power Pacing** (`top-app`, `foreground`, `system-background`, `background` `cpu.uclamp.max` ceilings with instant launch/jank lift + EWMA slow-thermal velocity), and automatic **Low-Battery Eco (`<= 20%` discharging, ~15% trim while keeping scrolling smooth)**.
