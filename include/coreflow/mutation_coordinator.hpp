@@ -145,6 +145,7 @@ public:
     [[nodiscard]] std::vector<TamperEvent> recent_tamper_events(size_t limit = 16U) const;
     [[nodiscard]] size_t quarantined_node_count(uint64_t now_ms) const noexcept;
     [[nodiscard]] uint32_t breaker_trip_count(const std::string& node_path) const noexcept;
+    [[nodiscard]] uint32_t node_tamper_count(const std::string& node_path) const noexcept;
     [[nodiscard]] uint64_t total_tamper_events() const noexcept {
         return total_tamper_events_.load(std::memory_order_relaxed);
     }
@@ -177,6 +178,7 @@ private:
         std::vector<uint64_t> recent_attempt_ms;
         uint64_t quarantine_until_ms{0};
         uint32_t breaker_trips{0};
+        uint32_t total_tamper_hits{0};
     };
 
     mutable std::mutex mutex_;

@@ -166,15 +166,53 @@ std::vector<unsigned> parse_cpu_list(std::string_view raw) {
 }
 
 std::optional<uint32_t> parse_refresh_from_text(std::string_view text) noexcept {
+    uint32_t best = 0U;
+    auto consider = [&](uint64_t hz) {
+        if (hz >= 30U && hz <= 240U) {
+            best = std::max(best, static_cast<uint32_t>(hz));
+        }
+    };
+
     for (size_t i = 0; i < text.size(); ++i) {
-        if (text[i] != '@') continue;
-        size_t j = i + 1;
-        while (j < text.size() && text[j] >= '0' && text[j] <= '9') ++j;
-        uint64_t hz = 0;
-        if (parse_u64(text.substr(i + 1, j - i - 1), hz) && hz >= 30U && hz <= 240U) {
-            return static_cast<uint32_t>(hz);
+        // Format 1: "1080x2400@120"
+        if (text[i] == '@') {
+            size_t j = i + 1;
+            while (j < text.size() && text[j] >= '0' && text[j] <= '9') ++j;
+            uint64_t hz = 0;
+            if (j > i + 1 && parse_u64(text.substr(i + 1, j - i - 1), hz)) {
+                consider(hz);
+            }
+            continue;
+        }
+        // Format 2: Linux/Qualcomm DRM mode "1220x2712p120" or "U:1220x2712p-120"
+        if ((text[i] == 'p' || text[i] == 'P') && i > 0 && text[i - 1] >= '0' && text[i - 1] <= '9') {
+            size_t start = i + 1;
+            if (start < text.size() && text[start] == '-') ++start;
+            size_t j = start;
+            while (j < text.size() && text[j] >= '0' && text[j] <= '9') ++j;
+            uint64_t hz = 0;
+            if (j > start && parse_u64(text.substr(start, j - start), hz)) {
+                consider(hz);
+            }
+            continue;
+        }
+        // Format 3: "120Hz", "120.0Hz", "120 hz"
+        if ((text[i] == 'h' || text[i] == 'H') && (i + 1 < text.size()) &&
+            (text[i + 1] == 'z' || text[i + 1] == 'Z')) {
+            size_t end = i;
+            while (end > 0 && (text[end - 1] == ' ' || text[end - 1] == '\t')) --end;
+            size_t start = end;
+            while (start > 0 && ((text[start - 1] >= '0' && text[start - 1] <= '9') || text[start - 1] == '.')) {
+                --start;
+            }
+            double val = 0.0;
+            if (end > start && parse_ascii_double(text.substr(start, end - start), val) &&
+                val >= 30.0 && val <= 240.0) {
+                consider(static_cast<uint64_t>(std::lround(val)));
+            }
         }
     }
+    if (best >= 30U && best <= 240U) return best;
     return std::nullopt;
 }
 
@@ -711,24 +749,27 @@ HardwareTopology HardwareProbe::discover() const noexcept {
             if (is_regular_readable(blank_path)) {
                 topo.fb_blank_paths.push_back(blank_path.string());
             }
-            for (const char* leaf : {"dynamic_fps", "refresh_rate", "fps", "measured_fps",
-                                     "current_mode", "modes", "available_modes", "msm_fb_panel_info",
-                                     "panel_info"}) {
+            for (const char* leaf : {"dynamic_fps", "refresh_rate", "fps", "cur_fps", "max_fps",
+                                     "frame_rate", "panel_max_fps", "mode", "current_mode", "modes",
+                                     "available_modes", "msm_fb_panel_info", "panel_info", "measured_fps"}) {
                 const fs::path leaf_path = resolved / leaf;
+                const bool is_live_panel_leaf =
+                    std::string_view(leaf) == "dynamic_fps" ||
+                    std::string_view(leaf) == "refresh_rate" ||
+                    std::string_view(leaf) == "fps" ||
+                    std::string_view(leaf) == "cur_fps" ||
+                    std::string_view(leaf) == "mode" ||
+                    std::string_view(leaf) == "current_mode";
+                if (is_live_panel_leaf && is_regular_readable(leaf_path) &&
+                    seen_hz_paths.insert(leaf_path.string()).second) {
+                    topo.refresh_rate_paths.push_back(leaf_path.string());
+                }
                 const auto txt = read_bounded(leaf_path, 2048U);
                 if (txt.empty()) continue;
                 const uint32_t hz = parse_hz_from_text_blob(txt);
                 if (hz >= 30U && hz <= 240U) {
                     if (hz > topo.refresh_hz || topo.refresh_rate_paths.empty()) {
                         topo.refresh_hz = std::max(topo.refresh_hz, hz);
-                    }
-                    const bool is_live_leaf =
-                        std::string_view(leaf) == "dynamic_fps" ||
-                        std::string_view(leaf) == "refresh_rate" ||
-                        std::string_view(leaf) == "fps" ||
-                        std::string_view(leaf) == "measured_fps";
-                    if (is_live_leaf && seen_hz_paths.insert(leaf_path.string()).second) {
-                        topo.refresh_rate_paths.push_back(leaf_path.string());
                     }
                 }
             }
