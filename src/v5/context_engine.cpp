@@ -190,6 +190,9 @@ const char* ContextEngine::mode_name(ContextMode mode) noexcept {
 
 bool ContextEngine::is_game_engine_thread_name(std::string_view comm) noexcept {
     if (comm.empty()) return false;
+    // Strictly genuine 3D game/emulator engine threads. Do NOT include generic Android
+    // UI/media threads like GLThread, VideoThread, or CPUThread (used by Instagram,
+    // Telegram, Maps, Camera, WebView, and video players) to prevent false Gaming triggers.
     return comm == "UnityMain" ||
            comm.rfind("UnityGfxDevice", 0) == 0 ||
            comm == "GameThread" ||
@@ -199,10 +202,7 @@ bool ContextEngine::is_game_engine_thread_name(std::string_view comm) noexcept {
            comm == "Godot" ||
            comm == "RenderServer" ||
            comm == "EmuThread" ||
-           comm == "CPUThread" ||
-           comm == "VideoThread" ||
-           comm == "SDLThread" ||
-           comm.rfind("GLThread", 0) == 0;
+           comm == "SDLThread";
 }
 
 bool ContextEngine::is_helper_pipeline_thread_name(std::string_view comm) noexcept {
@@ -219,12 +219,13 @@ bool ContextEngine::is_helper_pipeline_thread_name(std::string_view comm) noexce
 bool ContextEngine::is_critical_render_thread_name(std::string_view comm) noexcept {
     if (comm.empty()) return false;
     if (is_game_engine_thread_name(comm)) return true;
-    // Android UI / HWUI / Compositor / Chromium WebView & GPU driver worker threads
+    // Android UI / HWUI / Compositor / Chromium WebView / GLSurfaceView & GPU driver worker threads
     return comm == "RenderThread" ||
            comm == "surfaceflinger" ||
            comm == "RenderEngine" ||
            comm == "Binder:sf" ||
            comm.rfind("RenderThread", 0) == 0 ||
+           comm.rfind("GLThread", 0) == 0 ||
            is_helper_pipeline_thread_name(comm);
 }
 
@@ -414,44 +415,65 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
     }
 
     // Autonomous Hysteretic 3D Gaming Detection (rate-limited to >= 800 ms per sample):
-    //  - Verified 3D engine thread (UnityMain/GameThread/VulkanThread/EmuThread/GLThread):
-    //    faster 2-tick latch (GPU >= 35% or CPU >= 45%), smooth 5-tick exit (GPU < 20% && CPU < 25%).
-    //  - Generic heavy GPU workload: 3-tick latch (GPU >= 48% or GPU >= 35% + CPU >= 55%), 5-tick exit (< 25%).
-    const bool streak_tick_ready =
-        (last_gaming_eval_ms_ == 0U) ||
-        (input.now_ms >= last_gaming_eval_ms_ + 800ULL) ||
-        (input.now_ms < last_gaming_eval_ms_);
-    if (streak_tick_ready) {
-        const bool fast_3d = input.has_game_thread;
-        const uint32_t enter_ticks = fast_3d ? 2U : 3U;
-        if (input.gpu_busy_pct.has_value()) {
-            last_gaming_eval_ms_ = input.now_ms;
-            const double gpu = *input.gpu_busy_pct;
-            const bool high_load = fast_3d
-                ? (gpu >= 35.0 || input.cpu_util_pct >= 45.0)
-                : (gpu >= 48.0 || (gpu >= 35.0 && input.cpu_util_pct >= 55.0));
-            const bool low_load = fast_3d
-                ? (gpu < 20.0 && input.cpu_util_pct < 25.0)
-                : (gpu < 25.0);
-            if (high_load) {
-                ++gpu_high_streak_;
-                gpu_low_streak_ = 0;
-                if (gpu_high_streak_ >= enter_ticks) gaming_latched_ = true;
-            } else if (low_load) {
-                ++gpu_low_streak_;
-                gpu_high_streak_ = 0;
-                if (gpu_low_streak_ >= 5U) gaming_latched_ = false;
-            }
-        } else if (input.has_game_thread) {
-            last_gaming_eval_ms_ = input.now_ms;
-            if (input.cpu_util_pct >= 45.0) {
-                ++gpu_high_streak_;
-                gpu_low_streak_ = 0;
-                if (gpu_high_streak_ >= enter_ticks) gaming_latched_ = true;
-            } else if (input.cpu_util_pct < 25.0) {
-                ++gpu_low_streak_;
-                gpu_high_streak_ = 0;
-                if (gpu_low_streak_ >= 5U) gaming_latched_ = false;
+    //  - Never latch Gaming on empty foreground (transitions/recents), system launchers,
+    //    camera apps, or pure video/media playback without a verified 3D game engine.
+    //  - Verified 3D engine thread/library (UnityMain/GameThread/VulkanThread/EmuThread/libUE4):
+    //    fast 2-tick latch (GPU >= 38% or CPU >= 45%), smooth 4-tick exit (GPU < 20% && CPU < 25%).
+    //  - Generic heavy GPU workload (non-3D-engine app): strict 5-tick (~4s) sustained latch
+    //    (GPU >= 65% or GPU >= 55% + CPU >= 55%), 4-tick exit (GPU < 28%) so UI blur,
+    //    Reels/TikTok video decode, and app transitions never falsely trigger Gaming mode.
+    const bool fast_3d = input.has_game_thread;
+    const bool gaming_ineligible =
+        input.foreground_package.empty() ||
+        is_cam ||
+        is_system_launcher_package(input.foreground_package) ||
+        (!fast_3d && input.has_media_thread);
+
+    if (gaming_ineligible) {
+        gaming_latched_ = false;
+        gpu_high_streak_ = 0;
+        gpu_low_streak_ = 0;
+    } else {
+        const bool streak_tick_ready =
+            (last_gaming_eval_ms_ == 0U) ||
+            (input.now_ms >= last_gaming_eval_ms_ + 800ULL) ||
+            (input.now_ms < last_gaming_eval_ms_);
+        if (streak_tick_ready) {
+            const uint32_t enter_ticks = fast_3d ? 2U : 5U;
+            const uint32_t exit_ticks = 4U;
+            if (input.gpu_busy_pct.has_value()) {
+                last_gaming_eval_ms_ = input.now_ms;
+                const double gpu = *input.gpu_busy_pct;
+                const bool high_load = fast_3d
+                    ? (gpu >= 38.0 || input.cpu_util_pct >= 45.0)
+                    : (gpu >= 65.0 || (gpu >= 55.0 && input.cpu_util_pct >= 55.0));
+                const bool low_load = fast_3d
+                    ? (gpu < 20.0 && input.cpu_util_pct < 25.0)
+                    : (gpu < 28.0);
+                if (high_load) {
+                    ++gpu_high_streak_;
+                    gpu_low_streak_ = 0;
+                    if (gpu_high_streak_ >= enter_ticks) gaming_latched_ = true;
+                } else if (low_load) {
+                    ++gpu_low_streak_;
+                    gpu_high_streak_ = 0;
+                    if (gpu_low_streak_ >= exit_ticks) gaming_latched_ = false;
+                } else {
+                    // Mid-band load breaks an incomplete entry streak so intermittent UI spikes
+                    // cannot accumulate into a false Gaming latch.
+                    gpu_high_streak_ = 0;
+                }
+            } else if (fast_3d) {
+                last_gaming_eval_ms_ = input.now_ms;
+                if (input.cpu_util_pct >= 45.0) {
+                    ++gpu_high_streak_;
+                    gpu_low_streak_ = 0;
+                    if (gpu_high_streak_ >= enter_ticks) gaming_latched_ = true;
+                } else if (input.cpu_util_pct < 25.0) {
+                    ++gpu_low_streak_;
+                    gpu_high_streak_ = 0;
+                    if (gpu_low_streak_ >= exit_ticks) gaming_latched_ = false;
+                }
             }
         }
     }

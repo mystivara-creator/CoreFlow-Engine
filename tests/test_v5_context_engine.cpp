@@ -100,14 +100,18 @@ int main() {
     dec = engine.evaluate(sig);
     assert(dec.mode == ContextMode::Interactive);
 
-    // 4. Sustained GPU load >= 48% for 3 ticks -> Gaming (hysteretic)
+    // 4. Sustained GPU load >= 65% for 5 ticks -> Gaming (hysteretic, prevents UI blur false positives)
+    sig.gpu_busy_pct = 68.0;
     sig.now_ms = 5000;
-    sig.gpu_busy_pct = 60.0;
-    assert(engine.evaluate(sig).mode == ContextMode::Efficiency);
+    assert(engine.evaluate(sig).mode == ContextMode::Efficiency); // streak 1
     sig.now_ms = 6000;
-    assert(engine.evaluate(sig).mode == ContextMode::Efficiency);
+    assert(engine.evaluate(sig).mode == ContextMode::Efficiency); // streak 2
     sig.now_ms = 7000;
-    assert(engine.evaluate(sig).mode == ContextMode::Gaming);
+    assert(engine.evaluate(sig).mode == ContextMode::Efficiency); // streak 3
+    sig.now_ms = 8000;
+    assert(engine.evaluate(sig).mode == ContextMode::Efficiency); // streak 4
+    sig.now_ms = 9000;
+    assert(engine.evaluate(sig).mode == ContextMode::Gaming);     // streak 5 -> latched
 
     // 5. Excluded app immediately yields stock OEM behavior
     sig.now_ms = 8000;
@@ -242,7 +246,7 @@ int main() {
     fast_sig.foreground_package = "com.example.notes";
     fast_sig.now_ms = 50000;
     (void)engine.evaluate(fast_sig); // LaunchBurst
-    fast_sig.gpu_busy_pct = 62.0;
+    fast_sig.gpu_busy_pct = 68.0;
     fast_sig.now_ms = 52000;
     assert(engine.evaluate(fast_sig).mode == ContextMode::Efficiency); // streak 1
     fast_sig.now_ms = 52200;
@@ -252,7 +256,11 @@ int main() {
     fast_sig.now_ms = 53000;
     assert(engine.evaluate(fast_sig).mode == ContextMode::Efficiency); // streak 2
     fast_sig.now_ms = 54000;
-    assert(engine.evaluate(fast_sig).mode == ContextMode::Gaming);     // streak 3 (>= 2s sustained)
+    assert(engine.evaluate(fast_sig).mode == ContextMode::Efficiency); // streak 3
+    fast_sig.now_ms = 55000;
+    assert(engine.evaluate(fast_sig).mode == ContextMode::Efficiency); // streak 4
+    fast_sig.now_ms = 56000;
+    assert(engine.evaluate(fast_sig).mode == ContextMode::Gaming);     // streak 5 (>= 4s sustained)
 
     // 13. Autonomous 3D Game thread uses 2-tick hysteresis without flapping on low CPU ticks
     engine.set_profile(PerformanceProfile::Balanced);
@@ -292,6 +300,60 @@ int main() {
     assert(ContextEngine::is_system_launcher_package("com.google.android.apps.nexuslauncher"));
     assert(!ContextEngine::is_system_launcher_package("com.whatsapp"));
     assert(!ContextEngine::is_system_launcher_package("com.miHoYo.GenshinImpact"));
+
+    // 16. Anti-False-Positive 3D Gaming Guard (PARROTPRO field-test regression):
+    //     GLThread/VideoThread/CPUThread are UI/media threads (NOT 3D game engines), and
+    //     Instagram/media/launcher/empty-fg workloads with 55-60% GPU blur/decode spikes MUST NEVER
+    //     falsely latch Gaming ("3D Auto") mode!
+    assert(!ContextEngine::is_game_engine_thread_name("GLThread 123"));
+    assert(!ContextEngine::is_game_engine_thread_name("VideoThread"));
+    assert(!ContextEngine::is_game_engine_thread_name("CPUThread"));
+    assert(ContextEngine::is_critical_render_thread_name("GLThread 123")); // Still boosted as UI render thread
+
+    // 16a. Instagram Reels/blur at 58% GPU + 42% CPU for 10 ticks -> stays Efficiency, never Gaming
+    ContextSignalInput ui_sig{};
+    ui_sig.foreground_pid = 9001;
+    ui_sig.foreground_package = "com.instagram.android";
+    ui_sig.has_game_thread = false;
+    ui_sig.now_ms = 70000;
+    (void)engine.evaluate(ui_sig); // LaunchBurst
+    ui_sig.gpu_busy_pct = 58.0;
+    ui_sig.cpu_util_pct = 42.0;
+    for (int i = 0; i < 10; ++i) {
+        ui_sig.now_ms = 73000ULL + static_cast<uint64_t>(i) * 1000ULL;
+        assert(engine.evaluate(ui_sig).mode != ContextMode::Gaming);
+    }
+
+    // 16b. Video/media playback (has_media_thread = true) even at 75% GPU -> stays Interactive, never Gaming
+    ContextSignalInput vid_sig{};
+    vid_sig.foreground_pid = 9002;
+    vid_sig.foreground_package = "tw.nekomimi.nekogram";
+    vid_sig.has_media_thread = true;
+    vid_sig.gpu_busy_pct = 75.0;
+    vid_sig.cpu_util_pct = 60.0;
+    vid_sig.now_ms = 85000;
+    (void)engine.evaluate(vid_sig); // LaunchBurst
+    for (int i = 0; i < 8; ++i) {
+        vid_sig.now_ms = 88000ULL + static_cast<uint64_t>(i) * 1000ULL;
+        assert(engine.evaluate(vid_sig).mode == ContextMode::Interactive);
+    }
+
+    // 16c. System launcher or empty foreground at 80% GPU -> never Gaming
+    ContextSignalInput lnch_sig{};
+    lnch_sig.foreground_pid = 9003;
+    lnch_sig.foreground_package = "com.miui.home";
+    lnch_sig.gpu_busy_pct = 80.0;
+    lnch_sig.cpu_util_pct = 60.0;
+    for (int i = 0; i < 8; ++i) {
+        lnch_sig.now_ms = 100000ULL + static_cast<uint64_t>(i) * 1000ULL;
+        assert(engine.evaluate(lnch_sig).mode != ContextMode::Gaming);
+    }
+    lnch_sig.foreground_package = "";
+    lnch_sig.foreground_pid = 0;
+    for (int i = 0; i < 8; ++i) {
+        lnch_sig.now_ms = 110000ULL + static_cast<uint64_t>(i) * 1000ULL;
+        assert(engine.evaluate(lnch_sig).mode != ContextMode::Gaming);
+    }
 
     fs::remove_all(root);
     std::cout << "v5 ContextEngine tests passed\n";

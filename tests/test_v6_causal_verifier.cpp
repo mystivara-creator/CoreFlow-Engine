@@ -1027,7 +1027,57 @@ void test_thermal_uclamp_cap_light_load_and_shallow_cap_precondition() {
         assert(noop_v.is_bypassed(CausalDomain::ThermalUclampCap, false));
     }
 
-    std::cout << "[PASS] ThermalUclampCap rejects light daily loads (~1.6W) & shallow caps (>85%), verifies/bypasses real loads\n";
+    // 5. VerifiedEffective hysteresis: once ThermalUclampCap is proven effective (+0.11..+0.20),
+    //    subsequent noisy zero-delta trials during long sessions MUST NOT self-bypass it while
+    //    its score remains positive (+0.01..+0.02)!
+    {
+        CausalObservation pre{};
+        pre.cpu_util_pct = 62.0;
+        pre.gpu_busy_pct = 65.0;
+        pre.power_available = true;
+        pre.charging = false;
+        pre.power_mw = 3000.0;
+        pre.thermal_velocity_cpm = 0.25;
+        pre.uclamp_cap_active = false;
+        pre.uclamp_cap_pct = 100U;
+
+        CausalObservation post = pre;
+        post.power_mw = 2995.0; // near-zero marginal delta (already thermally saturated)
+        post.thermal_velocity_cpm = 0.24;
+        post.uclamp_cap_active = true;
+        post.uclamp_cap_pct = 75U;
+
+        for (int k = 0; k < 25; ++k) {
+            run_matched_trial(verifier, now_ms, pre, post, res);
+        }
+        const auto snap = verifier.domain_snapshot(CausalDomain::ThermalUclampCap);
+        assert(snap.samples >= 28U);
+        assert(snap.score >= 0.0);
+        assert(snap.state == CausalState::VerifiedEffective);
+        assert(!verifier.is_bypassed(CausalDomain::ThermalUclampCap, false));
+    }
+
+    // 6. Legacy CFEM1 map on disk -> auto-unlinked cleanly on CFEM2 upgrade with zero manual cleanup!
+    {
+        const fs::path tmp = fs::temp_directory_path() / ("coreflow_cfem1_upgrade_" + std::to_string(::getpid()));
+        fs::remove_all(tmp);
+        fs::create_directories(tmp);
+        {
+            std::ofstream legacy(tmp / "device_effectiveness.map", std::ios::trunc);
+            legacy << "CFEM1\t6.6.118-android15-8\tPARROTPRO_HYPEROS3\n"
+                   << "thermal_uclamp_cap\tbypassed\t104\t0.0170\t100\n";
+        }
+        assert(fs::exists(tmp / "device_effectiveness.map"));
+        CausalVerifier upgraded;
+        upgraded.initialize(tmp.string(), "6.6.118-android15-8", "PARROTPRO_HYPEROS3");
+        assert(!upgraded.is_bypassed(CausalDomain::ThermalUclampCap, false));
+        assert(upgraded.domain_snapshot(CausalDomain::ThermalUclampCap).samples == 0U);
+        assert(!fs::exists(tmp / "device_effectiveness.map"));
+        std::error_code ec;
+        fs::remove_all(tmp, ec);
+    }
+
+    std::cout << "[PASS] ThermalUclampCap preconditions, VerifiedEffective hysteresis & CFEM1->CFEM2 auto-upgrade\n";
 }
 
 } // namespace

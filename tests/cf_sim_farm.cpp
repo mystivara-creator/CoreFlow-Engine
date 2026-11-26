@@ -864,12 +864,12 @@ ArchetypeResult run_archetype(const std::string& bin_path, ArchetypeConfig cfg) 
                 const fs::path cfem_path = plant.state_dir() / "device_effectiveness.map";
                 std::ifstream ifs(cfem_path);
                 if (!ifs.is_open()) {
-                    fail("Expected CFEM1 device_effectiveness.map to persist cleanly on shutdown");
+                    fail("Expected CFEM2 device_effectiveness.map to persist cleanly on shutdown");
                 } else {
                     std::ostringstream ss;
                     ss << ifs.rdbuf();
                     const std::string content = ss.str();
-                    if (content.rfind("CFEM1\t", 0) != 0) fail("device_effectiveness.map missing CFEM1 header");
+                    if (content.rfind("CFEM2\t", 0) != 0) fail("device_effectiveness.map missing CFEM2 header");
                     if (content.find("thermal_uclamp_cap\teffective\t") == std::string::npos) {
                         fail("device_effectiveness.map missing thermal_uclamp_cap=effective");
                     }

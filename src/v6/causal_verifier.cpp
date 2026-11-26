@@ -613,7 +613,9 @@ void CausalVerifier::finalize_trial(
     if (tr.samples == 1U) {
         tr.score = effect;
     } else {
-        const double alpha = std::max(0.25, 1.0 / static_cast<double>(tr.samples));
+        // Fast convergence during early probing (1/samples), bounded to 0.10 in long sessions
+        // so 2-3 noisy zero-delta trials cannot wipe out dozens of proven positive trials.
+        const double alpha = std::max(0.10, 1.0 / static_cast<double>(tr.samples));
         tr.score += alpha * (effect - tr.score);
     }
     tr.score = std::clamp(tr.score, -1.0, 1.0);
@@ -621,7 +623,13 @@ void CausalVerifier::finalize_trial(
     dirty_ = true;
 
     const CausalState prev_state = tr.state;
-    if (tr.samples >= kMinSamplesForBypass && tr.score <= kBypassScoreThreshold) {
+    // Hysteresis: a domain already proven VerifiedEffective on this hardware only demotes to
+    // BypassedIneffective on sustained strictly-negative evidence (<= -0.02 across >= 8 samples),
+    // never because a few noisy trials nudge a positive score slightly below +0.02.
+    const bool bypass_triggered = (prev_state == CausalState::VerifiedEffective)
+        ? (tr.samples >= 8U && tr.score <= -0.02)
+        : (tr.samples >= kMinSamplesForBypass && tr.score <= kBypassScoreThreshold);
+    if (bypass_triggered) {
         tr.state = CausalState::BypassedIneffective;
         if (prev_state != CausalState::BypassedIneffective) {
             result.newly_bypassed_mask |= bit;
@@ -717,9 +725,9 @@ void CausalVerifier::load_locked() noexcept {
     if (!header.empty() && header.back() == '\r') header.pop_back();
 
     const std::string expected_header =
-        "CFEM1\t" + kernel_release_ + "\t" + rom_fingerprint_;
+        "CFEM2\t" + kernel_release_ + "\t" + rom_fingerprint_;
     if (header != expected_header) {
-        // Kernel or ROM updated -> auto-reset effectiveness map to re-verify on new OS build.
+        // Schema bump (e.g. CFEM1 -> CFEM2) or Kernel/ROM updated -> auto-reset effectiveness map.
         (void)::unlink(map_path_.c_str());
         return;
     }
@@ -777,7 +785,7 @@ bool CausalVerifier::persist_locked() noexcept {
         return false;
     }
 
-    std::string payload = "CFEM1\t" + kernel_release_ + "\t" + rom_fingerprint_ + "\n";
+    std::string payload = "CFEM2\t" + kernel_release_ + "\t" + rom_fingerprint_ + "\n";
     char line_buf[160];
     for (size_t i = 0U; i < kDomainCount; ++i) {
         const auto dom = static_cast<CausalDomain>(i);
