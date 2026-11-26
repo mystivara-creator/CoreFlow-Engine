@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -68,6 +69,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
@@ -130,6 +132,10 @@ fun CoreFlowApp(
     var updateReport by remember { mutableStateOf<CoreFlowUpdateChecker.UpdateCheckReport?>(null) }
     var updateBusy by remember { mutableStateOf(false) }
     var neuralModelInfo by remember { mutableStateOf(CoreFlowManager.InstalledNeuralModelInfo()) }
+    var startupLoading by remember { mutableStateOf(true) }
+    var startupStatusLabel by remember { mutableStateOf("") }
+    var showOnboarding by remember { mutableStateOf(!AppPreferences.isOnboardingCompleted(context)) }
+    var dismissedUpdatePopupVersion by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(pendingTab, pendingDialoguePrompt) {
         if (pendingTab != null || pendingDialoguePrompt != null) {
@@ -193,7 +199,28 @@ fun CoreFlowApp(
     }
 
     LaunchedEffect(Unit) {
-        delay(1200L)
+        val startedMs = System.currentTimeMillis()
+        startupStatusLabel = if (strings.isIndonesian) "Memeriksa akses root..." else "Checking root access..."
+        withTimeoutOrNull(1800L) {
+            hasRoot = CoreFlowManager.checkRootAccess()
+            if (hasRoot == true) {
+                startupStatusLabel = if (strings.isIndonesian) "Menyelaraskan telemetri coreflowd..." else "Syncing coreflowd telemetry..."
+                CoreFlowManager.getStatus()
+                    .onSuccess {
+                        status = it
+                        lastError = null
+                    }
+                    .onFailure { err ->
+                        lastError = err.message ?: "Unable to reach coreflowd"
+                    }
+            }
+        }
+        val elapsed = System.currentTimeMillis() - startedMs
+        if (elapsed < 550L) {
+            delay(550L - elapsed)
+        }
+        startupLoading = false
+        delay(350L)
         runUpdateCheck(forceRefresh = false, notifyUser = false)
     }
 
@@ -331,19 +358,29 @@ fun CoreFlowApp(
         }
     }
 
-    AnimatedContent(
-        targetState = showAboutScreen,
-        transitionSpec = {
-            if (targetState) {
-                (slideInHorizontally(tween(260)) { it / 3 } + fadeIn(tween(220))) togetherWith
-                    (slideOutHorizontally(tween(240)) { -it / 6 } + fadeOut(tween(180)))
-            } else {
-                (slideInHorizontally(tween(240)) { -it / 6 } + fadeIn(tween(200))) togetherWith
-                    (slideOutHorizontally(tween(240)) { it / 3 } + fadeOut(tween(180)))
-            }
-        },
-        label = "CoreFlowRouteTransition",
-    ) { isAbout ->
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (showOnboarding) {
+            CoreFlowOnboardingScreen(
+                isIndonesian = strings.isIndonesian,
+                onFinish = {
+                    AppPreferences.setOnboardingCompleted(context, true)
+                    showOnboarding = false
+                },
+            )
+        } else {
+            AnimatedContent(
+                targetState = showAboutScreen,
+                transitionSpec = {
+                    if (targetState) {
+                        (slideInHorizontally(tween(260)) { it / 3 } + fadeIn(tween(220))) togetherWith
+                            (slideOutHorizontally(tween(240)) { -it / 6 } + fadeOut(tween(180)))
+                    } else {
+                        (slideInHorizontally(tween(240)) { -it / 6 } + fadeIn(tween(200))) togetherWith
+                            (slideOutHorizontally(tween(240)) { it / 3 } + fadeOut(tween(180)))
+                    }
+                },
+                label = "CoreFlowRouteTransition",
+            ) { isAbout ->
         if (isAbout) {
             AboutScreen(
                 strings = strings,
@@ -817,6 +854,38 @@ fun CoreFlowApp(
                     )
                 }
             }
+        }
+        }
+
+        AnimatedVisibility(
+            visible = startupLoading,
+            exit = fadeOut(tween(280)),
+        ) {
+            CoreFlowStartupSplash(
+                isIndonesian = strings.isIndonesian,
+                statusLabel = startupStatusLabel,
+            )
+        }
+
+        val activeUpdate = updateReport
+        if (!startupLoading &&
+            !showOnboarding &&
+            activeUpdate != null &&
+            activeUpdate.state == CoreFlowUpdateChecker.UpdateState.UPDATE_AVAILABLE &&
+            dismissedUpdatePopupVersion != activeUpdate.latestVersion
+        ) {
+            CoreFlowUpdatePopupDialog(
+                isIndonesian = strings.isIndonesian,
+                report = activeUpdate,
+                onOpenUpdateCenter = {
+                    showAboutScreen = false
+                    selectedTab = 4
+                },
+                onDirectDownload = { url -> openTrustedUrl(url) },
+                onDismiss = {
+                    dismissedUpdatePopupVersion = activeUpdate.latestVersion
+                },
+            )
         }
     }
 }

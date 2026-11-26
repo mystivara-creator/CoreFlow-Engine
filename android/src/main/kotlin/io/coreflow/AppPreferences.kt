@@ -161,4 +161,17 @@ object AppPreferences {
             }
             .apply()
     }
+
+    private const val KEY_ONBOARDING_COMPLETED = "onboarding_completed_v6"
+
+    fun isOnboardingCompleted(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_ONBOARDING_COMPLETED, false)
+
+    fun setOnboardingCompleted(context: Context, completed: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_ONBOARDING_COMPLETED, completed)
+            .apply()
+    }
 }
