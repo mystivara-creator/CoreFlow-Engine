@@ -30,7 +30,7 @@ namespace coreflow {
 
 struct DaemonConfig {
     // [general]
-    std::string version{"6.1.0-R"};
+    std::string version{"6.1.1"};
     std::string profile{"autonomous"}; // unified zero-profile autonomous (legacy names accepted safely)
     std::string log_level{"info"};
     bool zero_polling_mode{true};

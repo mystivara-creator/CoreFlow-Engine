@@ -10,7 +10,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
- * Android Quick Settings Tile for CoreFlow Engine v6.1.0-R (Zero-Profile Autonomous).
+ * Android Quick Settings Tile for CoreFlow Engine v6.1.1 (Zero-Profile Autonomous).
  * 1-tap toggle between Autonomous Engine and Paused (Stock OEM A/B Compare)
  * with live SoC temperature, thermal headroom, and regime subtitle.
  */

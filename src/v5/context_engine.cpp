@@ -364,7 +364,7 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
 
     const std::string pkg_lower = to_lower_copy(input.foreground_package);
     out.app_excluded = !pkg_lower.empty() && excluded_apps_.contains(pkg_lower);
-    // v6.1.0-R Pure Zero-Profile Autonomous: ignore legacy manual app buckets at runtime.
+    // v6.1.1 Pure Zero-Profile Autonomous: ignore legacy manual app buckets at runtime.
     // Only excluded_apps (Stock OEM bypass) overrides autonomous context classification.
     out.app_forced_gaming = false;
     const bool is_cam = !out.app_excluded &&

@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief CFAE System Framework / CoreFlow Engine v6.1.0-R — Unified Zero-Profile Autonomous Daemon.
+ * @brief CFAE System Framework / CoreFlow Engine v6.1.1 — Unified Zero-Profile Autonomous Daemon.
  *
  * Pillars:
  *  1. Sovereign Tamper Guard (0444 lease lock, Reclaim-First + 3x/5s circuit breaker, IPC broadcast)
@@ -78,7 +78,7 @@ namespace {
 
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
-constexpr char kVersion[] = "6.1.0-R";
+constexpr char kVersion[] = "6.1.1";
 
 void emit_log(bool is_error, const std::string& message) {
     if (is_error) std::cerr << message << "\n";
@@ -1952,7 +1952,7 @@ int main(int argc, char* argv[]) {
         return sim_mode ? virtual_clock_ms : epoch_now_ms();
     };
 
-    // CFAE System Framework / CoreFlow Engine v6.1.0-R Runtime Composition
+    // CFAE System Framework / CoreFlow Engine v6.1.1 Runtime Composition
     DaemonConfig config = load_active_config();
     HardwareProbe probe(sysfs_root, procfs_root);
     HardwareTopology topo = probe.discover();
@@ -2111,8 +2111,8 @@ int main(int argc, char* argv[]) {
     decision_journal.record(
         clock_epoch_ms(), "context", "Boot",
         boot_dec.boot_settle_active
-            ? "CFAE System Framework v6.1.0-R initialized in BOOT_SETTLE sanctuary (Zero-Profile Autonomous)"
-            : "CFAE System Framework v6.1.0-R initialized (Zero-Profile Autonomous)",
+            ? "CFAE System Framework v6.1.1 initialized in BOOT_SETTLE sanctuary (Zero-Profile Autonomous)"
+            : "CFAE System Framework v6.1.1 initialized (Zero-Profile Autonomous)",
         "verified", -1.0, 0.0, 1.0);
     live_status.episodes = decision_journal.recent(16U);
     uint64_t last_sysfs_active_ms = 0U;
@@ -3673,7 +3673,7 @@ int main(int argc, char* argv[]) {
         });
 
         (void)write_status_snapshot(build_status_json(live_status), state_dir);
-        emit_log(false, "[CFAE] CoreFlow Engine v6.1.0-R Unified Autonomous Daemon started (mode=autonomous" +
+        emit_log(false, "[CFAE] CoreFlow Engine v6.1.1 Unified Autonomous Daemon started (mode=autonomous" +
                  std::string(", storage=") + HardwareProbe::storage_type_name(topo.primary_storage) +
                  ", hz=" + std::to_string(topo.refresh_hz) +
                  ", framePacing=" + (frame_pacing.supported() ? "yes" : "no") +
@@ -3725,6 +3725,6 @@ int main(int argc, char* argv[]) {
 #endif
     (void)write_status_snapshot(build_status_json(live_status), state_dir);
     clear_pid(pid_lock);
-    emit_log(false, "[CFAE] CoreFlow Engine v6.1.0-R Unified Autonomous Daemon stopped; OEM baseline restored.");
+    emit_log(false, "[CFAE] CoreFlow Engine v6.1.1 Unified Autonomous Daemon stopped; OEM baseline restored.");
     return 0;
 }

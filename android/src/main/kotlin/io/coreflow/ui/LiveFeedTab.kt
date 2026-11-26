@@ -615,6 +615,161 @@ fun LiveFeedTab(
                 }
             }
 
+            // Phase 1-3 Physics & Silicon Intelligence Card (RC Thermal Model, Silicon EDP, p99, Causal Verification)
+            if (status != null) {
+                item {
+                    SmallTitle(
+                        text = if (strings.isIndonesian) {
+                            "FISIKA TERMAL, EDP SILIKON & VERIFIKASI KAUSAL"
+                        } else {
+                            "THERMAL PHYSICS, SILICON EDP & CAUSAL VERIFICATION"
+                        },
+                    )
+                }
+                item {
+                    val tm = status.thermalModel
+                    val edp = status.siliconEdp
+                    val hf = status.hyperFluid
+                    val cv = status.causalVerification
+
+                    val rcStateLabel = when {
+                        tm.closedLoopActive -> if (strings.isIndonesian) "Closed-Loop Aktif" else "Closed-Loop Active"
+                        tm.valid -> if (strings.isIndonesian) "Model Valid" else "Model Valid"
+                        else -> if (strings.isIndonesian) "Kalibrasi (${tm.steps} step)" else "Calibrating (${tm.steps} steps)"
+                    }
+                    val rcColor = if (tm.closedLoopActive) Color(0xFF22C55E) else Color(0xFF38BDF8)
+                    val edpColor = if (edp.calibrated) Color(0xFF06B6D4) else Color(0xFFF59E0B)
+                    val budgetStr = tm.powerBudgetMw?.let { String.format(Locale.US, "%.2fW", it / 1000f) }
+                        ?: tm.sustainablePowerMw?.let { String.format(Locale.US, "%.2fW", it / 1000f) }
+                        ?: "--"
+                    val rThetaStr = tm.rThetaCPerW?.let { String.format(Locale.US, "%.2f°/W", it) } ?: "--"
+                    val tauStr = tm.tauSec?.let { "${it.toInt()}s" } ?: "--"
+                    val kneeStr = if (edp.calibrated) String.format(Locale.US, "%.2fx", edp.kneeScale) else "--"
+                    val alphaStr = if (edp.calibrated) String.format(Locale.US, "α %.2f", edp.effectiveExponent) else "${edp.populatedBins}/8 bin"
+                    val p99Str = hf.p99FrameTimeMs?.let { String.format(Locale.US, "%.1fms", it) }
+                        ?: String.format(Locale.US, "%.1fms", hf.frameBudgetMs)
+                    val rqStr = if (hf.schedstatSupported) String.format(Locale.US, "%.2fms", hf.runqueueDelayMs) else "--"
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        insideMargin = PaddingValues(15.dp),
+                        pressFeedbackType = PressFeedbackType.Tilt,
+                        onClick = {},
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            BadgeTag(rcStateLabel, rcColor)
+                            if (tm.chassisFused) {
+                                BadgeTag("Chassis Fused", Color(0xFFA78BFA))
+                            }
+                            BadgeTag(
+                                if (edp.calibrated) "EDP ${edp.confidence}%" else "EDP Probing",
+                                edpColor,
+                            )
+                        }
+
+                        Spacer(Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            MetricPill(
+                                label = "P_budget",
+                                value = budgetStr,
+                                accent = rcColor,
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                            )
+                            MetricPill(
+                                label = "R_θ · τ",
+                                value = if (tm.rThetaCPerW != null) "$rThetaStr" else "--",
+                                accent = Color(0xFFF59E0B),
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                            )
+                            MetricPill(
+                                label = "RC Conf",
+                                value = "${tm.confidence}% · $tauStr",
+                                accent = Color(0xFF38BDF8),
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                            )
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            MetricPill(
+                                label = "EDP Knee",
+                                value = "$kneeStr · $alphaStr",
+                                accent = edpColor,
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                            )
+                            MetricPill(
+                                label = if (hf.p99Available) "p99 Frame" else "Budget",
+                                value = p99Str,
+                                accent = Color(0xFFA78BFA),
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                            )
+                            MetricPill(
+                                label = "RQ Delay",
+                                value = rqStr,
+                                accent = Color(0xFF10B981),
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                            )
+                        }
+
+                        if (cv.domains.isNotEmpty()) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                text = if (strings.isIndonesian) {
+                                    "Verifikasi Kausal CFEM2 (${cv.effectiveCount} efektif · ${cv.bypassedCount} auto-bypass)"
+                                } else {
+                                    "CFEM2 Causal Verification (${cv.effectiveCount} effective · ${cv.bypassedCount} auto-bypassed)"
+                                },
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                for (dom in cv.domains) {
+                                    val shortName = when (dom.key) {
+                                        "thermal_uclamp_cap" -> "EAS UClamp"
+                                        "thermal_gpu_cap" -> "GPU Cap"
+                                        "cpu_gov_tuning" -> "CPU Gov"
+                                        "semantic_cpu_gpu_boost" -> "Semantic"
+                                        "memory_bus_floor" -> "MemBus"
+                                        "storage_memory_tuning" -> "Storage/VM"
+                                        else -> dom.key
+                                    }
+                                    val domColor = when (dom.state) {
+                                        "effective" -> Color(0xFF22C55E)
+                                        "bypassed" -> Color(0xFFF59E0B)
+                                        else -> Color(0xFF38BDF8)
+                                    }
+                                    val icon = when (dom.state) {
+                                        "effective" -> "✓"
+                                        "bypassed" -> "⊘"
+                                        else -> "…"
+                                    }
+                                    BadgeTag("$shortName $icon", domColor)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             item {
                 BenchmarkCard(strings = strings, status = status)
             }

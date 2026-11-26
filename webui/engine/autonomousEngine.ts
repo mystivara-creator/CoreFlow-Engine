@@ -1,5 +1,5 @@
 /**
- * CFAE System Framework / CoreFlow Engine v6.1.0-R — Unified Zero-Profile Autonomous WebUI Data Contract, Validators & Preview Simulator.
+ * CFAE System Framework / CoreFlow Engine v6.1.1 — Unified Zero-Profile Autonomous WebUI Data Contract, Validators & Preview Simulator.
  */
 
 export type PerformanceProfile = 'autonomous' | 'balanced' | 'smoothness' | 'battery' | 'gaming';
@@ -541,7 +541,7 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
   const appDnaRaw = Array.isArray(raw.appDnaEntries) ? raw.appDnaEntries : [];
 
   return {
-    version: typeof raw.version === 'string' ? raw.version : '6.1.0-R',
+    version: typeof raw.version === 'string' ? raw.version : '6.1.1',
     running: raw.running,
     pid: raw.pid,
     profile,
@@ -781,7 +781,7 @@ export const PREVIEW_INSTALLED_PACKAGES: string[] = [
 export function createPreviewStatus(): CoreFlowV5Status {
   const now = Date.now();
   return {
-    version: '6.1.0-R',
+    version: '6.1.1',
     running: true,
     pid: 1428,
     profile: 'autonomous',

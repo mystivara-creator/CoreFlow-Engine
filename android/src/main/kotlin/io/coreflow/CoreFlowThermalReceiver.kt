@@ -7,7 +7,7 @@ import android.content.Intent
 /**
  * Android BroadcastReceiver retained for manifest compatibility.
  *
- * Since CoreFlow Engine v6.1.0-R (Zero-Profile Autonomous), coreflowd natively evaluates
+ * Since CoreFlow Engine v6.1.1 (Zero-Profile Autonomous), coreflowd natively evaluates
  * real-time battery SOC (Low-Battery Auto-Eco <= 20%), dual-domain chassis/die thermals
  * (Multi-Cgroup EAS Thermal Pacing + Thermal Guard), and charging state directly in kernel space
  * without mutating manual profiles from Android broadcasts.

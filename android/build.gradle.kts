@@ -23,8 +23,8 @@ android {
         applicationId = "io.coreflow.companion"
         minSdk = 33
         targetSdk = 36
-        versionCode = 64000 + ciBuildNumber
-        versionName = "6.1.0-R"
+        versionCode = 64100 + ciBuildNumber
+        versionName = "6.1.1"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
