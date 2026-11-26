@@ -611,9 +611,9 @@ object CoreFlowOnnxNlu {
                     "Elevated jank risk ($jankPct%) despite safe thermal headroom ($tempStr), indicating UI render or storage I/O contention."
                 },
                 recommendation = if (isIndonesian) {
-                    "Coba profil Smoothness atau pastikan Storage Burst & Frame Smoothness aktif di Control Hub."
+                    "Pastikan Storage Burst & Frame Smoothness aktif di Control Hub agar jank rescue otonom bekerja optimal."
                 } else {
-                    "Try Smoothness profile or verify Storage Burst and Frame Smoothness are enabled in Control Hub."
+                    "Verify Storage Burst and Frame Smoothness are enabled in Control Hub so autonomous jank rescue stays active."
                 },
                 backendName = backend,
             )
