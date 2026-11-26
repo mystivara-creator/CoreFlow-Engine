@@ -323,8 +323,12 @@ object CoreFlowUpdateChecker {
         }
 
         // Detect when `main/module/update.json` has advanced beyond the latest published GitHub Release.
+        // When the published GitHub Release tag already matches `manifest.moduleVersion` (e.g. both "v6.1.1"),
+        // the public release IS live — never let explicit versionCode (e.g. 64100 vs derived 61100)
+        // falsely classify a matching published tag as pending!
         val manifestAheadOfPublished = manifest != null &&
             published != null &&
+            !normalizeVersion(manModVer).equals(normalizeVersion(pubTag), ignoreCase = true) &&
             isRemoteNewer(manModVer, manModCode, pubTag, pubCode, isCompanionApp = false)
 
         if (manifestAheadOfPublished && manifest != null) {

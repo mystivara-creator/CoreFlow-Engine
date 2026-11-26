@@ -221,4 +221,58 @@ class CoreFlowUpdateCheckerTest {
         assertTrue(report.moduleUpdateAvailable)
         assertFalse(report.appUpdateAvailable)
     }
+
+    @Test
+    fun matchingPublishedReleaseWithHigherExplicitVersionCodeIsNotPending() {
+        val publishedV611 = """
+            {
+              "tag_name": "v6.1.1",
+              "html_url": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/tag/v6.1.1",
+              "published_at": "2026-11-26T13:28:00Z",
+              "body": "CoreFlow Engine v6.1.1",
+              "assets": [
+                {
+                  "name": "CFAE-System-Framework-v6.1.1-arm64.zip",
+                  "size": 2100000,
+                  "browser_download_url": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v6.1.1/CFAE-System-Framework-v6.1.1-arm64.zip"
+                },
+                {
+                  "name": "CoreFlow-Companion-v6.1.1-release.apk",
+                  "size": 15000000,
+                  "browser_download_url": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v6.1.1/CoreFlow-Companion-v6.1.1-release.apk"
+                }
+              ]
+            }
+        """.trimIndent()
+        val manifestV611 = """
+            {
+              "version": "v6.1.1",
+              "versionCode": 64100,
+              "zipUrl": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v6.1.1/CFAE-System-Framework-v6.1.1-arm64.zip",
+              "companion": {
+                "version": "6.1.1",
+                "versionCode": 64100,
+                "apkUrl": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v6.1.1/CoreFlow-Companion-v6.1.1-release.apk"
+              }
+            }
+        """.trimIndent()
+        val installedOldModNewApp = CoreFlowUpdateChecker.InstalledSnapshot(
+            appVersion = "6.1.1",
+            appVersionCode = 64101,
+            moduleVersion = "v6.1.0-R",
+            moduleVersionCode = 64000,
+            moduleInstalled = true,
+        )
+        val report = CoreFlowUpdateChecker.evaluateUpdateReport(
+            published = CoreFlowUpdateChecker.parsePublishedReleaseJson(publishedV611),
+            manifest = CoreFlowUpdateChecker.parseUpdateManifestJson(manifestV611),
+            installed = installedOldModNewApp,
+            nowMs = 1795695000000L,
+        )
+        assertEquals(CoreFlowUpdateChecker.UpdateState.UPDATE_AVAILABLE, report.state)
+        assertFalse(report.pendingPublicRelease)
+        assertTrue(report.moduleUpdateAvailable)
+        assertFalse(report.appUpdateAvailable)
+        assertNotNull(report.zipDownloadUrl)
+    }
 }
