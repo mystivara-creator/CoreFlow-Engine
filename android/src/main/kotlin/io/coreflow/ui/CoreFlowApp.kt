@@ -856,6 +856,7 @@ fun CoreFlowApp(
             }
         }
         }
+        }
 
         AnimatedVisibility(
             visible = startupLoading,
