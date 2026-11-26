@@ -58,7 +58,7 @@ test('buildSafeSetConfigArg allowlists only safe keys and single-quoted values',
 test('parseV5Status parses live daemon payload and rejects malformed schema', () => {
   const sample = createPreviewStatus();
   const parsed = parseV5Status(sample);
-  assert.equal(parsed.version, '6.1.0-R');
+  assert.equal(parsed.version, '6.1.1');
   assert.equal(parsed.profile, 'autonomous');
   assert.equal(parsed.effectiveProfile, 'autonomous');
   assert.equal(parsed.autonomousRegime, 'interactive_scroll');

@@ -206,13 +206,72 @@ object CoreFlowManager {
         val mediaPipelineActive: Boolean = false,
         val memoryHealthPct: Int = 100,
         val framePacingAvailable: Boolean = false,
+        val framePacingVerified: Boolean = false,
+        val framePacingSource: String = "unavailable",
         val measuredFps: Float = 0f,
         val jankRatio: Float? = null,
+        val frameBudgetMs: Float = 16.67f,
+        val p99FrameTimeMs: Float? = null,
+        val p99DeadlineUtil: Float? = null,
+        val p99Available: Boolean = false,
+        val schedstatSupported: Boolean = false,
+        val runqueueDelayMs: Float = 0f,
+        val starvationPressure: Float = 0f,
+        val vmstatSupported: Boolean = false,
+        val refaultFilePerSec: Float = 0f,
+        val directReclaimPerSec: Float = 0f,
+        val thrashingPressure: Float = 0f,
+        val directReclaimStorm: Boolean = false,
         val appDnaLearned: Int = 0,
         val activeAppBias: Float = 1.0f,
         val activeAppEfficiencyWeight: Float = 1.0f,
         val appDnaFlushCount: Long = 0L,
         val chargingDamped: Boolean = false,
+    )
+
+    data class ThermalModelStats(
+        val valid: Boolean = false,
+        val confidence: Int = 0,
+        val steps: Int = 0,
+        val targetCelsius: Float = 38f,
+        val effectiveTargetCelsius: Float = 38f,
+        val closedLoopActive: Boolean = false,
+        val chassisFused: Boolean = false,
+        val batteryCoarse1C: Boolean = false,
+        val powerBudgetMw: Float? = null,
+        val rThetaCPerW: Float? = null,
+        val tauSec: Float? = null,
+        val ambientCelsius: Float? = null,
+        val sustainablePowerMw: Float? = null,
+        val avgPowerMw: Float = 0f,
+        val headroomMw: Float? = null,
+    )
+
+    data class SiliconEdpStats(
+        val calibrated: Boolean = false,
+        val confidence: Int = 0,
+        val blend: Float = 0f,
+        val kneeScale: Float = 0.78f,
+        val powerExponent: Float = 1.8f,
+        val effectiveExponent: Float = 1.8f,
+        val samples: Int = 0,
+        val populatedBins: Int = 0,
+        val flushCount: Long = 0L,
+    )
+
+    data class CausalDomainStatus(
+        val key: String,
+        val state: String,
+        val samples: Int = 0,
+        val score: Float = 0f,
+        val confidence: Int = 0,
+    )
+
+    data class CausalVerificationStats(
+        val effectiveCount: Int = 0,
+        val bypassedCount: Int = 0,
+        val flushCount: Long = 0L,
+        val domains: List<CausalDomainStatus> = emptyList(),
     )
 
     data class TamperGuardStats(
@@ -327,6 +386,9 @@ object CoreFlowManager {
         val thermalGuardActive: Boolean = false,
         val features: EngineFeatures = EngineFeatures(),
         val hyperFluid: HyperFluidStats = HyperFluidStats(),
+        val thermalModel: ThermalModelStats = ThermalModelStats(),
+        val siliconEdp: SiliconEdpStats = SiliconEdpStats(),
+        val causalVerification: CausalVerificationStats = CausalVerificationStats(),
         val tamperGuard: TamperGuardStats = TamperGuardStats(),
         val tamperEvents: List<TamperEventInfo> = emptyList(),
         val coupledOrchestration: CoupledOrchestrationStats = CoupledOrchestrationStats(),
@@ -540,7 +602,7 @@ object CoreFlowManager {
             }
 
             DaemonStatus(
-                version = json.optString("version", "6.1.0-R"),
+                version = json.optString("version", "6.1.1"),
                 isRunning = json.optBoolean("running", false),
                 pid = json.optInt("pid", 0),
                 profile = Profile.fromConfigValue(json.optString("profile", "autonomous")),
@@ -612,13 +674,95 @@ object CoreFlowManager {
                         mediaPipelineActive = hf?.optBoolean("mediaPipelineActive", false) ?: false,
                         memoryHealthPct = hf?.optInt("memoryHealthPct", 100) ?: 100,
                         framePacingAvailable = hf?.optBoolean("framePacingAvailable", false) ?: false,
+                        framePacingVerified = hf?.optBoolean("framePacingVerified", false) ?: false,
+                        framePacingSource = hf?.optString("framePacingSource", "unavailable") ?: "unavailable",
                         measuredFps = hf.optFiniteFloat("measuredFps", 0f),
                         jankRatio = hf.optNullableFloat("jankRatio"),
+                        frameBudgetMs = hf.optFiniteFloat("frameBudgetMs", 16.67f),
+                        p99FrameTimeMs = hf.optNullableFloat("p99FrameTimeMs"),
+                        p99DeadlineUtil = hf.optNullableFloat("p99DeadlineUtil"),
+                        p99Available = hf?.optBoolean("p99Available", false) ?: false,
+                        schedstatSupported = hf?.optBoolean("schedstatSupported", false) ?: false,
+                        runqueueDelayMs = hf.optFiniteFloat("runqueueDelayMs", 0f),
+                        starvationPressure = hf.optFiniteFloat("starvationPressure", 0f),
+                        vmstatSupported = hf?.optBoolean("vmstatSupported", false) ?: false,
+                        refaultFilePerSec = hf.optFiniteFloat("refaultFilePerSec", 0f),
+                        directReclaimPerSec = hf.optFiniteFloat("directReclaimPerSec", 0f),
+                        thrashingPressure = hf.optFiniteFloat("thrashingPressure", 0f),
+                        directReclaimStorm = hf?.optBoolean("directReclaimStorm", false) ?: false,
                         appDnaLearned = hf?.optInt("appDnaLearned", 0) ?: 0,
                         activeAppBias = hf.optFiniteFloat("activeAppBias", 1.0f),
                         activeAppEfficiencyWeight = hf.optFiniteFloat("activeAppEfficiencyWeight", 1.0f),
                         appDnaFlushCount = hf?.optLong("appDnaFlushCount", 0L) ?: 0L,
                         chargingDamped = hf?.optBoolean("chargingDamped", false) ?: false,
+                    )
+                },
+                thermalModel = run {
+                    val tm = json.optJSONObject("thermalModel")
+                    ThermalModelStats(
+                        valid = tm?.optBoolean("valid", false) ?: false,
+                        confidence = tm?.optInt("confidence", 0) ?: 0,
+                        steps = tm?.optInt("steps", 0) ?: 0,
+                        targetCelsius = tm.optFiniteFloat("targetCelsius", 38f),
+                        effectiveTargetCelsius = tm.optFiniteFloat("effectiveTargetCelsius", 38f),
+                        closedLoopActive = tm?.optBoolean("closedLoopActive", false) ?: false,
+                        chassisFused = tm?.optBoolean("chassisFused", false) ?: false,
+                        batteryCoarse1C = tm?.optBoolean("batteryCoarse1C", false) ?: false,
+                        powerBudgetMw = tm.optNullableFloat("powerBudgetMw"),
+                        rThetaCPerW = tm.optNullableFloat("rThetaCPerW"),
+                        tauSec = tm.optNullableFloat("tauSec"),
+                        ambientCelsius = tm.optNullableFloat("ambientCelsius"),
+                        sustainablePowerMw = tm.optNullableFloat("sustainablePowerMw"),
+                        avgPowerMw = tm.optFiniteFloat("avgPowerMw", 0f),
+                        headroomMw = tm.optNullableFloat("headroomMw"),
+                    )
+                },
+                siliconEdp = run {
+                    val edp = json.optJSONObject("siliconEdp")
+                    SiliconEdpStats(
+                        calibrated = edp?.optBoolean("calibrated", false) ?: false,
+                        confidence = edp?.optInt("confidence", 0) ?: 0,
+                        blend = edp.optFiniteFloat("blend", 0f),
+                        kneeScale = edp.optFiniteFloat("kneeScale", 0.78f),
+                        powerExponent = edp.optFiniteFloat("powerExponent", 1.8f),
+                        effectiveExponent = edp.optFiniteFloat("effectiveExponent", 1.8f),
+                        samples = edp?.optInt("samples", 0) ?: 0,
+                        populatedBins = edp?.optInt("populatedBins", 0) ?: 0,
+                        flushCount = edp?.optLong("flushCount", 0L) ?: 0L,
+                    )
+                },
+                causalVerification = run {
+                    val cv = json.optJSONObject("causalVerification")
+                    val domObj = cv?.optJSONObject("domains")
+                    val orderedKeys = listOf(
+                        "thermal_uclamp_cap",
+                        "thermal_gpu_cap",
+                        "cpu_gov_tuning",
+                        "semantic_cpu_gpu_boost",
+                        "memory_bus_floor",
+                        "storage_memory_tuning",
+                    )
+                    val parsedDomains = buildList {
+                        if (domObj != null) {
+                            for (key in orderedKeys) {
+                                val d = domObj.optJSONObject(key) ?: continue
+                                add(
+                                    CausalDomainStatus(
+                                        key = key,
+                                        state = d.optString("state", "probing"),
+                                        samples = d.optInt("samples", 0),
+                                        score = d.optFiniteFloat("score", 0f),
+                                        confidence = d.optInt("confidence", 0),
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                    CausalVerificationStats(
+                        effectiveCount = cv?.optInt("effectiveCount", 0) ?: 0,
+                        bypassedCount = cv?.optInt("bypassedCount", 0) ?: 0,
+                        flushCount = cv?.optLong("flushCount", 0L) ?: 0L,
+                        domains = parsedDomains,
                     )
                 },
                 tamperGuard = TamperGuardStats(

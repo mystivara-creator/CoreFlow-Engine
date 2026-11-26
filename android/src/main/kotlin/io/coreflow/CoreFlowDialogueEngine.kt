@@ -350,10 +350,22 @@ object CoreFlowDialogueEngine {
         val jankPct = (status.aiJankRisk * 100f).toInt().coerceIn(0, 100)
 
         val regimeLabel = status.autonomousRegimeLabel(isIndonesian)
+        val tm = status.thermalModel
+        val edp = status.siliconEdp
+        val cv = status.causalVerification
+        val budgetStr = tm.powerBudgetMw?.let { String.format(Locale.US, "%.2fW", it / 1000f) } ?: "--"
+        val rThetaStr = tm.rThetaCPerW?.let { String.format(Locale.US, "%.2f°C/W", it) } ?: "--"
+        val edpStr = if (edp.calibrated) {
+            String.format(Locale.US, "Knee %.2fx · α %.2f (%d%%)", edp.kneeScale, edp.effectiveExponent, edp.confidence)
+        } else {
+            "Probing (${edp.populatedBins}/8 bin)"
+        }
         val reply = if (isIndonesian) {
             buildString {
                 append("Ringkasan Termal & Beban Live (${status.mode} · $regimeLabel):\n")
                 append("• Suhu SoC: ${formatTemp(status.socTempCelsius)} (${formatVel(status.thermalVelocityCpm)}) · Baterai: ${formatTemp(status.batteryTempCelsius)}\n")
+                append("• Model RC Termal: ${if (tm.closedLoopActive) "Closed-Loop" else "Kalibrasi"} (${tm.confidence}%) · P_budget $budgetStr · R_θ $rThetaStr\n")
+                append("• Silicon EDP (CFEDP2): $edpStr · Kausal (CFEM2): ${cv.effectiveCount} efektif / ${cv.bypassedCount} bypass\n")
                 append("• Beban: CPU ${status.cpuUtilPct.toInt()}% · GPU $gpuStr · Render ${(status.renderPressure * 100f).toInt()}% · Kelas: ${status.aiWorkloadClass}\n")
                 append("• Headroom PID: $scalePct% · Prediksi 10d: ${status.aiPredicted10s.toInt()}% (akurasi ${(status.aiConfidence * 100f).toInt()}%, Jank Risk $jankPct%)\n")
                 append("• Orkestrasi Lintas-Domain: Bus Memori $busStr (${co.memoryBusNodes} node) · Respons Sched $schedStr · Thermal Lead $leadStr")
@@ -362,6 +374,8 @@ object CoreFlowDialogueEngine {
             buildString {
                 append("Live Thermal & Load Report (${status.mode} · $regimeLabel):\n")
                 append("• SoC Temp: ${formatTemp(status.socTempCelsius)} (${formatVel(status.thermalVelocityCpm)}) · Battery: ${formatTemp(status.batteryTempCelsius)}\n")
+                append("• RC Thermal Model: ${if (tm.closedLoopActive) "Closed-Loop" else "Calibrating"} (${tm.confidence}%) · P_budget $budgetStr · R_θ $rThetaStr\n")
+                append("• Silicon EDP (CFEDP2): $edpStr · Causal (CFEM2): ${cv.effectiveCount} effective / ${cv.bypassedCount} bypassed\n")
                 append("• Utilization: CPU ${status.cpuUtilPct.toInt()}% · GPU $gpuStr · Render ${(status.renderPressure * 100f).toInt()}% · Workload: ${status.aiWorkloadClass}\n")
                 append("• PID Headroom: $scalePct% · 10s Forecast: ${status.aiPredicted10s.toInt()}% (conf ${(status.aiConfidence * 100f).toInt()}%, Jank Risk $jankPct%)\n")
                 append("• Coupled Orchestration: MemBus $busStr (${co.memoryBusNodes} nodes) · Sched $schedStr · Thermal Lead $leadStr")
@@ -370,7 +384,7 @@ object CoreFlowDialogueEngine {
         return DialogueResolution(
             intent = DialogueIntent.DIAGNOSE_THERMAL_LOAD,
             reply = reply,
-            telemetryTags = listOf("SoC ${formatTemp(status.socTempCelsius)}", "Headroom $scalePct%", "Bus $busStr"),
+            telemetryTags = listOf("SoC ${formatTemp(status.socTempCelsius)}", "Budget $budgetStr", "Headroom $scalePct%"),
         )
     }
 
@@ -475,7 +489,7 @@ object CoreFlowDialogueEngine {
         isIndonesian: Boolean,
         journalEntryCount: Int?,
     ): DialogueResolution {
-        val ver = status?.version ?: "6.1.0-R"
+        val ver = status?.version ?: "6.1.1"
         val regime = status?.autonomousRegimeLabel(isIndonesian) ?: if (isIndonesian) "Offline" else "Offline"
         val temp = formatTemp(status?.socTempCelsius ?: -1f)
         val journalPart = journalEntryCount?.let { " · CFJ4: $it node" }.orEmpty()

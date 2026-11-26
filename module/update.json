@@ -1,13 +1,13 @@
 {
-  "version": "v6.1.0-R",
-  "versionCode": 64000,
-  "zipUrl": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v6.1.0-R/CFAE-System-Framework-v6.1.0-R-arm64.zip",
-  "changelog": "https://raw.githubusercontent.com/mystivara-creator/CoreFlow-Engine/v6.1.0-R/CHANGELOG.md",
+  "version": "v6.1.1",
+  "versionCode": 64100,
+  "zipUrl": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v6.1.1/CFAE-System-Framework-v6.1.1-arm64.zip",
+  "changelog": "https://raw.githubusercontent.com/mystivara-creator/CoreFlow-Engine/v6.1.1/CHANGELOG.md",
   "companion": {
-    "version": "6.1.0-R",
-    "versionCode": 64000,
-    "apkUrl": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v6.1.0-R/CoreFlow-Companion-v6.1.0-R-release.apk",
-    "minModuleVersionCode": 64000
+    "version": "6.1.1",
+    "versionCode": 64100,
+    "apkUrl": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v6.1.1/CoreFlow-Companion-v6.1.1-release.apk",
+    "minModuleVersionCode": 64100
   },
   "releasePage": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest"
 }

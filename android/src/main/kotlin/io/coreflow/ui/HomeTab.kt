@@ -642,6 +642,51 @@ fun HomeTab(
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                     }
+
+                    Spacer(Modifier.height(8.dp))
+                    val tm = status?.thermalModel
+                    val edp = status?.siliconEdp
+                    val cv = status?.causalVerification
+                    val budgetText = when {
+                        tm?.powerBudgetMw != null -> String.format(Locale.US, "%.2fW", tm.powerBudgetMw / 1000f)
+                        tm?.valid == true && tm.sustainablePowerMw != null -> String.format(Locale.US, "%.2fW", tm.sustainablePowerMw / 1000f)
+                        tm != null && tm.steps > 0 -> "${tm.confidence}%"
+                        else -> "--"
+                    }
+                    val budgetAccent = if (tm?.closedLoopActive == true) Color(0xFF22C55E) else Color(0xFF38BDF8)
+                    val edpText = when {
+                        edp?.calibrated == true -> String.format(Locale.US, "%.2fx", edp.kneeScale)
+                        edp != null && edp.samples > 0 -> "${edp.populatedBins}/8"
+                        else -> "--"
+                    }
+                    val edpAccent = if (edp?.calibrated == true) Color(0xFF06B6D4) else Color(0xFF94A3B8)
+                    val causalText = if (cv != null) "${cv.effectiveCount}✓ / ${cv.bypassedCount}⊘" else "--"
+                    val causalAccent = if ((cv?.effectiveCount ?: 0) > 0) Color(0xFF10B981) else Color(0xFFF59E0B)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        MetricPill(
+                            label = if (tm?.closedLoopActive == true) "RC Budget" else "RC Model",
+                            value = budgetText,
+                            accent = budgetAccent,
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "EDP Knee",
+                            value = edpText,
+                            accent = edpAccent,
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "Causal",
+                            value = causalText,
+                            accent = causalAccent,
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                    }
                 }
             }
 

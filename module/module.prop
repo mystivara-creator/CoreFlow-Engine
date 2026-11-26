@@ -1,7 +1,7 @@
 id=cfae_framework
 name=CoreFlow Engine (CFAE)
-version=v6.1.0-R
-versionCode=64000
+version=v6.1.1
+versionCode=64100
 author=mystivara-creator
-description=CFAE System Framework / CoreFlow Engine v6.1.0-R: 100% Zero-Profile Unified Autonomous Engine, Hybrid CFW2/ONNX Neural AI, Proactive 38C Cool-Glide, Sovereign Tamper Guard (0444 lock), CFDNA2 Context Learning & Boot-Calm Sanctuary.
+description=CFAE System Framework / CoreFlow Engine v6.1.1: 100% Zero-Profile Unified Autonomous Engine, Hybrid CFW2/ONNX Neural AI, Proactive 38C Cool-Glide, Sovereign Tamper Guard (0444 lock), CFDNA2 Context Learning & Boot-Calm Sanctuary.
 updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json

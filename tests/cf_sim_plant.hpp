@@ -374,7 +374,7 @@ public:
     bool write_config_file(bool bypass_on_gaming) const {
         std::ostringstream conf;
         conf << "[general]\n"
-             << "version = 6.1.0-R\n"
+             << "version = 6.1.1\n"
              << "profile = autonomous\n"
              << "inspection_mode = false\n\n"
              << "[features]\n"
